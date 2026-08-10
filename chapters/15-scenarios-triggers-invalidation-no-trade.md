@@ -74,7 +74,7 @@
 
 ## 歷史案例
 
-以 TWSE 2330 的 2024-05-01 至 2024-05-31 原始日資料為案例，決策日是 5 月 31 日。歷史資料使用 [TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)；公司行動先透過 [TWSE 除權除息](https://www.twse.com.tw/rwd/zh/exRight/TWT49U) 與 [MOPS](https://mops.twse.com.tw/mops/web/t05st01) 查核，圖表只呈現決策日前的資料。
+以 TWSE 2330 的 2024-05-01 至 2024-05-31 原始日資料為案例，決策日是 5 月 31 日。歷史資料使用 [TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)；公司行動以 TWSE [除權除息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240501&endDate=20240531)查核，本窗口沒有 2330 的事件，圖表只呈現決策日前的資料。
 
 <!-- figure-spec
 {
@@ -150,6 +150,6 @@
 
 ### 來源
 
-- 歷史原始資料：[TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[除權除息](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)、[MOPS](https://mops.twse.com.tw/mops/web/t05st01)。
+- 歷史原始資料：TWSE [每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[除權除息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)。
 - 情境、觸發、失效與不交易是本教材的條件式判讀框架，並非交易所規則或績效承諾。
 - 成本與現行交易規則請回看[附錄 C](appendix-c-taiwan-market-rules.md)，不要在本章複製會變動的費率。

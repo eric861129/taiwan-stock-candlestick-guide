@@ -118,7 +118,7 @@ $$
 
 ## 歷史案例
 
-以 TWSE 2330 的官方原始日資料觀察 2024-03-01 至 2024-04-30，決策日為 4 月 30 日。OHLCV 分別取自 TWSE [2024 年 3 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240301&stockNo=2330)與[4 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240401&stockNo=2330)每日收盤行情。再查 [除權除息資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240301&endDate=20240430)與 [MOPS](https://mops.twse.com.tw/mops/web/t05st01)，確認 2024-03-18 為現金股利除息日：除息前收盤 753.00 元、參考價 749.50 元、息值 3.499789 元。圖與指標使用原始價格，跨越事件時須保留這項機械調整註記。
+以 TWSE 2330 的官方原始日資料觀察 2024-03-01 至 2024-04-30，決策日為 4 月 30 日。OHLCV 分別取自 TWSE [2024 年 3 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240301&stockNo=2330)與[4 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240401&stockNo=2330)每日收盤行情。再以 TWSE [除權除息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240301&endDate=20240430)確認 2024-03-18 為現金股利除息日：除息前收盤 753.00 元、參考價 749.50 元、息值 3.499789 元。圖與指標使用原始價格，跨越事件時須保留這項機械調整註記。
 
 <!-- figure-spec
 {
@@ -208,4 +208,4 @@ RSI、KD、MACD、布林通道各自摘要價格的不同角度，但都受輸�
 - Gerald Appel, *Technical Analysis: Power Tools for Active Investors*（2005；MACD，[O'Reilly 書目](https://www.oreilly.com/library/view/technical-analysis-power/0131479024/0131479024_pref05.html)）。
 - John Bollinger, *Bollinger on Bollinger Bands*（2001；[作者官方書頁](https://www.bollingerbands.com/bollinger-band-book)）。
 - 計算實作與邊界測試：`tools/indicators.py`、`tests/test_indicators.py`。
-- 歷史資料與公司行動：TWSE [每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[除權除息](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)、[MOPS](https://mops.twse.com.tw/mops/web/t05st01)。
+- 歷史資料與公司行動：TWSE [每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[除權除息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)。

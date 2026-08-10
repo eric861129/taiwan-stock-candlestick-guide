@@ -96,7 +96,7 @@ $$
 
 ## 歷史案例
 
-案例使用 TWSE 2330 的官方原始日資料，決策日為 2024-03-29；資料窗口從 2024-01-02 開始，保留足夠的均線與 ATR 暖機。OHLCV 分別取自 TWSE [2024 年 1 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240101&stockNo=2330)、[2 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240201&stockNo=2330)與[3 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240301&stockNo=2330)的每日收盤行情。再查 [TWSE 除權除息資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240101&endDate=20240329)與 [MOPS 公告](https://mops.twse.com.tw/mops/web/t05st01)，確認 2024-03-18 為現金股利除息日：除息前收盤 753.00 元、參考價 749.50 元、息值 3.499789 元。圖與指標使用原始價格，跨越事件時必須把參考價的機械調整與一般供需波動分開。
+案例使用 TWSE 2330 的官方原始日資料，決策日為 2024-03-29；資料窗口從 2024-01-02 開始，保留足夠的均線與 ATR 暖機。OHLCV 分別取自 TWSE [2024 年 1 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240101&stockNo=2330)、[2 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240201&stockNo=2330)與[3 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240301&stockNo=2330)的每日收盤行情。再以 TWSE [除權除息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240101&endDate=20240329)確認 2024-03-18 為現金股利除息日：除息前收盤 753.00 元、參考價 749.50 元、息值 3.499789 元。圖與指標使用原始價格，跨越事件時必須把參考價的機械調整與一般供需波動分開。
 
 <!-- figure-spec
 {
@@ -174,4 +174,4 @@ SMA、EMA 與均量是窗口摘要；ATR 是含缺口的波動摘要。它們可
 
 - J. Welles Wilder Jr., *New Concepts in Technical Trading Systems*（1978；RSI、ATR 的原始著作，[Google Books 書目](https://books.google.com/books/about/New_Concepts_in_Technical_Trading_System.html?id=WesJAQAAMAAJ)）。
 - SMA、EMA、成交量均量與本章數值例為本專案的可重現數學慣例；實作見 `tools/indicators.py` 與 `tests/test_indicators.py`。
-- 歷史資料與公司行動：TWSE [每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[除權除息](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)、[MOPS](https://mops.twse.com.tw/mops/web/t05st01)。
+- 歷史資料與公司行動：TWSE [每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[除權除息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)。

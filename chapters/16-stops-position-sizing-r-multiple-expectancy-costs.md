@@ -117,7 +117,7 @@ $$
 
 ## 歷史案例
 
-以 TWSE 2330 於 2024-06-03 至 2024-06-28 的官方原始日資料示範「風險太大就不交易」，決策日為 6 月 28 日。OHLCV 取自 TWSE [2024 年 6 月每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240601&stockNo=2330)。再查 [TWSE 除權除息](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240601&endDate=20240628)與 [MOPS](https://mops.twse.com.tw/mops/web/t05st01)，確認 2024-06-13 為現金股利除息日：除息前收盤 909.00 元、參考價 905.50 元、息值 3.499789 元。圖與 ATR 使用原始價格，跨越事件時須保留參考價的機械調整註記；圖表不暗示成交或獲利。
+以 TWSE 2330 於 2024-06-03 至 2024-06-28 的官方原始日資料示範「風險太大就不交易」，決策日為 6 月 28 日。OHLCV 取自 TWSE [2024 年 6 月每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240601&stockNo=2330)。再以 TWSE [除權除息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240601&endDate=20240628)確認 2024-06-13 為現金股利除息日：除息前收盤 909.00 元、參考價 905.50 元、息值 3.499789 元。圖與 ATR 使用原始價格，跨越事件時須保留參考價的機械調整註記；圖表不暗示成交或獲利。
 
 <!-- figure-spec
 {
@@ -195,5 +195,5 @@ $$
 ### 來源
 
 - 計算公式與工作表是本教材的可重現數學慣例；台股交易單位、價格跳動、費用與稅請以[附錄 C](appendix-c-taiwan-market-rules.md)及官方頁面為準。
-- 歷史資料與公司行動：[TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[除權除息](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)、[MOPS](https://mops.twse.com.tw/mops/web/t05st01)。
+- 歷史資料與公司行動：TWSE [每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[除權除息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)。
 - 期望值的解讀限於明確規則、樣本與成本定義；本章不提出績效統計或普遍適用建議。
