@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
+import ssl
 from tempfile import NamedTemporaryFile
 from typing import Any, Callable, Literal, Sequence
 from urllib.error import HTTPError, URLError
@@ -37,6 +38,27 @@ class _PayloadError(ValueError):
     def __init__(self, rule: str, detail: str):
         self.rule = rule
         super().__init__(detail)
+
+
+def _open_market_data(request: Request, market: str):
+    """以完整憑證驗證連線；僅針對 TWSE 的舊憑證格式做受限相容重試。"""
+
+    try:
+        return urlopen(request, timeout=30)
+    except URLError as error:
+        reason = getattr(error, "reason", None)
+        is_twse_subject_key_identifier_error = (
+            market == "TWSE"
+            and isinstance(reason, ssl.SSLCertVerificationError)
+            and "Missing Subject Key Identifier" in str(reason)
+            and hasattr(ssl, "VERIFY_X509_STRICT")
+        )
+        if not is_twse_subject_key_identifier_error:
+            raise
+
+        compatibility_context = ssl.create_default_context()
+        compatibility_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        return urlopen(request, timeout=30, context=compatibility_context)
 
 
 def roc_to_date(value: str) -> date:
@@ -249,7 +271,7 @@ def fetch_month(
 
     request = Request(f"{endpoint}?{urlencode(query_parameters)}", headers={"User-Agent": USER_AGENT})
     try:
-        with urlopen(request, timeout=30) as response:
+        with _open_market_data(request, market) as response:
             if response.status != 200:
                 raise MarketDataError(market, symbol, month_start, "http-status", f"HTTP status {response.status}")
             payload_bytes = response.read()

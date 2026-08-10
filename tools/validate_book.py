@@ -48,6 +48,12 @@ REPLAY_LAB_PATH = "chapters/19-progressive-chart-replay-lab.md"
 CAPSTONE_SCORING_HEADING = "評分"
 CAPSTONE_LEAKAGE_FIELDS = ("output", "alt_text")
 CAPSTONE_LEAKAGE_TOKENS = ("result", "winner", "failed", "profit", "loss", "上漲", "下跌")
+RAW_TEX_COMMAND_PATTERN = re.compile(
+    r"(?:\\(?:geq|leq|sum|times|frac|sqrt|infty|cdot|quad|qquad|text|right|left|lambda|alpha|beta|sigma|mu|Delta|operatorname|max|min|pm)\b|\\[()])"
+)
+DISPLAY_MATH_PATTERN = re.compile(r"\$\$.*?\$\$", re.DOTALL)
+INLINE_DOLLAR_MATH_PATTERN = re.compile(r"(?<!\\)\$(?!\$)[^\n$]+(?<!\\)\$")
+INLINE_PAREN_MATH_PATTERN = re.compile(r"\\\([^\n]*?\\\)")
 
 HEADING_PATTERN = re.compile(r"^(?P<level>#{1,6})[ \t]+(?P<title>.+?)\s*$", re.MULTILINE)
 HEADING_LINE_PATTERN = re.compile(r"^\s*#{1,6}(?:\s|$)")
@@ -185,6 +191,38 @@ def _validate_fixed_eight_steps(markdown: str, relative_path: str, issues: list[
                     _line_number(markdown, headings[section_index].start()),
                 )
             )
+
+
+def _mask_pattern_matches(text: str, pattern: re.Pattern[str]) -> str:
+    """遮蔽 pattern 命中的非換行字元，以保留後續錯誤行號。"""
+
+    characters = list(text)
+    for match in pattern.finditer(text):
+        for index in range(match.start(), match.end()):
+            if characters[index] not in {"\r", "\n"}:
+                characters[index] = " "
+    return "".join(characters)
+
+
+def _validate_malformed_inline_math(
+    markdown: str,
+    relative_path: str,
+    issues: list[ValidationIssue],
+) -> None:
+    """拒絕未放在正式數學分隔符內、會直接顯示的 TeX 指令。"""
+
+    prose = _mask_pattern_matches(markdown, DISPLAY_MATH_PATTERN)
+    prose = _mask_pattern_matches(prose, INLINE_DOLLAR_MATH_PATTERN)
+    prose = _mask_pattern_matches(prose, INLINE_PAREN_MATH_PATTERN)
+    for match in RAW_TEX_COMMAND_PATTERN.finditer(prose):
+        issues.append(
+            ValidationIssue(
+                relative_path,
+                "malformed-inline-math",
+                f"TeX 指令必須放在正式數學分隔符內或改用純文字：{match.group(0)}",
+                _line_number(markdown, match.start()),
+            )
+        )
 
 
 def _link_destination(destination: str) -> str:
@@ -521,6 +559,7 @@ def validate_book(root: Path, mode: Literal["draft", "release"]) -> list[Validat
         if chapter_kind in {"lesson", "lab"}:
             _validate_fixed_eight_steps(visible_markdown, relative_path, issues)
 
+        _validate_malformed_inline_math(visible_markdown, relative_path, issues)
         _validate_markdown_links(path, relative_path, visible_markdown, issues)
         _validate_figure_specs(visible_markdown, relative_path, issues, figure_ids, figure_outputs)
         _validate_capstone_answer_leakage(visible_markdown, relative_path, issues)

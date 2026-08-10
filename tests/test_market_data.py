@@ -3,6 +3,7 @@ from decimal import Decimal
 import copy
 import json
 from pathlib import Path
+import ssl
 import sys
 import tempfile
 import unittest
@@ -165,6 +166,48 @@ class MarketDataFetchTests(unittest.TestCase):
         self.assertIn("date=20240101", requests[0][0].full_url)
         self.assertIn("stockNo=2330", requests[0][0].full_url)
         self.assertIn("taiwan-stock-candlestick-guide", requests[0][0].get_header("User-agent"))
+
+    def test_fetch_month_retries_twse_without_x509_strict_for_missing_subject_key_identifier(self):
+        body = json.dumps(load_fixture("twse_stock_day_sample.json"), ensure_ascii=False).encode("utf-8")
+        calls: list[dict[str, object]] = []
+        certificate_error = ssl.SSLCertVerificationError(
+            1,
+            "certificate verify failed: Missing Subject Key Identifier",
+        )
+
+        def open_response(request: object, timeout: object, context: object = None) -> FakeResponse:
+            calls.append({"request": request, "timeout": timeout, "context": context})
+            if len(calls) == 1:
+                raise URLError(certificate_error)
+            return FakeResponse(200, body)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache_directory = Path(temporary_directory) / "market-data"
+            with patch("market_data.urlopen", side_effect=open_response):
+                bars = fetch_month("TWSE", "2330", date(2024, 1, 1), cache_directory)
+
+        retry_context = calls[1]["context"]
+        self.assertEqual(27_000_000, bars[0].volume)
+        self.assertEqual(2, len(calls))
+        self.assertIsNone(calls[0]["context"])
+        self.assertIsInstance(retry_context, ssl.SSLContext)
+        self.assertTrue(retry_context.check_hostname)
+        self.assertEqual(ssl.CERT_REQUIRED, retry_context.verify_mode)
+        self.assertFalse(retry_context.verify_flags & ssl.VERIFY_X509_STRICT)
+
+    def test_missing_subject_key_identifier_retry_is_limited_to_twse(self):
+        certificate_error = ssl.SSLCertVerificationError(
+            1,
+            "certificate verify failed: Missing Subject Key Identifier",
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch("market_data.urlopen", side_effect=URLError(certificate_error)) as open_mock:
+                with self.assertRaises(MarketDataError) as captured:
+                    fetch_month("TPEX", "3105", date(2024, 1, 1), Path(temporary_directory))
+
+        self._assert_context(captured.exception, "TPEX", "3105", "2024-01", "network")
+        self.assertEqual(1, open_mock.call_count)
 
     def test_fetch_month_cache_hit_avoids_network(self):
         body = json.dumps(load_fixture("twse_stock_day_sample.json"), ensure_ascii=False).encode("utf-8")

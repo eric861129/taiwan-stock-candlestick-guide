@@ -113,6 +113,19 @@ class ValidateBookTests(unittest.TestCase):
 
         self.assertIn("replacement-character", rules)
 
+    def test_raw_tex_command_outside_math_block_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8") + "\n不完整公式：(A \\times B)。\n",
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertIn("malformed-inline-math", rules)
+
     def test_missing_required_section_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
