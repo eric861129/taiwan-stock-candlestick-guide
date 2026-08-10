@@ -32,6 +32,10 @@ HISTORICAL_STRING_FIELDS = (
     "source_url",
     "checked_on",
 )
+CAPSTONE_PATH = "chapters/20-capstone-ten-cases.md"
+CAPSTONE_SCORING_HEADING = "評分"
+CAPSTONE_LEAKAGE_FIELDS = ("output", "alt_text")
+CAPSTONE_LEAKAGE_TOKENS = ("result", "winner", "failed", "profit", "loss", "上漲", "下跌")
 
 HEADING_PATTERN = re.compile(r"^(?P<level>#{1,6})[ \t]+(?P<title>.+?)\s*$", re.MULTILINE)
 HEADING_LINE_PATTERN = re.compile(r"^\s*#{1,6}(?:\s|$)")
@@ -260,6 +264,54 @@ def _validate_figure_specs(
             figure_outputs.append((relative_path, line, output.strip()))
 
 
+def _validate_capstone_answer_leakage(
+    visible_markdown: str,
+    relative_path: str,
+    issues: list[ValidationIssue],
+) -> None:
+    """拒絕第 20 章題目區圖表 metadata 洩漏答案線索。"""
+
+    if relative_path != CAPSTONE_PATH:
+        return
+
+    scoring_heading = next(
+        (
+            heading
+            for heading in HEADING_PATTERN.finditer(visible_markdown)
+            if len(heading.group("level")) == 2
+            and _normalized_heading_title(heading) == CAPSTONE_SCORING_HEADING
+        ),
+        None,
+    )
+    if scoring_heading is None:
+        return
+
+    prompt_markdown = visible_markdown[: scoring_heading.start()]
+    for match in FIGURE_SPEC_PATTERN.finditer(prompt_markdown):
+        try:
+            specification = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(specification, dict):
+            continue
+
+        for field_name in CAPSTONE_LEAKAGE_FIELDS:
+            value = specification.get(field_name)
+            if not isinstance(value, str):
+                continue
+            normalized_value = value.casefold()
+            for token in CAPSTONE_LEAKAGE_TOKENS:
+                if token.casefold() in normalized_value:
+                    issues.append(
+                        ValidationIssue(
+                            relative_path,
+                            "capstone-answer-leakage",
+                            f"評分區前的 figure-spec 欄位 {field_name} 不得包含答案線索：{token}",
+                            _line_number(visible_markdown, match.start()),
+                        )
+                    )
+
+
 def _validate_release_completeness(
     root: Path,
     figure_outputs: list[tuple[str, int, str]],
@@ -350,6 +402,7 @@ def validate_book(root: Path, mode: Literal["draft", "release"]) -> list[Validat
 
         _validate_markdown_links(path, relative_path, visible_markdown, issues)
         _validate_figure_specs(visible_markdown, relative_path, issues, figure_ids, figure_outputs)
+        _validate_capstone_answer_leakage(visible_markdown, relative_path, issues)
 
     if mode == "release":
         _validate_release_completeness(root, figure_outputs, issues)

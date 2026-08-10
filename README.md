@@ -45,6 +45,8 @@
 5. Part V：面對真實市場
    - [第 17 章：K 線看不到的財報、消息與制度事件](chapters/17-what-candlesticks-cannot-see.md)
    - [第 18 章：心理偏誤、交易紀錄與紙上交易](chapters/18-psychology-journal-paper-trading.md)
+   - [第 19 章：漸進式遮圖案例實驗室](chapters/19-progressive-chart-replay-lab.md)
+   - [第 20 章：十組綜合案例與能力驗收](chapters/20-capstone-ten-cases.md)
    - [附錄 D：詞彙表](chapters/appendix-d-glossary.md)
 
 名詞以目前的 [CONTEXT.md](CONTEXT.md) 為準；[附錄 D：詞彙表](chapters/appendix-d-glossary.md)由 `CONTEXT.md` 產生，請勿手動修改。

@@ -1,0 +1,395 @@
+# 第 20 章：十組綜合案例與能力驗收
+
+## 學習指示
+
+先連續完成十題，再進入「評分」展開各題答案。每題都要走完八步：資料有效性、時間週期、市場狀態、位置、K 線／結構、量價關係／流動性、情境／觸發／失效、風險／放棄交易條件。
+
+每一題交付時，請把市場資料、公司行動／制度查核、教材慣例與可能解讀分開寫。至少提出兩個條件式情境；觸發與失效都要能從後續已完成 K 線或可查資料辨識。需要計算時，使用[附錄 B](appendix-b-formulas-and-worksheets.md)的公式；題內的帳戶風險額、進場、失效價與最小單位都只是教材參數，並非推薦。正確答案可以是「不交易」或「資料不足，不能硬算」。
+
+## 案例
+
+### 第 1 題：2330 的日線執行與週線脈絡
+
+**資料卡。**TWSE、2330、2024-05-02 至 2024-05-17、原始日線。TWSE 5 月除權息結果未列出 2330。以下兩個完整週必須由同一份日資料彙總，不可把日 K 直接叫週 K：5/6–5/10 的開／高／低／收／量為 791／807／786／802／142,661,210；5/13–5/17 為 823／856／811／835／183,748,952。規則是首個交易日開盤、區間最高／最低、最後交易日收盤、成交量加總。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-01",
+  "kind": "historical",
+  "title": "第 1 題：2330 決策日資料",
+  "alt_text": "第 1 題的 2330 官方原始日 K 線與成交量，資料範圍為 2024 年 5 月 2 日至決策日 5 月 17 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-01.svg",
+  "market": "TWSE",
+  "symbol": "2330",
+  "start": "2024-05-02",
+  "end": "2024-05-17",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240501&stockNo=2330",
+  "checked_on": "2026-08-10",
+  "corporate_actions": [],
+  "annotations": [
+    {"type": "zone", "start": "2024-05-06", "end": "2024-05-17", "low": 786, "high": 856, "label": "由日資料重算的完整週範圍"}
+  ]
+}
+-->
+
+![第 1 題：2330 原始日線](../assets/figures/ch20-case-01.svg)
+
+依八步完成日線執行計畫，並把兩個完整週的彙總當較長週期背景。教材參數：計畫貨幣風險 1,000 元、假設進場 842 元、失效 821 元、最小單位 1 股；另寫出未取得的成本與可成交性資料。
+
+### 第 2 題：6488 的結構與資料不足
+
+**資料卡。**TPEx、6488、2024-04-01 至 2024-04-18、原始日線。TPEx 4 月除權息結果未列出 6488。圖表中可核對 OHLCV，但沒有公告內容、買賣價差、深度、預計下單量與成交衝擊。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-02",
+  "kind": "historical",
+  "title": "第 2 題：6488 決策日資料",
+  "alt_text": "第 2 題的 6488 官方原始日 K 線與成交量，資料範圍為 2024 年 4 月 1 日至決策日 4 月 18 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-02.svg",
+  "market": "TPEX",
+  "symbol": "6488",
+  "start": "2024-04-01",
+  "end": "2024-04-18",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F04%2F01&code=6488&response=json",
+  "checked_on": "2026-08-10",
+  "corporate_actions": [],
+  "annotations": [
+    {"type": "zone", "start": "2024-04-01", "end": "2024-04-18", "low": 535, "high": 568, "label": "可回查的日線範圍"}
+  ]
+}
+-->
+
+![第 2 題：6488 原始日線](../assets/figures/ch20-case-02.svg)
+
+依八步描述日線結構與位置，提出一個等待收盤確認的分支及一個不交易分支。若要計算部位，先列出資料不足的欄位，不能自行假定成交品質。
+
+### 第 3 題：2317 的區域判讀
+
+**資料卡。**TWSE、2317、2024-05-13 至 2024-05-24、原始日線。TWSE 5 月除權息結果未列出 2317。請以至少兩次可辨識的上、下側反應檢查區域是否足夠成立，不要先假定離開區域的方向。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-03",
+  "kind": "historical",
+  "title": "第 3 題：2317 決策日資料",
+  "alt_text": "第 3 題的 2317 官方原始日 K 線與成交量，資料範圍為 2024 年 5 月 13 日至決策日 5 月 24 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-03.svg",
+  "market": "TWSE",
+  "symbol": "2317",
+  "start": "2024-05-13",
+  "end": "2024-05-24",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240501&stockNo=2317",
+  "checked_on": "2026-08-10",
+  "corporate_actions": [],
+  "annotations": [
+    {"type": "zone", "start": "2024-05-13", "end": "2024-05-24", "low": 165.5, "high": 176, "label": "待確認的價格區域"}
+  ]
+}
+-->
+
+![第 3 題：2317 原始日線](../assets/figures/ch20-case-03.svg)
+
+依八步建立區域上側、區域下側與區域內等待三個分支。教材參數：計畫貨幣風險 800 元、假設進場 176.50 元、失效 165.50 元、最小單位 1 股；計算後仍要列出成本、滑價與流動性限制。
+
+### 第 4 題：3105 的量價比較窗
+
+**資料卡。**TPEx、3105、2024-04-01 至 2024-04-12、原始日線。TPEx 4 月除權息結果未列出 3105。若使用「量能增加」字樣，必須先固定一個不含目標日的同標的、同週期比較窗與統計量。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-04",
+  "kind": "historical",
+  "title": "第 4 題：3105 決策日資料",
+  "alt_text": "第 4 題的 3105 官方原始日 K 線與成交量，資料範圍為 2024 年 4 月 1 日至決策日 4 月 12 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-04.svg",
+  "market": "TPEX",
+  "symbol": "3105",
+  "start": "2024-04-01",
+  "end": "2024-04-12",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F04%2F01&code=3105&response=json",
+  "checked_on": "2026-08-10",
+  "corporate_actions": [],
+  "annotations": [
+    {"type": "zone", "start": "2024-04-01", "end": "2024-04-12", "low": 143.5, "high": 156, "label": "日線比較區"}
+  ]
+}
+-->
+
+![第 4 題：3105 原始日線](../assets/figures/ch20-case-04.svg)
+
+依八步完成本題，特別寫出量價比較窗、兩個情境、觸發和失效。若沒有價差與深度，說明這會如何限制任何部位計算或交易決定。
+
+### 第 5 題：2330 的公司行動查核
+
+**資料卡。**TWSE、2330、2024-06-03 至 2024-06-13、原始日線。TWSE 除權息結果列示 2024-06-13 為現金股利除息日：除息前收盤 909.00 元、參考價 905.50 元、息值 3.499789 元。這是公司行動機制資料，不是價格變化的單一原因；公告發布時間仍要以 MOPS 查核。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-05",
+  "kind": "historical",
+  "title": "第 5 題：2330 決策日資料",
+  "alt_text": "第 5 題的 2330 官方原始日 K 線與成交量，資料範圍為 2024 年 6 月 3 日至決策日 6 月 13 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-05.svg",
+  "market": "TWSE",
+  "symbol": "2330",
+  "start": "2024-06-03",
+  "end": "2024-06-13",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240601&stockNo=2330",
+  "checked_on": "2026-08-10",
+  "corporate_actions": ["2024-06-13 現金股利除息；TWSE 結果列示除息前收盤 909.00 元、參考價 905.50 元、息值 3.499789 元。"],
+  "annotations": [
+    {"type": "zone", "start": "2024-06-03", "end": "2024-06-13", "low": 835, "high": 935, "label": "原始價格與公司行動查核區"}
+  ]
+}
+-->
+
+![第 5 題：2330 原始日線](../assets/figures/ch20-case-05.svg)
+
+依八步完成本題，將 OHLCV、除息結果、MOPS 公告查核與可能解讀分欄。資料尚未提供可執行的事件時間、價差與深度時，滿分答案可以拒絕硬算部位並選擇等待。
+
+### 第 6 題：3260 的 RSI 分歧候選
+
+**資料卡。**TPEx、3260、2024-04-01 至 2024-04-15、原始日線，使用同一份原始資料計算 RSI(5)。4/10 收盤 113.00 元、RSI(5) 約 95.6204；4/15 收盤 115.50 元、RSI(5) 約 80.0730。這是可重算的指標與價格關係候選，不是方向保證。TPEx 4 月除權息結果未列出 3260。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-06",
+  "kind": "historical",
+  "title": "第 6 題：3260 決策日資料",
+  "alt_text": "第 6 題的 3260 官方原始日 K 線、成交量與 RSI(5)，資料範圍為 2024 年 4 月 1 日至決策日 4 月 15 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-06.svg",
+  "market": "TPEX",
+  "symbol": "3260",
+  "start": "2024-04-01",
+  "end": "2024-04-15",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F04%2F01&code=3260&response=json",
+  "checked_on": "2026-08-10",
+  "corporate_actions": [],
+  "indicators": [{"type": "rsi", "period": 5}],
+  "annotations": [
+    {"type": "zone", "start": "2024-04-10", "end": "2024-04-15", "low": 103, "high": 117, "label": "價格與 RSI(5) 比較區"}
+  ]
+}
+-->
+
+![第 6 題：3260 原始日線與 RSI(5)](../assets/figures/ch20-case-06.svg)
+
+依八步完成本題。教材參數：計畫貨幣風險 600 元、假設進場 116 元、失效 104 元、最小單位 1 股。說明 RSI(5) 如何只改變需要查核的條件，不能取代價格結構、觸發、失效與不交易條件。
+
+### 第 7 題：2308 的風險距離
+
+**資料卡。**TWSE、2308、2024-04-01 至 2024-04-30、原始日線。TWSE 4 月除權息結果未列出 2308。這一題把部位算式與結構失效分開：假設價格條件後才考慮進場，不能因為想買而移動失效點。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-07",
+  "kind": "historical",
+  "title": "第 7 題：2308 決策日資料",
+  "alt_text": "第 7 題的 2308 官方原始日 K 線與成交量，資料範圍為 2024 年 4 月 1 日至決策日 4 月 30 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-07.svg",
+  "market": "TWSE",
+  "symbol": "2308",
+  "start": "2024-04-01",
+  "end": "2024-04-30",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240401&stockNo=2308",
+  "checked_on": "2026-08-10",
+  "corporate_actions": [],
+  "annotations": [
+    {"type": "zone", "start": "2024-04-16", "end": "2024-04-30", "low": 292.5, "high": 326, "label": "失效與可用空間待核對"}
+  ]
+}
+-->
+
+![第 7 題：2308 原始日線](../assets/figures/ch20-case-07.svg)
+
+依八步完成本題。教材參數：計畫貨幣風險 1,200 元、假設進場 321 元、失效 292.50 元、最小單位 1,000 股。按附錄 B 先計算每股風險、未取整股數、向下取整後股數與取整後風險；若無法執行，寫出放棄交易原因。
+
+### 第 8 題：3105 的可成交性缺口
+
+**資料卡。**TPEx、3105、2024-05-02 至 2024-05-31、原始日線。TPEx 5 月除權息結果未列出 3105。圖中有日成交量，卻沒有買賣價差、深度、成交頻率、預計下單量與成交衝擊；不要把這些未知欄位用成交量補上。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-08",
+  "kind": "historical",
+  "title": "第 8 題：3105 決策日資料",
+  "alt_text": "第 8 題的 3105 官方原始日 K 線與成交量，資料範圍為 2024 年 5 月 2 日至決策日 5 月 31 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-08.svg",
+  "market": "TPEX",
+  "symbol": "3105",
+  "start": "2024-05-02",
+  "end": "2024-05-31",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F05%2F01&code=3105&response=json",
+  "checked_on": "2026-08-10",
+  "corporate_actions": [],
+  "annotations": [
+    {"type": "zone", "start": "2024-05-02", "end": "2024-05-31", "low": 137.5, "high": 147, "label": "日線資料範圍"}
+  ]
+}
+-->
+
+![第 8 題：3105 原始日線](../assets/figures/ch20-case-08.svg)
+
+依八步完成本題。答案必須列出至少四個與可成交性有關、但題目未提供的欄位，並將資料不足寫成一個明確不交易條件。
+
+### 第 9 題：2603 的條件式延續計畫
+
+**資料卡。**TWSE、2603、2024-04-01 至 2024-04-30、原始日線。TWSE 4 月除權息結果未列出 2603。請用可回查的波峰、波谷、價格範圍和量價比較窗建立條件，不以單一型態名稱替代計畫。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-09",
+  "kind": "historical",
+  "title": "第 9 題：2603 決策日資料",
+  "alt_text": "第 9 題的 2603 官方原始日 K 線與成交量，資料範圍為 2024 年 4 月 1 日至決策日 4 月 30 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-09.svg",
+  "market": "TWSE",
+  "symbol": "2603",
+  "start": "2024-04-01",
+  "end": "2024-04-30",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240401&stockNo=2603",
+  "checked_on": "2026-08-10",
+  "corporate_actions": [],
+  "annotations": [
+    {"type": "zone", "start": "2024-04-01", "end": "2024-04-30", "low": 162, "high": 193.5, "label": "可回查的價格範圍"}
+  ]
+}
+-->
+
+![第 9 題：2603 原始日線](../assets/figures/ch20-case-09.svg)
+
+依八步完成本題。教材參數：計畫貨幣風險 800 元、假設進場 193.50 元、失效 174 元、最小單位 1 股。除算式外，還要寫至少一個不交易條件與一個和量價比較窗有關的失效條件。
+
+### 第 10 題：3260 的波動與 ATR
+
+**資料卡。**TPEx、3260、2024-05-02 至 2024-05-31、原始日線，同一份資料計算 ATR(14)。第一個可繪製 ATR 值在 5/21，約為 5.8571；5/31 約為 4.9999。ATR 描述幅度，不提供方向。TPEx 5 月除權息結果未列出 3260。
+
+<!-- figure-spec
+{
+  "id": "ch20-case-10",
+  "kind": "historical",
+  "title": "第 10 題：3260 決策日資料",
+  "alt_text": "第 10 題的 3260 官方原始日 K 線、成交量與 ATR(14)，資料範圍為 2024 年 5 月 2 日至決策日 5 月 31 日，沒有右側資料。",
+  "output": "assets/figures/ch20-case-10.svg",
+  "market": "TPEX",
+  "symbol": "3260",
+  "start": "2024-05-02",
+  "end": "2024-05-31",
+  "timeframe": "1d",
+  "price_mode": "raw",
+  "source_url": "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F05%2F01&code=3260&response=json",
+  "checked_on": "2026-08-10",
+  "corporate_actions": [],
+  "indicators": [{"type": "atr", "period": 14}],
+  "annotations": [
+    {"type": "zone", "start": "2024-05-06", "end": "2024-05-13", "low": 106, "high": 121.5, "label": "日內範圍比較區"}
+  ]
+}
+-->
+
+![第 10 題：3260 原始日線與 ATR(14)](../assets/figures/ch20-case-10.svg)
+
+依八步完成本題。教材參數：計畫貨幣風險 700 元、假設進場 120.50 元、失效 107 元、最小單位 1 股。說明 ATR(14) 的暖機限制與它如何影響失效距離、部位或不交易條件，但不能把 ATR 當成方向指令。
+
+## 評分
+
+每題 10 分，每一項 1 分。評的是決策流程，不評後續方向、型態名稱或損益。
+
+1. 可核對的市場資料觀察。
+2. 明確的時間週期脈絡。
+3. 關鍵區域與方向、波動、流動性市場狀態。
+4. 至少兩個條件式情境。
+5. 可觀察的觸發條件。
+6. 可觀察的失效條件。
+7. 依附錄 B 可重算的風險／部位，或明確缺少的計算欄位。
+8. 放棄交易條件。
+9. 市場資料、制度／公告、教材慣例與可能解讀分開，沒有後見之明。
+10. 前述八步內容內部一致。
+
+以下答案只用各題決策日以前的資料評估流程；沒有以右側價格或事後損益替答案加分。
+
+<details>
+<summary>第 1 題參考答案</summary>
+
+可核對觀察包含兩個完整週的聚合值、5/17 收盤 835 元與原始日線資料。週線背景只能由題示規則彙總，日線則用來等候條件。可寫兩個分支：下一根完成日線收盤高於 856 元並完成量價與可成交性查核，才評估上側分支；若收盤低於 811 元，該分支失效，另保留區間內等待。教材算式為每股風險 842-821=21 元，未取整股數 1,000/21=47.619... 股，執行 47 股，取整後風險 987 元。成本、滑價、價差與深度未提供時，仍可選擇不交易。
+</details>
+
+<details>
+<summary>第 2 題參考答案</summary>
+
+可觀察的是 4/1–4/18 的日線價格結構與 OHLCV，不是公告原因或可成交性。合理分支可寫為：若下一根完成日線出現事前定義的關鍵區域收盤條件，才繼續追蹤；若收盤破壞該區域，原情境失效。另一個完整分支是因缺少公告、價差、深度與衝擊資料而不交易。沒有可執行的進場、失效與單位資料時，不應硬算部位。
+</details>
+
+<details>
+<summary>第 3 題參考答案</summary>
+
+滿分答案先檢查上、下側是否各有至少兩次可辨識反應，再把 165.5–176 元寫為區域。上側分支需等待完成日線收盤離開區域且量價資料符合事前比較窗；下側分支也需有自己的收盤觸發與回區失效；若仍在區域內則等待。題示數學參數可得每股風險 11 元、未取整股數 72.727...、執行 72 股、取整後風險 792 元；成本、滑價與可成交性仍是放棄交易條件。
+</details>
+
+<details>
+<summary>第 4 題參考答案</summary>
+
+要先寫出例如以 4/1–4/11 的已完成日線作比較窗，不能把 4/12 放入自己的量能統計。價格與量能可支持等待兩個收盤分支，但不支持把參與者意圖或可成交性當作市場資料事實。價差、深度與衝擊資料未取得時，可將任何進場方案降級為不交易；這個答案不需要猜後來的價格。
+</details>
+
+<details>
+<summary>第 5 題參考答案</summary>
+
+市場資料事實包括 6/12 收盤 909 元、6/13 的 OHLC 為 923／935／911／919；制度／公司行動資料是 6/13 的除息結果與 905.50 元參考價。兩者都不能證明單一原因。合格答案將 MOPS 公告日期、事件時間、價差與深度列為尚待查核，並可因這些缺口拒絕硬算部位。觸發與失效必須改由下一根完成日線和事前關鍵區域定義。
+</details>
+
+<details>
+<summary>第 6 題參考答案</summary>
+
+113 元對應約 95.6204 的 RSI(5)，115.50 元對應約 80.0730；可記為同一資料下價格較高、RSI 較低的分歧候選，不能直接變成方向承諾。兩個情境仍需由收盤、區域與量價條件觸發；回到事前失效區則取消原分支。教材算式為每股風險 12 元、未取整股數 50 股、執行 50 股、取整後風險 600 元；成本和可成交性未知時也可不交易。
+</details>
+
+<details>
+<summary>第 7 題參考答案</summary>
+
+結構失效不可為了符合部位而移動。題示每股風險為 321-292.50=28.50 元，未取整股數為 1,200/28.50=42.105... 股；以題示最小單位 1,000 股向下取整，執行股數為 0，取整後風險為 0。因此滿分的風險決定是放棄交易，並同時列出成本、滑價、觸發未發生與可成交性資訊不足等其他放棄條件。
+</details>
+
+<details>
+<summary>第 8 題參考答案</summary>
+
+至少要列出買賣價差、委託簿深度、成交頻率、預計下單量與成交衝擊；也可加上實際委託限制與滑價。日成交量可作同口徑量價比較，卻不能補足上述欄位。兩個價格情境可保留，但在無法評估成交品質時，將資料缺口寫成不交易條件是滿分答案。
+</details>
+
+<details>
+<summary>第 9 題參考答案</summary>
+
+可觀察 4/1–4/30 的高低點、收盤與成交量，再以固定窗比較量能。兩個分支可寫為：完成日線收盤依事前條件守住近期區域才評估延續；若收盤回到失效區，該分支失效，且任何一個分支都可因成本、深度或量價條件未達而不交易。教材算式為每股風險 19.50 元、未取整股數 41.025...、執行 41 股、取整後風險 799.50 元。這是算術示範，不是對價格的推薦。
+</details>
+
+<details>
+<summary>第 10 題參考答案</summary>
+
+ATR(14) 的第一個可繪製位置是 5/21，因此前 13 根的 ATR 欄位應保留暖機不足；5/31 約 4.9999 只描述近期幅度。可寫成兩個情境：若完成日線符合事前區域與量價條件，才把 ATR 納入失效距離；若範圍、成本或可成交性使部位不可承擔，則不交易。題示每股風險為 13.50 元、未取整股數 51.851...、執行 51 股、取整後風險 688.50 元；仍需保留滑價與成本限制。
+</details>
+
+## 來源
+
+- **TWSE 日成交資料**：[2330 2024 年 5 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240501&stockNo=2330)、[2330 2024 年 6 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240601&stockNo=2330)、[2317 2024 年 5 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240501&stockNo=2317)、[2308 2024 年 4 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240401&stockNo=2308)、[2603 2024 年 4 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240401&stockNo=2603)。
+- **TPEx 日成交資料**：[6488 2024 年 4 月](https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F04%2F01&code=6488&response=json)、[3105 2024 年 4 月](https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F04%2F01&code=3105&response=json)、[3105 2024 年 5 月](https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F05%2F01&code=3105&response=json)、[3260 2024 年 4 月](https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F04%2F01&code=3260&response=json)、[3260 2024 年 5 月](https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?date=2024%2F05%2F01&code=3260&response=json)。
+- **公司行動查核**：[TWSE 2024 年 4 月除權息結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240401&endDate=20240430)、[TWSE 2024 年 5 月除權息結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240501&endDate=20240531)、[TWSE 2024 年 6 月除權息結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240601&endDate=20240630)、[TPEx 2024 年 4 月除權息結果](https://www.tpex.org.tw/www/zh-tw/bulletin/exDailyQ?response=json&startDate=2024%2F04%2F01&endDate=2024%2F04%2F30)、[TPEx 2024 年 5 月除權息結果](https://www.tpex.org.tw/www/zh-tw/bulletin/exDailyQ?response=json&startDate=2024%2F05%2F01&endDate=2024%2F05%2F31)、[公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)。
+- 所有資料、公司行動與連結在 2026-08-10 查核。指標由本專案 [`tools/indicators.py`](../tools/indicators.py) 以相同原始日資料重算；RSI 與 ATR 的暖機規則見[附錄 B](appendix-b-formulas-and-worksheets.md)。

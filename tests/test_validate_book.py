@@ -13,6 +13,8 @@ from validate_book import validate_book
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "valid_lesson.md"
 LESSON_PATH = Path("chapters/01-what-candlesticks-can-and-cannot-answer.md")
+CAPSTONE_PATH = Path("chapters/20-capstone-ten-cases.md")
+REPLAY_LAB_PATH = Path("chapters/19-progressive-chart-replay-lab.md")
 
 
 class ValidateBookTests(unittest.TestCase):
@@ -24,6 +26,46 @@ class ValidateBookTests(unittest.TestCase):
 
     def _rules(self, root: Path, mode: str = "draft") -> set[str]:
         return {issue.rule for issue in validate_book(root, mode)}
+
+    def _write_lab(self, root: Path, path: Path, case_content: str, scoring_content: str = "評分內容。") -> Path:
+        lab_path = root / path
+        lab_path.parent.mkdir(parents=True, exist_ok=True)
+        lab_path.write_text(
+            "\n".join(
+                (
+                    "# 測試實驗室",
+                    "",
+                    "## 學習指示",
+                    "",
+                    "依序完成判讀。",
+                    "",
+                    "## 案例",
+                    "",
+                    case_content,
+                    "",
+                    "## 評分",
+                    "",
+                    scoring_content,
+                    "",
+                    "## 來源",
+                    "",
+                    "官方資料來源。",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+        return lab_path
+
+    def _capstone_spec(self, output: str, alt_text: str, figure_id: str = "capstone-case") -> str:
+        specification = {
+            "id": figure_id,
+            "kind": "synthetic",
+            "title": "十題練習圖",
+            "alt_text": alt_text,
+            "output": output,
+        }
+        return f"<!-- figure-spec\n{json.dumps(specification, ensure_ascii=False)}\n-->"
 
     def test_valid_lesson_has_no_issues(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -302,3 +344,101 @@ class ValidateBookTests(unittest.TestCase):
             rules = self._rules(root)
 
         self.assertIn("draft-marker", rules)
+
+    def test_capstone_answer_leakage_rejects_each_token_in_output_and_alt_text(self):
+        forbidden_tokens = ("result", "winner", "failed", "profit", "loss", "上漲", "下跌")
+
+        for field_name in ("output", "alt_text"):
+            for token in forbidden_tokens:
+                with self.subTest(field_name=field_name, token=token), tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    output = "assets/figures/ch20-case-01.svg"
+                    alt_text = "十題練習圖，右端停在決策日。"
+                    if field_name == "output":
+                        output = f"assets/figures/ch20-{token}-case.svg"
+                    else:
+                        alt_text = f"十題練習圖，{token} 不應在題目前揭露。"
+                    self._write_lab(root, CAPSTONE_PATH, self._capstone_spec(output, alt_text))
+
+                    issues = validate_book(root, "draft")
+
+                leakage_issues = [issue for issue in issues if issue.rule == "capstone-answer-leakage"]
+                self.assertEqual(1, len(leakage_issues))
+                self.assertIn(field_name, leakage_issues[0].message)
+                self.assertIn(token, leakage_issues[0].message)
+
+    def test_capstone_answer_leakage_is_case_insensitive_for_english_tokens(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._write_lab(
+                root,
+                CAPSTONE_PATH,
+                self._capstone_spec("assets/figures/ch20-Result.svg", "十題練習圖，右端停在決策日。"),
+            )
+
+            issues = validate_book(root, "draft")
+
+        leakage_issues = [issue for issue in issues if issue.rule == "capstone-answer-leakage"]
+        self.assertEqual(1, len(leakage_issues))
+        self.assertIn("result", leakage_issues[0].message.casefold())
+
+    def test_capstone_answer_leakage_allows_result_discussion_after_scoring_heading(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._write_lab(
+                root,
+                CAPSTONE_PATH,
+                self._capstone_spec("assets/figures/ch20-case-01.svg", "十題練習圖，右端停在決策日。"),
+                "答案可以討論 result、profit 或下跌，但不改變題目評分。",
+            )
+
+            issues = validate_book(root, "draft")
+
+        self.assertEqual([], issues)
+
+    def test_capstone_answer_leakage_ignores_figure_specs_inside_fenced_code(self):
+        fenced_specification = self._capstone_spec(
+            "assets/figures/ch20-result-case.svg",
+            "十題練習圖，題目前不應顯示 result。",
+        )
+        safe_specification = self._capstone_spec(
+            "assets/figures/ch20-case-01.svg",
+            "十題練習圖，右端停在決策日。",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._write_lab(root, CAPSTONE_PATH, f"```markdown\n{fenced_specification}\n```\n\n{safe_specification}")
+
+            issues = validate_book(root, "draft")
+
+        self.assertEqual([], issues)
+
+    def test_capstone_answer_leakage_does_not_apply_to_replay_lab(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._write_lab(
+                root,
+                REPLAY_LAB_PATH,
+                self._capstone_spec("assets/figures/ch19-result-case.svg", "回放練習圖，可能出現 result。"),
+            )
+
+            issues = validate_book(root, "draft")
+
+        self.assertEqual([], issues)
+
+    def test_capstone_answer_leakage_accepts_safe_ten_case_names_and_alt_text(self):
+        specifications = "\n\n".join(
+            self._capstone_spec(
+                f"assets/figures/ch20-case-{index:02d}.svg",
+                f"第 {index} 題原始日 K 線，圖表終點為決策日，不含右側資料。",
+                f"capstone-case-{index:02d}",
+            )
+            for index in range(1, 11)
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._write_lab(root, CAPSTONE_PATH, specifications)
+
+            issues = validate_book(root, "draft")
+
+        self.assertEqual([], issues)
