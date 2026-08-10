@@ -29,14 +29,14 @@
 ## 人工圖例
 
 <!-- figure-spec {"id":"ch07-gap-breakout-concept","kind":"synthetic","title":"人工圖例：缺口、突破與回測","alt_text":"人工日 K 線圖，顯示原整理區後出現向上價格缺口，價格離開後再收盤回到原區間，說明突破需要回測與收盤確認。","output":"assets/figures/ch07-concept.svg","bars":[{"date":"2024-01-02","open":101,"high":104,"low":100,"close":103,"volume":1200},{"date":"2024-01-03","open":103,"high":105,"low":101,"close":102,"volume":1100},{"date":"2024-01-04","open":102,"high":104,"low":100,"close":103,"volume":1300},{"date":"2024-01-05","open":103,"high":105,"low":102,"close":104,"volume":1400},{"date":"2024-01-08","open":109,"high":112,"low":108,"close":111,"volume":2400},{"date":"2024-01-09","open":111,"high":114,"low":109,"close":113,"volume":2100},{"date":"2024-01-10","open":113,"high":115,"low":110,"close":111,"volume":1800},{"date":"2024-01-11","open":111,"high":112,"low":106,"close":107,"volume":1700},{"date":"2024-01-12","open":107,"high":108,"low":103,"close":104,"volume":2000},{"date":"2024-01-15","open":104,"high":106,"low":101,"close":102,"volume":1900}],"annotations":[{"type":"zone","start":"2024-01-02","end":"2024-01-05","low":100,"high":105,"label":"原整理區"},{"type":"arrow","start":"2024-01-05","end":"2024-01-08","start_price":105,"end_price":108,"label":"相鄰高低點未重疊"},{"type":"zone","start":"2024-01-08","end":"2024-01-15","low":100,"high":105,"label":"回測與失效判讀區"},{"type":"label","date":"2024-01-12","price":108,"label":"收盤回到原區間"}]} -->
-![人工圖例：缺口、突破與回測](../assets/figures/ch07-concept.svg)
+![人工日 K 線圖，顯示原整理區後出現向上價格缺口，價格離開後再收盤回到原區間，說明突破需要回測與收盤確認。](../assets/figures/ch07-concept.svg)
 
 圖中的 1/8 最低價高於 1/5 最高價，因而符合向上價格缺口的資料條件。之後價格曾離開原整理區，卻在右側收盤回到該區，這時「突破已被確認」的說法缺乏支持。人工資料只用來練習語言與規則，不對應真實市場事件。
 
 ## 歷史案例
 
 <!-- figure-spec {"id":"ch07-gap-breakout-2330","kind":"historical","title":"2330：缺口、離開與回到區域","alt_text":"台積電 2330 於 2024 年 5 月 2 日至練習決策日 5 月 31 日的官方原始日線。圖中標示向上價格缺口、離開整理區、收盤回到區域及失敗突破；圖表不含決策日後資料。","output":"assets/figures/ch07-cases.svg","market":"TWSE","symbol":"2330","start":"2024-05-02","end":"2024-05-31","timeframe":"1d","price_mode":"raw","source_url":"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=20240501&stockNo=2330","checked_on":"2026-08-10","corporate_actions":[],"annotations":[{"type":"zone","start":"2024-05-02","end":"2024-05-10","low":772,"high":807,"label":"離開前的整理區"},{"type":"arrow","start":"2024-05-10","end":"2024-05-13","start_price":807,"end_price":818,"label":"5/13：向上價格缺口"},{"type":"zone","start":"2024-05-15","end":"2024-05-31","low":830,"high":856,"label":"回測區：5/30 收盤回區；決策日失效"},{"type":"label","date":"2024-05-22","price":872,"label":"5/22：收盤離開區域"}]} -->
-![2330：缺口、離開與回到區域](../assets/figures/ch07-cases.svg)
+![台積電 2330 於 2024 年 5 月 2 日至練習決策日 5 月 31 日的官方原始日線。圖中標示向上價格缺口、離開整理區、收盤回到區域及失敗突破；圖表不含決策日後資料。](../assets/figures/ch07-cases.svg)
 
 本例使用臺灣證券交易所 2330 的原始日資料。2024-05-13 的最低價高於前一交易日最高價，形成可觀察的向上價格缺口。5/22 收盤離開 830–856 的觀察區，但 5/30 收盤回到區內，5/31 又落到區域下方；截至決策日，前述突破已缺少延續與守住的證據。
 

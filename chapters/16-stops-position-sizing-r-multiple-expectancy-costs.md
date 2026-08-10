@@ -54,7 +54,7 @@ $$
 PnL_{net}=PnL_{gross}-C_{buy}-C_{sell}-Tax-Slippage
 $$
 
-其中 (C_{buy}=P_{entry}qf_{buy})、(C_{sell}=P_{exit}qf_{sell})、(Tax=P_{exit}qt)（稅與費率須依實際商品與當日規則替換）。若採計畫風險作 R 分母：
+其中 (C_{buy}=P_{entry}qf_{buy})、(C_{sell}=P_{exit}qf_{sell})、(Tax=P_{exit}qt)（稅與費率須依實際商品與當日規則替換）。若以執行部位在計畫失效價的風險 (R_{exec}) 作為 R 分母：
 
 $$
 R_{realized}=\frac{PnL_{net}}{R_{exec}}
@@ -113,7 +113,7 @@ $$
 }
 -->
 
-![人工圖例：由失效點推導部位與 R](../assets/figures/ch16-concept.svg)
+![人工日 K 線圖標出多方進場、結構失效與可用空間；ATR 只作波動背景，箭頭與區域示範停損先於股數取整，沒有預設通用風險百分比。](../assets/figures/ch16-concept.svg)
 
 ## 歷史案例
 
@@ -145,7 +145,7 @@ $$
 }
 -->
 
-![歷史案例：2330 失效距離、部位取整與成本缺口](../assets/figures/ch16-cases.svg)
+![台積電 2330 於 2024 年 6 月 3 日至 6 月 28 日的官方原始日線，標出假設進場、結構失效距離與前方空間；決策日後資料未納入，實際成交與成本仍需另記。](../assets/figures/ch16-cases.svg)
 
 ### 有效、失敗與模稜兩可
 

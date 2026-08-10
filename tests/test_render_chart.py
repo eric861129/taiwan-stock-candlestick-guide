@@ -46,6 +46,8 @@ class RenderChartTests(unittest.TestCase):
 
         self.assertIn('<title id="chart-title">測試圖</title>', svg)
         self.assertIn('<desc id="chart-desc">可讀的繁體中文替代文字，包含上漲與下跌 K 線。</desc>', svg)
+        self.assertIn('class="chart-heading"', svg)
+        self.assertNotIn("測試圖表：", svg)
         self.assertIn('role="img"', svg)
         self.assertIn('aria-labelledby="chart-title chart-desc"', svg)
         self.assertIn('data-direction="up"', svg)

@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import posixpath
 import re
 from typing import Literal
 from urllib.parse import unquote, urlsplit
@@ -43,6 +44,7 @@ HISTORICAL_STRING_FIELDS = (
     "checked_on",
 )
 CAPSTONE_PATH = "chapters/20-capstone-ten-cases.md"
+REPLAY_LAB_PATH = "chapters/19-progressive-chart-replay-lab.md"
 CAPSTONE_SCORING_HEADING = "評分"
 CAPSTONE_LEAKAGE_FIELDS = ("output", "alt_text")
 CAPSTONE_LEAKAGE_TOKENS = ("result", "winner", "failed", "profit", "loss", "上漲", "下跌")
@@ -198,6 +200,18 @@ def _is_external_link(destination: str) -> bool:
     return bool(parsed_destination.scheme or parsed_destination.netloc)
 
 
+def _local_link_key(relative_path: str, destination: str) -> str | None:
+    """把 Markdown 本機連結正規化為相對於書籍根目錄的 POSIX 路徑。"""
+
+    normalized_destination = _link_destination(destination)
+    if not normalized_destination or _is_external_link(normalized_destination):
+        return None
+    target_path = unquote(urlsplit(normalized_destination).path).replace("\\", "/")
+    if not target_path:
+        return None
+    return posixpath.normpath(posixpath.join(posixpath.dirname(relative_path), target_path))
+
+
 def _validate_markdown_links(
     source_path: Path,
     relative_path: str,
@@ -247,6 +261,16 @@ def _validate_figure_specs(
     figure_ids: set[str],
     figure_outputs: list[tuple[str, int, str]],
 ) -> None:
+    markdown_images: dict[str, list[tuple[str, int]]] = {}
+    for image_match in INLINE_LINK_PATTERN.finditer(markdown):
+        if not image_match.group("image"):
+            continue
+        image_key = _local_link_key(relative_path, image_match.group("destination"))
+        if image_key is not None:
+            markdown_images.setdefault(image_key, []).append(
+                (image_match.group("label"), _line_number(markdown, image_match.start()))
+            )
+
     for match in FIGURE_SPEC_PATTERN.finditer(markdown):
         line = _line_number(markdown, match.start())
         try:
@@ -312,7 +336,50 @@ def _validate_figure_specs(
 
         output = specification.get("output")
         if isinstance(output, str) and output.strip().lower().split("?", maxsplit=1)[0].endswith(".svg"):
-            figure_outputs.append((relative_path, line, output.strip()))
+            normalized_output = posixpath.normpath(output.strip().replace("\\", "/"))
+            figure_outputs.append((relative_path, line, normalized_output))
+            matching_images = markdown_images.get(normalized_output, [])
+            expected_alt_text = specification.get("alt_text")
+            if matching_images and isinstance(expected_alt_text, str):
+                for markdown_alt_text, image_line in matching_images:
+                    if markdown_alt_text != expected_alt_text:
+                        issues.append(
+                            ValidationIssue(
+                                relative_path,
+                                "figure-alt-text-sync",
+                                f"Markdown 圖片替代文字必須與 figure-spec.alt_text 一致：{normalized_output}",
+                                image_line,
+                            )
+                        )
+
+
+def _validate_replay_first_plan_disclosure(
+    visible_markdown: str,
+    relative_path: str,
+    issues: list[ValidationIssue],
+) -> None:
+    """確保遮圖實驗室的第一階段示範只在讀者主動展開後出現。"""
+
+    if relative_path != REPLAY_LAB_PATH:
+        return
+
+    marker = "**第一次完整計畫。**"
+    marker_positions = [match.start() for match in re.finditer(re.escape(marker), visible_markdown)]
+    details_pattern = re.compile(r"</?details\b[^>]*>", re.IGNORECASE)
+    for marker_position in marker_positions:
+        depth = 0
+        for tag_match in details_pattern.finditer(visible_markdown, 0, marker_position):
+            depth += -1 if tag_match.group(0).lower().startswith("</details") else 1
+            depth = max(depth, 0)
+        if depth == 0:
+            issues.append(
+                ValidationIssue(
+                    relative_path,
+                    "replay-first-plan-disclosure",
+                    "第一次完整計畫必須收合在 details 內，避免讀者作答前看到示範",
+                    _line_number(visible_markdown, marker_position),
+                )
+            )
 
 
 def _validate_capstone_answer_leakage(
@@ -457,6 +524,7 @@ def validate_book(root: Path, mode: Literal["draft", "release"]) -> list[Validat
         _validate_markdown_links(path, relative_path, visible_markdown, issues)
         _validate_figure_specs(visible_markdown, relative_path, issues, figure_ids, figure_outputs)
         _validate_capstone_answer_leakage(visible_markdown, relative_path, issues)
+        _validate_replay_first_plan_disclosure(visible_markdown, relative_path, issues)
 
     if mode == "release":
         _validate_release_completeness(root, figure_outputs, issues)

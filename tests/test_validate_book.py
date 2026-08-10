@@ -158,6 +158,57 @@ class ValidateBookTests(unittest.TestCase):
 
         self.assertIn("empty-image-alt-text", rules)
 
+    def test_figure_spec_alt_text_must_match_markdown_image(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            image_path = root / "assets" / "figures" / "example.svg"
+            image_path.parent.mkdir(parents=True)
+            image_path.write_text("<svg />", encoding="utf-8")
+            specification = {
+                "id": "example",
+                "kind": "synthetic",
+                "title": "範例圖",
+                "alt_text": "詳細說明圖中的價格、成交量與判讀限制。",
+                "output": "assets/figures/example.svg",
+            }
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8")
+                + f"\n<!-- figure-spec\n{json.dumps(specification, ensure_ascii=False)}\n-->\n"
+                + "![只有短標題](../assets/figures/example.svg)\n",
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertIn("figure-alt-text-sync", rules)
+
+    def test_matching_figure_spec_and_markdown_alt_text_is_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            image_path = root / "assets" / "figures" / "example.svg"
+            image_path.parent.mkdir(parents=True)
+            image_path.write_text("<svg />", encoding="utf-8")
+            alt_text = "詳細說明圖中的價格、成交量與判讀限制。"
+            specification = {
+                "id": "example",
+                "kind": "synthetic",
+                "title": "範例圖",
+                "alt_text": alt_text,
+                "output": "assets/figures/example.svg",
+            }
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8")
+                + f"\n<!-- figure-spec\n{json.dumps(specification, ensure_ascii=False)}\n-->\n"
+                + f"![{alt_text}](../assets/figures/example.svg)\n",
+                encoding="utf-8",
+            )
+
+            issues = validate_book(root, "draft")
+
+        self.assertEqual([], issues)
+
     def test_missing_local_link_target_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -393,6 +444,19 @@ class ValidateBookTests(unittest.TestCase):
             rules = self._rules(root)
 
         self.assertIn("fixed-eight-step", rules)
+
+    def test_replay_lab_first_complete_plan_must_be_folded(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._write_lab(
+                root,
+                REPLAY_LAB_PATH,
+                "**第一次完整計畫。**\n\n1. **大方向**：直接顯示的示範答案。",
+            )
+
+            rules = self._rules(root)
+
+        self.assertIn("replay-first-plan-disclosure", rules)
 
     def test_draft_marker_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

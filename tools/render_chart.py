@@ -64,7 +64,7 @@ def render_svg(spec: FigureSpec, bars: Sequence[OhlcvBar]) -> str:
         _tag("desc", {"id": "chart-desc"}, escape(spec.alt_text)),
         _tag("style", {}, _STYLE),
         _definitions(),
-        _text("測試圖表：" + spec.title, {"class": "chart-heading", "x": _coord(_LEFT), "y": _coord(Decimal("30"))}),
+        _text(spec.title, {"class": "chart-heading", "x": _coord(_LEFT), "y": _coord(Decimal("30"))}),
         _axes(price_low, price_high, height),
         _date_labels(bar_values, x_positions),
         _price_candles(bar_values, x_positions, candle_width, price_y),

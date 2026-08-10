@@ -26,14 +26,14 @@
 ## 人工圖例
 
 <!-- figure-spec {"id":"ch08-market-state-concept","kind":"synthetic","title":"人工圖例：多時間週期與市場狀態三面向","alt_text":"人工日 K 線圖，前段以一個完整交易週的日資料建立較長週期上升背景，後段日內範圍擴大且成交量遞減，說明方向、波動與流動性需分開檢查。","output":"assets/figures/ch08-concept.svg","bars":[{"date":"2024-01-02","open":101,"high":104,"low":99,"close":103,"volume":1500},{"date":"2024-01-03","open":103,"high":106,"low":101,"close":105,"volume":1450},{"date":"2024-01-04","open":105,"high":108,"low":103,"close":107,"volume":1300},{"date":"2024-01-05","open":107,"high":109,"low":105,"close":108,"volume":1250},{"date":"2024-01-08","open":108,"high":112,"low":104,"close":106,"volume":900},{"date":"2024-01-09","open":106,"high":114,"low":103,"close":112,"volume":820},{"date":"2024-01-10","open":112,"high":116,"low":106,"close":108,"volume":780},{"date":"2024-01-11","open":108,"high":115,"low":105,"close":113,"volume":760},{"date":"2024-01-12","open":113,"high":117,"low":107,"close":109,"volume":740},{"date":"2024-01-15","open":109,"high":118,"low":106,"close":114,"volume":720}],"annotations":[{"type":"zone","start":"2024-01-02","end":"2024-01-05","low":99,"high":109,"label":"完整週資料：上升背景"},{"type":"zone","start":"2024-01-08","end":"2024-01-15","low":103,"high":118,"label":"日線：範圍擴大"},{"type":"label","date":"2024-01-10","price":119,"label":"流動性仍須價差與深度佐證"}]} -->
-![人工圖例：多時間週期與市場狀態三面向](../assets/figures/ch08-concept.svg)
+![人工日 K 線圖，前段以一個完整交易週的日資料建立較長週期上升背景，後段日內範圍擴大且成交量遞減，說明方向、波動與流動性需分開檢查。](../assets/figures/ch08-concept.svg)
 
 人工圖例以 1/2–1/5 這個完整交易週的日資料彙整出週線背景，後段保留日線來觀察日內範圍變大。圖上仍畫日 K，前段藍色標記只是指出用來建立週線背景的完整週資料，不是假裝把四根日 K 畫成一根週 K。若另有寬價差、有限深度或高成交衝擊的證據，上升週線背景、日線高波動與低流動性可以同時成立。圖中成交量遞減只是刻意安排的練習資料；沒有價差與委買委賣深度時，無法據此宣告流動性良好或不良。
 
 ## 歷史案例
 
 <!-- figure-spec {"id":"ch08-market-state-6488","kind":"historical","title":"6488：方向、波動與流動性證據分層","alt_text":"中美晶 6488 於 2024 年 4 月 1 日至練習決策日 4 月 30 日的官方原始日線。圖中標示較低高低點背景、4 月 19 日範圍擴大與反彈區；圖表不含決策日後資料。","output":"assets/figures/ch08-cases.svg","market":"TPEX","symbol":"6488","start":"2024-04-01","end":"2024-04-30","timeframe":"1d","price_mode":"raw","source_url":"https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?code=6488&date=2024/04/01&response=json","checked_on":"2026-08-10","corporate_actions":[],"annotations":[{"type":"line","start":"2024-04-01","end":"2024-04-22","start_price":563,"end_price":503,"label":"較低高低點的日線背景"},{"type":"zone","start":"2024-04-19","end":"2024-04-30","low":501,"high":527,"label":"反彈區；決策日流動性待查"},{"type":"label","date":"2024-04-19","price":545,"label":"4/19：日內範圍擴大"}]} -->
-![6488：方向、波動與流動性證據分層](../assets/figures/ch08-cases.svg)
+![中美晶 6488 於 2024 年 4 月 1 日至練習決策日 4 月 30 日的官方原始日線。圖中標示較低高低點背景、4 月 19 日範圍擴大與反彈區；圖表不含決策日後資料。](../assets/figures/ch08-cases.svg)
 
 本例使用證券櫃檯買賣中心 6488 的原始日資料。4/1 至 4/22 的日線可描述為較低高點與較低低點背景；4/19 的日內範圍明顯大於前一日，之後落入 501–527 的反彈區。這些描述只涵蓋圖中決策日 2024-04-30，不能延伸為後續走勢預測。
 
