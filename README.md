@@ -36,7 +36,7 @@
    - [第 11 章：整理、反轉與延續型態](chapters/11-consolidation-reversal-continuation-patterns.md)
    - [第 12 章：量價關係、低流動性與失敗訊號](chapters/12-volume-price-liquidity-failed-signals.md)
    - [附錄 A：型態速查](chapters/appendix-a-pattern-reference.md)
-4. Part IV：指標、交易計畫與風險
+4. Part IV：把判讀變成計畫
    - [第 13 章：移動平均、成交量均量與 ATR](chapters/13-moving-averages-volume-average-atr.md)
    - [第 14 章：RSI、KD、MACD 與布林通道](chapters/14-rsi-kd-macd-bollinger-bands.md)
    - [第 15 章：情境、觸發、失效與放棄交易](chapters/15-scenarios-triggers-invalidation-no-trade.md)

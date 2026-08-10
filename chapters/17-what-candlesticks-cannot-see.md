@@ -32,9 +32,9 @@ K 線是特定時間週期內成交價格的摘要，不是公司公告、交易
 - **財報與營收**：財務報告與月營收有各自的期間、發布時間與修正可能；圖上的成交量不能代替內容閱讀。
 - **股利／除權息與公司行動**：除權息、減資、分割等會影響原始價格序列的可比性。先查 [TWSE 除權息參考價計算說明](https://www.twse.com.tw/zh/announcement/ex-right/cal.html)與可重現的結果頁，再判讀缺口。
 - **重大訊息、停復牌與制度限制**：暫停或恢復交易、撮合與資訊揭露有制度來源；價格資料未必足以顯示當時能否成交。現行制度請查 [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)及附錄 C。
-- **指數、產業與新聞事件**：它們可以是市場狀態的背景，但不是由單一個股 K 線推出的事實。若沒有可核對時間戳與來源，應保留為未知。
+- **指數、產業與新聞事件**：可先用 [TWSE 指數系列](https://www.twse.com.tw/zh/indices/indices/series.html)確認指數名稱與適用市場，再依問題查找具時間戳的官方產業或公司公告；它們不是由單一個股 K 線推出的事實。若沒有可核對時間戳與來源，應保留為未知。
 
-查公司資料時，使用可開啟的 [公開資訊觀測站入口](https://mops.twse.com.tw/mops/?fr=cg11282C0301C0201M02)：先輸入公司代號並設定日期範圍，再依問題選擇「財務資訊／公司營運」中的財報或營收、「股東會／股利」中的股利與公司行動，或「重大訊息」中的公告類別。把查到的發布日期與圖表交易日分欄記錄；兩者相同或不同，都不能只靠 K 線猜測。
+查公司資料時，使用 [公開資訊觀測站入口](https://mops.twse.com.tw/mops/)：先輸入公司代號並設定日期範圍，再依問題選擇「財務資訊／公司營運」中的財報或營收、「股東會／股利」中的股利與公司行動，或「重大訊息」中的公告類別。把查到的發布日期與圖表交易日分欄記錄；兩者相同或不同，都不能只靠 K 線猜測。
 
 ## 人工圖例
 
@@ -155,5 +155,5 @@ K 線提供的是成交摘要。財報、營收、公司行動、重大訊息、
 ### 來源
 
 - 市場資料與案例：TWSE [每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[除權除息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)；本案例另保留 2024 年 6 月的可重現結果查詢連結。
-- 公司公告：可開啟的 [公開資訊觀測站入口](https://mops.twse.com.tw/mops/?fr=cg11282C0301C0201M02)，依公司代號、日期與公告類別查詢。
-- 現行制度與計算說明：[TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)、[TWSE 除權息參考價計算說明](https://www.twse.com.tw/zh/announcement/ex-right/cal.html)。可能變動的交易規則請以[附錄 C](appendix-c-taiwan-market-rules.md)與官方最新內容為準。
+- 公司公告：[公開資訊觀測站入口](https://mops.twse.com.tw/mops/)，依公司代號、日期與公告類別查詢。
+- 現行制度、指數與計算說明：[TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)、[TWSE 指數系列](https://www.twse.com.tw/zh/indices/indices/series.html)、[TWSE 除權息參考價計算說明](https://www.twse.com.tw/zh/announcement/ex-right/cal.html)。可能變動的交易規則請以[附錄 C](appendix-c-taiwan-market-rules.md)與官方最新內容為準。

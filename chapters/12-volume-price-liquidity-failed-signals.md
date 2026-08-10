@@ -74,7 +74,7 @@
 
 本例使用 [TWSE 2330 2024 年 4 月日成交資訊](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240401&stockNo=2330) 的官方原始日資料，範圍為 2024-04-01 至**決策日** 2024-04-30。4/19 的 143,868,560 股，與其前五個完整交易日 4/12、4/15、4/16、4/17、4/18 的平均 42,045,415.4 股比較。這個五日窗是本例已宣告的同標的、同週期比較口徑，不是通用門檻。
 
-TWSE [除權息計算結果資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240401&endDate=20240430) 在可視期間內沒有 2330 記錄，故 metadata 的 `corporate_actions` 為空陣列。公司公告仍應由 [MOPS 除權息公告入口](https://mops.twse.com.tw/mops/web/t05st01)交叉核對；沒有已查得的公司行動，不表示量能或價格一定由單一原因造成。
+TWSE [除權息計算結果資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240401&endDate=20240430) 在可視期間內沒有 2330 記錄，故 metadata 的 `corporate_actions` 為空陣列。公司公告仍應由 [MOPS 除權息公告入口](https://mops.twse.com.tw/mops/)交叉核對；沒有已查得的公司行動，不表示量能或價格一定由單一原因造成。
 
 <!-- figure-spec
 {
@@ -163,6 +163,6 @@ TWSE [除權息計算結果資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U
 
 ### 來源
 
-- **市場資料與公司行動查核**：[TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[TWSE 除權息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)與 [MOPS 除權息公告入口](https://mops.twse.com.tw/mops/web/t05st01)，查核日期為 2026-08-10。
+- **市場資料與公司行動查核**：[TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[TWSE 除權息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)與 [MOPS 除權息公告入口](https://mops.twse.com.tw/mops/)，查核日期為 2026-08-10。
 - **研究限制的參考**：[Lo、Mamaysky、Wang〈Foundations of Technical Analysis〉](https://doi.org/10.1111/0022-1082.00265)的樣本、市場與辨識方法有明確邊界；本章不由該研究導出任何單一量價規則的通用績效數字。
 - **教材／常用判讀法**：比較窗、努力與結果、可成交性檢查及八步流程用於條件式決策與風險紀錄。
