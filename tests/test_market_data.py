@@ -180,6 +180,36 @@ class MarketDataFetchTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(1, first_open.call_count)
 
+    def test_fetch_month_rejects_cached_bars_from_another_month(self):
+        payload = load_fixture("twse_stock_day_sample.json")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache_directory = Path(temporary_directory) / "market-data"
+            cache_path = cache_directory / "TWSE" / "2330" / "2024-02.json"
+            cache_path.parent.mkdir(parents=True)
+            cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            with patch("market_data.urlopen", side_effect=AssertionError("cache hit made a network request")):
+                with self.assertRaises(MarketDataError) as captured:
+                    fetch_month("TWSE", "2330", date(2024, 2, 1), cache_directory)
+
+        self._assert_context(captured.exception, "TWSE", "2330", "2024-02", "validation")
+        self.assertIn("outside requested month", str(captured.exception))
+
+    def test_fetch_month_rejects_downloaded_bars_from_another_month_without_caching(self):
+        body = json.dumps(load_fixture("twse_stock_day_sample.json"), ensure_ascii=False).encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache_directory = Path(temporary_directory) / "market-data"
+            cache_path = cache_directory / "TWSE" / "2330" / "2024-02.json"
+            with patch("market_data.urlopen", return_value=FakeResponse(200, body)):
+                with self.assertRaises(MarketDataError) as captured:
+                    fetch_month("TWSE", "2330", date(2024, 2, 1), cache_directory)
+
+            self.assertFalse(cache_path.exists())
+
+        self._assert_context(captured.exception, "TWSE", "2330", "2024-02", "validation")
+
     def test_fetch_month_does_not_leave_partial_cache_when_atomic_replace_fails(self):
         body = json.dumps(load_fixture("twse_stock_day_sample.json"), ensure_ascii=False).encode("utf-8")
 

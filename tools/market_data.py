@@ -234,9 +234,14 @@ def fetch_month(
 
     cache_path = cache_dir / market / symbol / f"{month_start:%Y-%m}.json"
     if cache_path.exists():
-        return _parse_payload_with_context(
-            cache_path.read_bytes(),
-            parser,
+        return _require_requested_month(
+            _parse_payload_with_context(
+                cache_path.read_bytes(),
+                parser,
+                market,
+                symbol,
+                month_start,
+            ),
             market,
             symbol,
             month_start,
@@ -253,11 +258,38 @@ def fetch_month(
     except (URLError, OSError) as error:
         raise MarketDataError(market, symbol, month_start, "network", str(error)) from error
 
-    bars = _parse_payload_with_context(payload_bytes, parser, market, symbol, month_start)
+    bars = _require_requested_month(
+        _parse_payload_with_context(payload_bytes, parser, market, symbol, month_start),
+        market,
+        symbol,
+        month_start,
+    )
     try:
         _write_cache_atomically(cache_path, payload_bytes)
     except OSError as error:
         raise MarketDataError(market, symbol, month_start, "cache-write", str(error)) from error
+    return bars
+
+
+def _require_requested_month(
+    bars: tuple[OhlcvBar, ...],
+    market: str,
+    symbol: str,
+    month: date,
+) -> tuple[OhlcvBar, ...]:
+    unexpected_dates = [
+        bar.trading_date.isoformat()
+        for bar in bars
+        if (bar.trading_date.year, bar.trading_date.month) != (month.year, month.month)
+    ]
+    if unexpected_dates:
+        raise MarketDataError(
+            market,
+            symbol,
+            month,
+            "validation",
+            f"bar dates outside requested month: {', '.join(unexpected_dates)}",
+        )
     return bars
 
 
