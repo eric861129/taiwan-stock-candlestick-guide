@@ -126,15 +126,16 @@ class IndicatorTests(unittest.TestCase):
         self.assertEqual(expected, result)
 
     def test_macd_signal_ema_updates_for_nonconstant_macd_values(self):
-        result = macd(tuple(map(D, (0, 0, 0, 6, 4))), fast=2, slow=3, signal=2)
+        result = macd(tuple(map(D, (0, 0, 0, 6, 0, 0))), fast=1, slow=3, signal=3)
 
         self.assertEqual(
             (
                 (None, None, None),
                 (None, None, None),
                 (D("0"), None, None),
-                (D("1"), D("0.5"), D("0.5")),
-                (D("0.5"), D("0.5"), D("0")),
+                (D("3"), None, None),
+                (D("-1.5"), D("0.5"), D("-2.0")),
+                (D("-0.75"), D("-0.125"), D("-0.625")),
             ),
             result,
         )
