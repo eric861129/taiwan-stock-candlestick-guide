@@ -7,13 +7,15 @@ import ssl
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
-from urllib.error import URLError
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request
 
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
 
+import market_data
 from market_data import MarketDataError, OhlcvBar, fetch_month, fetch_range, parse_tpex_month, parse_twse_month, validate_bars
 
 
@@ -153,7 +155,7 @@ class MarketDataFetchTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_directory = Path(temporary_directory) / "market-data"
-            with patch("market_data.urlopen", side_effect=open_response):
+            with patch("market_data._urlopen_official_market_data", side_effect=open_response):
                 bars = fetch_month("TWSE", "2330", date(2024, 1, 31), cache_directory)
 
             cache_path = cache_directory / "TWSE" / "2330" / "2024-01.json"
@@ -184,7 +186,7 @@ class MarketDataFetchTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_directory = Path(temporary_directory) / "market-data"
-            with patch("market_data.urlopen", side_effect=open_response):
+            with patch("market_data._urlopen_official_market_data", side_effect=open_response):
                 bars = fetch_month("TWSE", "2330", date(2024, 1, 1), cache_directory)
 
         retry_context = calls[1]["context"]
@@ -212,7 +214,7 @@ class MarketDataFetchTests(unittest.TestCase):
             return FakeResponse(200, body)
 
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("market_data.urlopen", side_effect=open_response):
+            with patch("market_data._urlopen_official_market_data", side_effect=open_response):
                 bars = fetch_month("TPEX", "5483", date(2024, 1, 1), Path(temporary_directory))
 
         retry_context = calls[1]["context"]
@@ -232,7 +234,7 @@ class MarketDataFetchTests(unittest.TestCase):
         certificate_error.verify_message = "Missing Subject Key Identifier; unrelated verification detail"
 
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("market_data.urlopen", side_effect=URLError(certificate_error)) as open_mock:
+            with patch("market_data._urlopen_official_market_data", side_effect=URLError(certificate_error)) as open_mock:
                 with self.assertRaises(MarketDataError) as captured:
                     fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
 
@@ -248,22 +250,73 @@ class MarketDataFetchTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             with patch("market_data.TWSE_STOCK_DAY_URL", "https://example.com/market-data"):
-                with patch("market_data.urlopen", side_effect=URLError(certificate_error)) as open_mock:
+                with patch("market_data._urlopen_official_market_data", side_effect=URLError(certificate_error)) as open_mock:
                     with self.assertRaises(MarketDataError) as captured:
                         fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
 
         self._assert_context(captured.exception, "TWSE", "2330", "2024-01", "network")
-        self.assertEqual(1, open_mock.call_count)
+        self.assertEqual(0, open_mock.call_count)
+
+    def test_redirect_handler_rejects_cross_host_http_and_non_default_port_targets(self):
+        handler = market_data._OfficialMarketRedirectHandler("www.twse.com.tw")
+        request = Request("https://www.twse.com.tw/original")
+        targets = (
+            "https://example.com/redirected",
+            "http://www.twse.com.tw/redirected",
+            "https://www.twse.com.tw:444/redirected",
+            "https://www.twse.com.tw@example.com/redirected",
+        )
+
+        for target in targets:
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(HTTPError, "official HTTPS host") as captured:
+                    handler.redirect_request(request, None, 302, "Found", {}, target)
+                captured.exception.close()
+
+    def test_redirect_handler_allows_same_official_https_host(self):
+        handler = market_data._OfficialMarketRedirectHandler("www.twse.com.tw")
+        request = Request("https://www.twse.com.tw/original")
+
+        redirected = handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://www.twse.com.tw/redirected",
+        )
+
+        self.assertEqual("https://www.twse.com.tw/redirected", redirected.full_url)
+
+    def test_official_market_opener_installs_redirect_boundary_and_secure_context(self):
+        opener = Mock()
+        expected_response = FakeResponse(200, b"{}")
+        opener.open.return_value = expected_response
+        context = ssl.create_default_context()
+        request = Request("https://www.tpex.org.tw/official")
+
+        with patch("market_data.build_opener", return_value=opener) as build_mock:
+            response = market_data._urlopen_official_market_data(request, timeout=30, context=context)
+
+        handlers = build_mock.call_args.args
+        redirect_handler = next(
+            handler for handler in handlers if isinstance(handler, market_data._OfficialMarketRedirectHandler)
+        )
+        https_handler = next(handler for handler in handlers if isinstance(handler, market_data.HTTPSHandler))
+        self.assertIs(expected_response, response)
+        self.assertEqual("www.tpex.org.tw", redirect_handler.official_host)
+        self.assertIs(context, https_handler._context)
+        opener.open.assert_called_once_with(request, timeout=30)
 
     def test_fetch_month_cache_hit_avoids_network(self):
         body = json.dumps(load_fixture("twse_stock_day_sample.json"), ensure_ascii=False).encode("utf-8")
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_directory = Path(temporary_directory) / "market-data"
-            with patch("market_data.urlopen", return_value=FakeResponse(200, body)) as first_open:
+            with patch("market_data._urlopen_official_market_data", return_value=FakeResponse(200, body)) as first_open:
                 first = fetch_month("TWSE", "2330", date(2024, 1, 1), cache_directory)
 
-            with patch("market_data.urlopen", side_effect=AssertionError("cache hit made a network request")):
+            with patch("market_data._urlopen_official_market_data", side_effect=AssertionError("cache hit made a network request")):
                 second = fetch_month("TWSE", "2330", date(2024, 1, 31), cache_directory)
 
         self.assertEqual(first, second)
@@ -278,7 +331,7 @@ class MarketDataFetchTests(unittest.TestCase):
             cache_path.parent.mkdir(parents=True)
             cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-            with patch("market_data.urlopen", side_effect=AssertionError("cache hit made a network request")):
+            with patch("market_data._urlopen_official_market_data", side_effect=AssertionError("cache hit made a network request")):
                 with self.assertRaises(MarketDataError) as captured:
                     fetch_month("TWSE", "2330", date(2024, 2, 1), cache_directory)
 
@@ -291,7 +344,7 @@ class MarketDataFetchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_directory = Path(temporary_directory) / "market-data"
             cache_path = cache_directory / "TWSE" / "2330" / "2024-02.json"
-            with patch("market_data.urlopen", return_value=FakeResponse(200, body)):
+            with patch("market_data._urlopen_official_market_data", return_value=FakeResponse(200, body)):
                 with self.assertRaises(MarketDataError) as captured:
                     fetch_month("TWSE", "2330", date(2024, 2, 1), cache_directory)
 
@@ -305,7 +358,7 @@ class MarketDataFetchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_directory = Path(temporary_directory) / "market-data"
             cache_path = cache_directory / "TWSE" / "2330" / "2024-01.json"
-            with patch("market_data.urlopen", return_value=FakeResponse(200, body)):
+            with patch("market_data._urlopen_official_market_data", return_value=FakeResponse(200, body)):
                 with patch.object(Path, "replace", side_effect=OSError("simulated replace failure")):
                     with self.assertRaises(MarketDataError) as captured:
                         fetch_month("TWSE", "2330", date(2024, 1, 1), cache_directory)
@@ -326,7 +379,7 @@ class MarketDataFetchTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_directory = Path(temporary_directory) / "market-data"
-            with patch("market_data.urlopen", side_effect=open_response):
+            with patch("market_data._urlopen_official_market_data", side_effect=open_response):
                 bars = fetch_month("TPEX", "5483", date(2024, 1, 31), cache_directory)
 
             cache_path = cache_directory / "TPEX" / "5483" / "2024-01.json"
@@ -339,7 +392,7 @@ class MarketDataFetchTests(unittest.TestCase):
 
     def test_fetch_month_reports_non_ok_http_status_with_context(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("market_data.urlopen", return_value=FakeResponse(503, b"service unavailable")):
+            with patch("market_data._urlopen_official_market_data", return_value=FakeResponse(503, b"service unavailable")):
                 with self.assertRaises(MarketDataError) as captured:
                     fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
 
@@ -347,7 +400,7 @@ class MarketDataFetchTests(unittest.TestCase):
 
     def test_fetch_month_reports_network_failure_with_context(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("market_data.urlopen", side_effect=URLError("certificate verification failed")):
+            with patch("market_data._urlopen_official_market_data", side_effect=URLError("certificate verification failed")):
                 with self.assertRaises(MarketDataError) as captured:
                     fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
 
@@ -358,7 +411,7 @@ class MarketDataFetchTests(unittest.TestCase):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("market_data.urlopen", return_value=FakeResponse(200, body)):
+            with patch("market_data._urlopen_official_market_data", return_value=FakeResponse(200, body)):
                 with self.assertRaises(MarketDataError) as captured:
                     fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
 
@@ -370,7 +423,7 @@ class MarketDataFetchTests(unittest.TestCase):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("market_data.urlopen", return_value=FakeResponse(200, body)):
+            with patch("market_data._urlopen_official_market_data", return_value=FakeResponse(200, body)):
                 with self.assertRaises(MarketDataError) as captured:
                     fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
 
@@ -380,7 +433,7 @@ class MarketDataFetchTests(unittest.TestCase):
         body = b'{"stat":"OK","fields":[]}'
 
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("market_data.urlopen", return_value=FakeResponse(200, body)):
+            with patch("market_data._urlopen_official_market_data", return_value=FakeResponse(200, body)):
                 with self.assertRaises(MarketDataError) as captured:
                     fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
 
@@ -393,7 +446,7 @@ class MarketDataFetchTests(unittest.TestCase):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("market_data.urlopen", return_value=FakeResponse(200, body)):
+            with patch("market_data._urlopen_official_market_data", return_value=FakeResponse(200, body)):
                 with self.assertRaises(MarketDataError) as captured:
                     fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
 

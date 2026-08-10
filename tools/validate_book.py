@@ -50,7 +50,7 @@ CAPSTONE_LEAKAGE_FIELDS = ("output", "alt_text")
 CAPSTONE_LEAKAGE_TOKENS = ("result", "winner", "failed", "profit", "loss", "上漲", "下跌")
 RAW_TEX_COMMAND_PATTERN = re.compile(
     r"(?:"
-    r"\\(?:geq|leq|ge|le|sum|times|frac|sqrt|infty|cdot|quad|qquad|text|right|left|lambda|alpha|beta|sigma|mu|Delta|operatorname|max|min|pm)\b"
+    r"\\(?:geq|leq|ge|le|sum|times|frac|sqrt|infty|cdot|quad|qquad|text|right|left|lvert|rvert|lambda|alpha|beta|sigma|mu|Delta|operatorname|max|min|pm)\b"
     r"|\\[()]"
     r"|\b[A-Za-z][A-Za-z0-9]*_(?:\{[^{}\n]+\}|[A-Za-z0-9](?![A-Za-z0-9_]))"
     r")"
@@ -228,6 +228,30 @@ def _validate_malformed_inline_math(
                 _line_number(markdown, match.start()),
             )
         )
+
+
+def _validate_table_math_pipes(
+    markdown: str,
+    relative_path: str,
+    issues: list[ValidationIssue],
+) -> None:
+    """拒絕表格行內數學中的裸直線，避免 GitHub 將它切成欄位。"""
+
+    offset = 0
+    for line in markdown.splitlines(keepends=True):
+        if line.lstrip().startswith("|"):
+            for math_match in INLINE_DOLLAR_MATH_PATTERN.finditer(line):
+                if re.search(r"(?<!\\)\|", math_match.group(0)):
+                    issues.append(
+                        ValidationIssue(
+                            relative_path,
+                            "unescaped-table-math-pipe",
+                            "Markdown 表格的數學式不得使用裸直線；請改用 \\lvert 與 \\rvert",
+                            _line_number(markdown, offset + math_match.start()),
+                        )
+                    )
+                    break
+        offset += len(line)
 
 
 def _link_destination(destination: str) -> str:
@@ -565,6 +589,7 @@ def validate_book(root: Path, mode: Literal["draft", "release"]) -> list[Validat
             _validate_fixed_eight_steps(visible_markdown, relative_path, issues)
 
         _validate_malformed_inline_math(visible_markdown, relative_path, issues)
+        _validate_table_math_pipes(visible_markdown, relative_path, issues)
         _validate_markdown_links(path, relative_path, visible_markdown, issues)
         _validate_figure_specs(visible_markdown, relative_path, issues, figure_ids, figure_outputs)
         _validate_capstone_answer_leakage(visible_markdown, relative_path, issues)

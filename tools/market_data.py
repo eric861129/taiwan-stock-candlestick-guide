@@ -9,7 +9,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Callable, Literal, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 
 MISSING_PRICE_MARKERS = frozenset({"", "-", "--", "---", "N/A", "NA", "無", "—"})
@@ -44,16 +44,63 @@ class _PayloadError(ValueError):
         super().__init__(detail)
 
 
+def _is_official_https_url(url: str, official_host: str) -> bool:
+    parsed_url = urlparse(url)
+    try:
+        port = parsed_url.port
+    except ValueError:
+        return False
+    return (
+        parsed_url.scheme == "https"
+        and parsed_url.hostname == official_host
+        and port in {None, 443}
+        and parsed_url.username is None
+        and parsed_url.password is None
+    )
+
+
+class _OfficialMarketRedirectHandler(HTTPRedirectHandler):
+    """只允許官方 HTTPS 主機內部轉址，避免相容 context 外溢。"""
+
+    def __init__(self, official_host: str):
+        self.official_host = official_host
+
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        if not _is_official_https_url(new_url, self.official_host):
+            raise HTTPError(
+                new_url,
+                code,
+                "redirect target must use the same official HTTPS host",
+                headers,
+                fp,
+            )
+        return super().redirect_request(request, fp, code, message, headers, new_url)
+
+
+def _urlopen_official_market_data(request: Request, timeout: int, context: ssl.SSLContext | None = None):
+    request_host = urlparse(request.full_url).hostname
+    if request_host not in MARKET_DATA_HOSTS.values() or not _is_official_https_url(request.full_url, request_host):
+        raise URLError("market data request must use an official HTTPS host")
+
+    handlers: list[Any] = [_OfficialMarketRedirectHandler(request_host)]
+    if context is not None:
+        handlers.append(HTTPSHandler(context=context))
+    return build_opener(*handlers).open(request, timeout=timeout)
+
+
 def _open_market_data(request: Request, market: str):
     """以完整憑證驗證連線；僅針對官方市場來源的舊憑證格式做受限相容重試。"""
 
+    official_host = MARKET_DATA_HOSTS.get(market)
+    if official_host is None or not _is_official_https_url(request.full_url, official_host):
+        raise URLError("market data request must match the selected official market host")
+
     try:
-        return urlopen(request, timeout=30)
+        return _urlopen_official_market_data(request, timeout=30)
     except URLError as error:
         reason = getattr(error, "reason", None)
         is_official_market_subject_key_identifier_error = (
-            urlparse(request.full_url).hostname == MARKET_DATA_HOSTS.get(market)
-            and isinstance(reason, ssl.SSLCertVerificationError)
+            isinstance(reason, ssl.SSLCertVerificationError)
             and getattr(reason, "verify_message", None) == "Missing Subject Key Identifier"
             and hasattr(ssl, "VERIFY_X509_STRICT")
         )
@@ -62,7 +109,7 @@ def _open_market_data(request: Request, market: str):
 
         compatibility_context = ssl.create_default_context()
         compatibility_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
-        return urlopen(request, timeout=30, context=compatibility_context)
+        return _urlopen_official_market_data(request, timeout=30, context=compatibility_context)
 
 
 def roc_to_date(value: str) -> date:

@@ -167,6 +167,34 @@ class ValidateBookTests(unittest.TestCase):
 
         self.assertIn("malformed-inline-math", rules)
 
+    def test_unescaped_absolute_value_pipe_inside_table_math_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8")
+                + "\n| 欄位 | 公式 |\n| --- | --- |\n| 實體 | $|C-O|$ |\n",
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertIn("unescaped-table-math-pipe", rules)
+
+    def test_lvert_rvert_inside_table_math_is_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8")
+                + "\n| 欄位 | 公式 |\n| --- | --- |\n| 實體 | $\\lvert C-O\\rvert$ |\n",
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertNotIn("unescaped-table-math-pipe", rules)
+
     def test_missing_required_section_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
