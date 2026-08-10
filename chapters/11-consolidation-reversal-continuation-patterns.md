@@ -70,7 +70,7 @@
 
 ## 歷史案例
 
-本例使用 [TWSE 2330 2024 年 5 月與 6 月日成交資訊](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240501&stockNo=2330) 的官方原始日資料，範圍為 2024-05-02 至**決策日** 2024-06-05。資料視窗停在 6/5；6/6 以後的 K 線、標籤和走勢都不在圖中。
+本例使用 TWSE 2330 的官方原始日資料；因端點按月回傳，取數工具依 metadata 的起訖日分別查詢 [2024 年 5 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240501&stockNo=2330) 與 [2024 年 6 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240601&stockNo=2330)，再篩選 2024-05-02 至**決策日** 2024-06-05。資料視窗停在 6/5；6/6 以後的 K 線、標籤和走勢都不在圖中。
 
 公司行動以 TWSE [除權息計算結果資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240501&endDate=20240612) 查核。該查詢在圖表期間內沒有 2330 記錄，因此 metadata 使用空陣列；MOPS 的 [除權息公告入口](https://mops.twse.com.tw/mops/web/t05st01)保留為公司公告交叉查核來源。這個檢查不為區間或突破指定成交者的原因。
 
@@ -87,7 +87,7 @@
   "end": "2024-06-05",
   "timeframe": "1d",
   "price_mode": "raw",
-  "source_url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240501&stockNo=2330",
+  "source_url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY",
   "checked_on": "2026-08-10",
   "corporate_actions": [],
   "annotations": [
