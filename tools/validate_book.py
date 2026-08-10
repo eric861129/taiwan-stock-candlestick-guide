@@ -43,6 +43,7 @@ DRAFT_MARKER_PATTERNS = tuple(
     for marker in DRAFT_MARKERS
 )
 EXPECTED_CHAPTER_KINDS = {chapter.path: chapter.kind for chapter in EXPECTED_CHAPTERS}
+IGNORED_WORKSPACE_DIRECTORIES = frozenset({".cache", ".git", ".superpowers", ".worktrees"})
 
 
 def _relative_path(root: Path, path: Path) -> str:
@@ -56,7 +57,13 @@ def _line_number(markdown: str, position: int) -> int:
 def _markdown_files(root: Path) -> tuple[Path, ...]:
     return tuple(
         sorted(
-            (path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".md"),
+            (
+                path
+                for path in root.rglob("*")
+                if path.is_file()
+                and path.suffix.lower() == ".md"
+                and not IGNORED_WORKSPACE_DIRECTORIES.intersection(path.relative_to(root).parts)
+            ),
             key=lambda path: path.as_posix().lower(),
         )
     )

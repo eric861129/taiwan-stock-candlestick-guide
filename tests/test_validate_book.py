@@ -34,6 +34,19 @@ class ValidateBookTests(unittest.TestCase):
 
         self.assertEqual([], issues)
 
+    def test_ignored_workspace_directories_are_not_scanned(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._write_valid_lesson(root)
+            for directory in (".cache", ".git", ".superpowers", ".worktrees"):
+                ignored_markdown = root / directory / "invalid.md"
+                ignored_markdown.parent.mkdir(parents=True)
+                ignored_markdown.write_bytes(b"\xff")
+
+            issues = validate_book(root, "draft")
+
+        self.assertEqual([], issues)
+
     def test_replacement_character_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
