@@ -8,7 +8,7 @@ import ssl
 from tempfile import NamedTemporaryFile
 from typing import Any, Callable, Literal, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -16,6 +16,10 @@ MISSING_PRICE_MARKERS = frozenset({"", "-", "--", "---", "N/A", "NA", "無", "�
 TWSE_STOCK_DAY_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY"
 TPEX_TRADING_STOCK_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock"
 USER_AGENT = "taiwan-stock-candlestick-guide/1.0 (educational market-data adapter)"
+MARKET_DATA_HOSTS = {
+    "TWSE": "www.twse.com.tw",
+    "TPEX": "www.tpex.org.tw",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,19 +45,19 @@ class _PayloadError(ValueError):
 
 
 def _open_market_data(request: Request, market: str):
-    """以完整憑證驗證連線；僅針對 TWSE 的舊憑證格式做受限相容重試。"""
+    """以完整憑證驗證連線；僅針對官方市場來源的舊憑證格式做受限相容重試。"""
 
     try:
         return urlopen(request, timeout=30)
     except URLError as error:
         reason = getattr(error, "reason", None)
-        is_twse_subject_key_identifier_error = (
-            market == "TWSE"
+        is_official_market_subject_key_identifier_error = (
+            urlparse(request.full_url).hostname == MARKET_DATA_HOSTS.get(market)
             and isinstance(reason, ssl.SSLCertVerificationError)
-            and "Missing Subject Key Identifier" in str(reason)
+            and getattr(reason, "verify_message", None) == "Missing Subject Key Identifier"
             and hasattr(ssl, "VERIFY_X509_STRICT")
         )
-        if not is_twse_subject_key_identifier_error:
+        if not is_official_market_subject_key_identifier_error:
             raise
 
         compatibility_context = ssl.create_default_context()

@@ -174,6 +174,7 @@ class MarketDataFetchTests(unittest.TestCase):
             1,
             "certificate verify failed: Missing Subject Key Identifier",
         )
+        certificate_error.verify_message = "Missing Subject Key Identifier"
 
         def open_response(request: object, timeout: object, context: object = None) -> FakeResponse:
             calls.append({"request": request, "timeout": timeout, "context": context})
@@ -195,18 +196,63 @@ class MarketDataFetchTests(unittest.TestCase):
         self.assertEqual(ssl.CERT_REQUIRED, retry_context.verify_mode)
         self.assertFalse(retry_context.verify_flags & ssl.VERIFY_X509_STRICT)
 
-    def test_missing_subject_key_identifier_retry_is_limited_to_twse(self):
+    def test_fetch_month_retries_tpex_without_x509_strict_for_missing_subject_key_identifier(self):
+        body = json.dumps(load_fixture("tpex_trading_stock_sample.json"), ensure_ascii=False).encode("utf-8")
+        calls: list[dict[str, object]] = []
         certificate_error = ssl.SSLCertVerificationError(
             1,
             "certificate verify failed: Missing Subject Key Identifier",
         )
+        certificate_error.verify_message = "Missing Subject Key Identifier"
+
+        def open_response(request: object, timeout: object, context: object = None) -> FakeResponse:
+            calls.append({"request": request, "timeout": timeout, "context": context})
+            if len(calls) == 1:
+                raise URLError(certificate_error)
+            return FakeResponse(200, body)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch("market_data.urlopen", side_effect=open_response):
+                bars = fetch_month("TPEX", "5483", date(2024, 1, 1), Path(temporary_directory))
+
+        retry_context = calls[1]["context"]
+        self.assertEqual(6_832_000, bars[0].volume)
+        self.assertEqual(2, len(calls))
+        self.assertIsNone(calls[0]["context"])
+        self.assertIsInstance(retry_context, ssl.SSLContext)
+        self.assertTrue(retry_context.check_hostname)
+        self.assertEqual(ssl.CERT_REQUIRED, retry_context.verify_mode)
+        self.assertFalse(retry_context.verify_flags & ssl.VERIFY_X509_STRICT)
+
+    def test_missing_subject_key_identifier_retry_requires_exact_verify_message(self):
+        certificate_error = ssl.SSLCertVerificationError(
+            1,
+            "certificate verify failed: Missing Subject Key Identifier; unrelated verification detail",
+        )
+        certificate_error.verify_message = "Missing Subject Key Identifier; unrelated verification detail"
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             with patch("market_data.urlopen", side_effect=URLError(certificate_error)) as open_mock:
                 with self.assertRaises(MarketDataError) as captured:
-                    fetch_month("TPEX", "3105", date(2024, 1, 1), Path(temporary_directory))
+                    fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
 
-        self._assert_context(captured.exception, "TPEX", "3105", "2024-01", "network")
+        self._assert_context(captured.exception, "TWSE", "2330", "2024-01", "network")
+        self.assertEqual(1, open_mock.call_count)
+
+    def test_missing_subject_key_identifier_retry_requires_official_market_host(self):
+        certificate_error = ssl.SSLCertVerificationError(
+            1,
+            "certificate verify failed: Missing Subject Key Identifier",
+        )
+        certificate_error.verify_message = "Missing Subject Key Identifier"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch("market_data.TWSE_STOCK_DAY_URL", "https://example.com/market-data"):
+                with patch("market_data.urlopen", side_effect=URLError(certificate_error)) as open_mock:
+                    with self.assertRaises(MarketDataError) as captured:
+                        fetch_month("TWSE", "2330", date(2024, 1, 1), Path(temporary_directory))
+
+        self._assert_context(captured.exception, "TWSE", "2330", "2024-01", "network")
         self.assertEqual(1, open_mock.call_count)
 
     def test_fetch_month_cache_hit_avoids_network(self):
