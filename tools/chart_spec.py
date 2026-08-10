@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
+import ntpath
 from pathlib import Path, PurePosixPath
 import re
 from typing import Literal, TypeAlias
@@ -31,11 +32,6 @@ _HISTORICAL_FIELDS = (
     "corporate_actions",
 )
 _SUPPORTED_INDICATORS = frozenset({"sma", "ema", "atr", "rsi", "kd", "macd", "bollinger"})
-_WINDOWS_RESERVED_NAMES = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{number}" for number in range(1, 10)}
-    | {f"LPT{number}" for number in range(1, 10)}
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,7 +271,7 @@ def _output_path(value: object) -> Path:
     if len(path.parts) < 3 or path.parts[:2] != ("assets", "figures"):
         _fail("output", "must be strictly under assets/figures/")
     for part in path.parts:
-        if ":" in part or part.rstrip(" .") != part or PurePosixPath(part).stem.upper() in _WINDOWS_RESERVED_NAMES:
+        if ntpath.isreserved(part):
             _fail("output", "contains a Windows drive, device, or unsafe path component")
     if path.suffix != ".svg" or path.name == ".svg":
         _fail("output", "must have a .svg extension")

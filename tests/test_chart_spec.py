@@ -84,6 +84,9 @@ class ChartSpecTests(unittest.TestCase):
             ("output", "assets/figures/C:/outside.svg"),
             ("output", "assets/figures/con.svg"),
             ("output", "assets/figures/chart:stream.svg"),
+            ("output", "assets/figures/CONIN$.svg"),
+            ("output", "assets/figures/COM1.foo.svg"),
+            ("output", "assets/figures/chart?.svg"),
         )
 
         for field, value in cases:
