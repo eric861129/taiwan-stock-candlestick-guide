@@ -49,11 +49,15 @@ CAPSTONE_SCORING_HEADING = "評分"
 CAPSTONE_LEAKAGE_FIELDS = ("output", "alt_text")
 CAPSTONE_LEAKAGE_TOKENS = ("result", "winner", "failed", "profit", "loss", "上漲", "下跌")
 RAW_TEX_COMMAND_PATTERN = re.compile(
-    r"(?:\\(?:geq|leq|sum|times|frac|sqrt|infty|cdot|quad|qquad|text|right|left|lambda|alpha|beta|sigma|mu|Delta|operatorname|max|min|pm)\b|\\[()])"
+    r"(?:"
+    r"\\(?:geq|leq|ge|le|sum|times|frac|sqrt|infty|cdot|quad|qquad|text|right|left|lambda|alpha|beta|sigma|mu|Delta|operatorname|max|min|pm)\b"
+    r"|\\[()]"
+    r"|\b[A-Za-z][A-Za-z0-9]*_(?:\{[^{}\n]+\}|[A-Za-z0-9](?![A-Za-z0-9_]))"
+    r")"
 )
 DISPLAY_MATH_PATTERN = re.compile(r"\$\$.*?\$\$", re.DOTALL)
 INLINE_DOLLAR_MATH_PATTERN = re.compile(r"(?<!\\)\$(?!\$)[^\n$]+(?<!\\)\$")
-INLINE_PAREN_MATH_PATTERN = re.compile(r"\\\([^\n]*?\\\)")
+INLINE_CODE_PATTERN = re.compile(r"(?<!`)`(?!`)[^`\n]+(?<!`)`(?!`)")
 
 HEADING_PATTERN = re.compile(r"^(?P<level>#{1,6})[ \t]+(?P<title>.+?)\s*$", re.MULTILINE)
 HEADING_LINE_PATTERN = re.compile(r"^\s*#{1,6}(?:\s|$)")
@@ -213,7 +217,8 @@ def _validate_malformed_inline_math(
 
     prose = _mask_pattern_matches(markdown, DISPLAY_MATH_PATTERN)
     prose = _mask_pattern_matches(prose, INLINE_DOLLAR_MATH_PATTERN)
-    prose = _mask_pattern_matches(prose, INLINE_PAREN_MATH_PATTERN)
+    prose = _mask_pattern_matches(prose, INLINE_CODE_PATTERN)
+    prose = _mask_pattern_matches(prose, FIGURE_SPEC_PATTERN)
     for match in RAW_TEX_COMMAND_PATTERN.finditer(prose):
         issues.append(
             ValidationIssue(

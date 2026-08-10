@@ -26,13 +26,13 @@ $$
 
 ### KD：收盤在區間中的位置
 
-以期間 (n) 的最高 (H_n)、最低 (L_n) 和收盤 (C_t)：
+以期間 $n$ 的最高 $H_n$、最低 $L_n$ 和收盤 $C_t$：
 
 $$
 K_{raw}=100\times\frac{C_t-L_n}{H_n-L_n}
 $$
 
-區間為 0 時本專案採 50。接著用 `smooth_k` 期 SMA 平滑 raw %K，再用 `smooth_d` 期 SMA 平滑 %K 得 %D；預設教學例用 (n=9, smooth_k=3, smooth_d=3)，第一個 %K 在 (n+smooth_k-1) 根、第一個 %D 再多 (smooth_d-1) 根才出現。KD 落在 0 到 100，於高檔可以長時間鈍化。
+區間為 0 時本專案採 50。接著用 `smooth_k` 期 SMA 平滑 raw %K，再用 `smooth_d` 期 SMA 平滑 %K 得 %D；預設教學例用 `n=9`、`smooth_k=3`、`smooth_d=3`，第一個 %K 在第 `n+smooth_k-1` 根、第一個 %D 再多 `smooth_d-1` 根才出現。KD 落在 0 到 100，於高檔可以長時間鈍化。
 
 ### MACD：兩條 EMA 的差
 

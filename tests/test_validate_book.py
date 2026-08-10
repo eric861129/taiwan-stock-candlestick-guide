@@ -126,6 +126,47 @@ class ValidateBookTests(unittest.TestCase):
 
         self.assertIn("malformed-inline-math", rules)
 
+    def test_tex_subscripts_and_short_commands_outside_math_delimiters_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8")
+                + "\n裸下標：(P_{entry})、(C_t)、(EMA_4)、(r_{unit}\\le0)。\n",
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertIn("malformed-inline-math", rules)
+
+    def test_delimited_math_and_inline_code_with_tex_like_text_are_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8")
+                + "\n正確：$P_{entry}$、$C_t$、`EMA_4`、`r_{unit}\\times x`。\n",
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertNotIn("malformed-inline-math", rules)
+
+    def test_backslash_parenthesis_math_delimiters_are_rejected_for_github_markdown(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8") + "\nGitHub 不保證：\\(C_t\\)。\n",
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertIn("malformed-inline-math", rules)
+
     def test_missing_required_section_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
