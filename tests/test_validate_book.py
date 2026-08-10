@@ -15,6 +15,16 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "valid_lesson.md"
 LESSON_PATH = Path("chapters/01-what-candlesticks-can-and-cannot-answer.md")
 CAPSTONE_PATH = Path("chapters/20-capstone-ten-cases.md")
 REPLAY_LAB_PATH = Path("chapters/19-progressive-chart-replay-lab.md")
+FIXED_EIGHT_STEP_CONTENT = """開始前先核對資料有效性與時間週期。
+
+1. **大方向**：描述可觀察的背景。
+2. **所在位置**：標出可重現的位置。
+3. **量價反應**：保留量價與流動性證據。
+4. **交易情境**：列出條件式解讀。
+5. **觸發條件**：寫出行動條件。
+6. **失效條件**：寫出推翻條件。
+7. **風險計算**：核對部位與成本。
+8. **事後檢討**：保存決策證據。"""
 
 
 class ValidateBookTests(unittest.TestCase):
@@ -38,6 +48,10 @@ class ValidateBookTests(unittest.TestCase):
                     "## 學習指示",
                     "",
                     "依序完成判讀。",
+                    "",
+                    "## 八步判讀",
+                    "",
+                    FIXED_EIGHT_STEP_CONTENT,
                     "",
                     "## 案例",
                     "",
@@ -111,6 +125,22 @@ class ValidateBookTests(unittest.TestCase):
             rules = self._rules(root)
 
         self.assertIn("required-section", rules)
+
+    def test_fixed_eight_steps_require_canonical_labels_in_order(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8").replace(
+                    "8. **事後檢討**：保存決策當下證據，供之後檢查流程。",
+                    "8. **回顧**：保存決策當下證據，供之後檢查流程。",
+                ),
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertIn("fixed-eight-step", rules)
 
     def test_empty_image_alt_text_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -310,6 +340,19 @@ class ValidateBookTests(unittest.TestCase):
 
 依序完成判讀。
 
+## 八步判讀
+
+開始前先核對資料有效性與時間週期。
+
+1. **大方向**：描述可觀察的背景。
+2. **所在位置**：標出可重現的位置。
+3. **量價反應**：保留量價與流動性證據。
+4. **交易情境**：列出條件式解讀。
+5. **觸發條件**：寫出行動條件。
+6. **失效條件**：寫出推翻條件。
+7. **風險計算**：核對部位與成本。
+8. **事後檢討**：保存決策證據。
+
 ## 案例
 
 案例內容。
@@ -334,6 +377,22 @@ class ValidateBookTests(unittest.TestCase):
             rules = self._rules(root)
 
         self.assertIn("required-section", rules)
+
+    def test_lab_requires_fixed_eight_step_section(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lab_path = self._write_lab(root, REPLAY_LAB_PATH, "案例內容。")
+            lab_path.write_text(
+                lab_path.read_text(encoding="utf-8").replace(
+                    f"## 八步判讀\n\n{FIXED_EIGHT_STEP_CONTENT}\n\n",
+                    "",
+                ),
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertIn("fixed-eight-step", rules)
 
     def test_draft_marker_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

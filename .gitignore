@@ -1,5 +1,6 @@
 .superpowers/
 .cache/
 .worktrees/
+.playwright-cli/
 __pycache__/
 *.py[cod]

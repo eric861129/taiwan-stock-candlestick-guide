@@ -22,6 +22,16 @@ LESSON_REQUIRED_SECTIONS = (
     "重點、限制與來源",
 )
 LAB_REQUIRED_SECTIONS = ("學習指示", "案例", "評分", "來源")
+FIXED_EIGHT_STEP_LABELS = (
+    "大方向",
+    "所在位置",
+    "量價反應",
+    "交易情境",
+    "觸發條件",
+    "失效條件",
+    "風險計算",
+    "事後檢討",
+)
 HISTORICAL_STRING_FIELDS = (
     "market",
     "symbol",
@@ -130,6 +140,47 @@ def _validate_required_sections(
                     "required-section",
                     f"必要段落不得留白：{required_section}",
                     _line_number(markdown, headings[matching_index].start()),
+                )
+            )
+
+
+def _validate_fixed_eight_steps(markdown: str, relative_path: str, issues: list[ValidationIssue]) -> None:
+    """驗證每一章都以已核准的八步順序提供可執行判讀。"""
+
+    headings = list(HEADING_PATTERN.finditer(markdown))
+    section_index = next(
+        (
+            index
+            for index, heading in enumerate(headings)
+            if len(heading.group("level")) == 2 and _normalized_heading_title(heading) == "八步判讀"
+        ),
+        None,
+    )
+    if section_index is None:
+        issues.append(
+            ValidationIssue(relative_path, "fixed-eight-step", "缺少固定八步判讀段落：八步判讀")
+        )
+        return
+
+    section_start = headings[section_index].end()
+    section_end = len(markdown)
+    for following_heading in headings[section_index + 1 :]:
+        if len(following_heading.group("level")) <= 2:
+            section_end = following_heading.start()
+            break
+
+    section = markdown[section_start:section_end]
+    for ordinal, label in enumerate(FIXED_EIGHT_STEP_LABELS, start=1):
+        pattern = re.compile(
+            rf"(?m)^[ \t]*{ordinal}\.[ \t]+\*\*{re.escape(label)}\*\*(?:[：:]|[ \t]|$)"
+        )
+        if pattern.search(section) is None:
+            issues.append(
+                ValidationIssue(
+                    relative_path,
+                    "fixed-eight-step",
+                    f"八步判讀第 {ordinal} 步必須是：{label}",
+                    _line_number(markdown, headings[section_index].start()),
                 )
             )
 
@@ -399,6 +450,9 @@ def validate_book(root: Path, mode: Literal["draft", "release"]) -> list[Validat
             _validate_required_sections(visible_markdown, LESSON_REQUIRED_SECTIONS, relative_path, issues)
         elif chapter_kind == "lab":
             _validate_required_sections(visible_markdown, LAB_REQUIRED_SECTIONS, relative_path, issues)
+
+        if chapter_kind in {"lesson", "lab"}:
+            _validate_fixed_eight_steps(visible_markdown, relative_path, issues)
 
         _validate_markdown_links(path, relative_path, visible_markdown, issues)
         _validate_figure_specs(visible_markdown, relative_path, issues, figure_ids, figure_outputs)
