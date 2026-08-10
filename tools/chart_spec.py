@@ -271,7 +271,7 @@ def _output_path(value: object) -> Path:
     if len(path.parts) < 3 or path.parts[:2] != ("assets", "figures"):
         _fail("output", "must be strictly under assets/figures/")
     for part in path.parts:
-        if ntpath.isreserved(part):
+        if ":" in part or ntpath.isreserved(part):
             _fail("output", "contains a Windows drive, device, or unsafe path component")
     if path.suffix != ".svg" or path.name == ".svg":
         _fail("output", "must have a .svg extension")
