@@ -42,9 +42,12 @@
    - [第 15 章：情境、觸發、失效與放棄交易](chapters/15-scenarios-triggers-invalidation-no-trade.md)
    - [第 16 章：停損、部位、R 倍數、期望值與成本](chapters/16-stops-position-sizing-r-multiple-expectancy-costs.md)
    - [附錄 B：公式與工作表](chapters/appendix-b-formulas-and-worksheets.md)
-5. Part V：面對真實市場（規劃中，尚未建立；含案例實驗室與能力驗收）
+5. Part V：面對真實市場
+   - [第 17 章：K 線看不到的財報、消息與制度事件](chapters/17-what-candlesticks-cannot-see.md)
+   - [第 18 章：心理偏誤、交易紀錄與紙上交易](chapters/18-psychology-journal-paper-trading.md)
+   - [附錄 D：詞彙表](chapters/appendix-d-glossary.md)
 
-名詞以目前的 [CONTEXT.md](CONTEXT.md) 為準；附錄 D 為規劃中的詞彙表，尚未建立。
+名詞以目前的 [CONTEXT.md](CONTEXT.md) 為準；[附錄 D：詞彙表](chapters/appendix-d-glossary.md)由 `CONTEXT.md` 產生，請勿手動修改。
 
 ## 資料與版本原則
 
