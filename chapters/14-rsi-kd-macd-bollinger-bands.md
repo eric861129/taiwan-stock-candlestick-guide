@@ -118,7 +118,7 @@ $$
 
 ## 歷史案例
 
-以 TWSE 2330 的官方原始日資料觀察 2024-03-01 至 2024-04-30，決策日為 4 月 30 日。先以 [TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY) 取得 OHLCV，再查 [除權除息資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U) 與 [MOPS](https://mops.twse.com.tw/mops/web/t05st01)；圖規格的 `corporate_actions` 為空清單代表本次窗口查核後未列入事件。
+以 TWSE 2330 的官方原始日資料觀察 2024-03-01 至 2024-04-30，決策日為 4 月 30 日。OHLCV 分別取自 TWSE [2024 年 3 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240301&stockNo=2330)與[4 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240401&stockNo=2330)每日收盤行情。再查 [除權除息資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240301&endDate=20240430)與 [MOPS](https://mops.twse.com.tw/mops/web/t05st01)，確認 2024-03-18 為現金股利除息日：除息前收盤 753.00 元、參考價 749.50 元、息值 3.499789 元。圖與指標使用原始價格，跨越事件時須保留這項機械調整註記。
 
 <!-- figure-spec
 {
@@ -133,14 +133,14 @@ $$
   "end":"2024-04-30",
   "timeframe":"1d",
   "price_mode":"raw",
-  "source_url":"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240401&stockNo=2330",
+  "source_url":"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY",
   "checked_on":"2026-08-10",
-  "corporate_actions":[],
+  "corporate_actions":["2024-03-18 現金股利除息；TWSE 除權息計算結果列示除息前收盤 753.00 元、參考價 749.50 元、息值 3.499789 元。"],
   "indicators":[{"type":"rsi","period":14},{"type":"kd","period":9,"smooth_k":3,"smooth_d":3},{"type":"macd","fast":12,"slow":26,"signal":9},{"type":"bollinger","period":20,"deviations":2}],
   "annotations":[
     {"type":"zone","start":"2024-04-01","end":"2024-04-15","low":735,"high":800,"label":"指標共用同一價格資訊"},
-    {"type":"label","date":"2024-04-19","price":760,"label":"RSI/KD 轉弱仍需結構觸發"},
-    {"type":"zone","start":"2024-04-23","end":"2024-04-30","low":730,"high":790,"label":"決策日：分歧未解除"}
+    {"type":"label","date":"2024-04-19","price":720,"label":"指標轉弱，等待結構"},
+    {"type":"zone","start":"2024-04-23","end":"2024-04-30","low":730,"high":790,"label":"決策區：分歧"}
   ]
 }
 -->
@@ -169,9 +169,9 @@ $$
 3. **市場狀態**：先分趨勢、區間、波動擴張，不以超買超賣命名狀態。
 4. **位置**：將讀值放到前高、前低、區域與可用空間。
 5. **K 線／結構**：用收盤與區域的關係確認觸發或失效。
-6. **成交量／流動性**：指標沒有委託深度；補查量、價差與可成交性。
+6. **量價關係／流動性**：指標沒有委託深度；補查量、價差與可成交性。
 7. **情境、觸發、失效**：先寫條件，再決定是否採用指標作為確認。
-8. **風險／放棄交易**：分歧未解除、成本不明或失效距離過大時放棄。
+8. **風險／不交易條件**：分歧未解除、成本不明或失效距離過大時放棄。
 
 ## 練習
 
@@ -181,15 +181,15 @@ $$
 2. 條件：寫出「若價格收盤維持區域上方且 MACD 柱狀圖不再縮短」的多方分支，及一個分歧持續的不交易分支。
 3. 風險：說明為何 RSI 高檔或 KD 交叉本身不構成下單授權。
 
-<details>
-<summary>參考答案與評分方向</summary>
-
-每項能引用決策日前的可重現讀值或區域得 2 分；能指出四種指標共享價格資料、寫出觸發與失效得 3 分；能以成本、距離或資料缺口提出不交易得 1 分。不得用後續走勢判分。
-</details>
-
 ## 答案與評分
 
-滿分 10 分：公式與暖機 3 分、比較表中的重疊理解 2 分、情境條件 3 分、風險與不交易 2 分。把「超買」直接等同賣出，視為概念錯誤。
+<details>
+<summary>展開參考答案與評分</summary>
+
+2024-04-29 到 4 月 30 日，收盤由 795 降至 790 元，RSI(14) 約由 56.48 降至 55.05；平滑 %K 約由 58.23 升至 70.00，%D 約由 47.02 升至 58.98；MACD 約由 2.69 升至 3.22，但訊號線約由 5.82 降至 5.30，柱狀圖仍為負值、約由 -3.13 收斂至 -2.08；布林中線約由 787.40 升至 787.95。暖機已完成，但方向並不一致。多方分支仍須等待價格收盤維持區域上方，並由結構與量價條件確認；若分歧持續、失效距離過大或成交成本未知，維持不交易。RSI 高檔與 KD 交叉只是同一價格資料的摘要，不能單獨授權下單。
+
+滿分 10 分：公式與暖機 3 分、比較表中的重疊理解 2 分、情境條件 3 分、風險與不交易 2 分。把「超買」直接等同賣出，視為概念錯誤；不得用 4 月 30 日之後的走勢判分。
+</details>
 
 ## 重點、限制與來源
 

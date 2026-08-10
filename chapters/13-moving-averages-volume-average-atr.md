@@ -87,7 +87,7 @@ $$
   "annotations":[
     {"type":"zone","start":"2024-01-08","end":"2024-01-10","low":103,"high":112,"label":"ATR 擴大但方向先不下結論"},
     {"type":"label","date":"2024-01-09","price":114,"label":"放量：仍須看收盤與流動性"},
-    {"type":"label","date":"2024-01-15","price":99,"label":"均線延遲；不可當轉折鐘"}
+    {"type":"label","date":"2024-01-15","price":99,"label":"均線延遲，非轉折"}
   ]
 }
 -->
@@ -96,7 +96,7 @@ $$
 
 ## 歷史案例
 
-案例使用 TWSE 2330 的官方原始日資料，決策日為 2024-03-29；資料窗口從 2024-01-02 開始，保留足夠的均線與 ATR 暖機。公司行動先查 [TWSE 除權除息資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U) 與 [MOPS 公告](https://mops.twse.com.tw/mops/web/t05st01)，本窗口未將已確認事件誤標成一般波動，`corporate_actions` 以空清單記錄查核結果。
+案例使用 TWSE 2330 的官方原始日資料，決策日為 2024-03-29；資料窗口從 2024-01-02 開始，保留足夠的均線與 ATR 暖機。OHLCV 分別取自 TWSE [2024 年 1 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240101&stockNo=2330)、[2 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240201&stockNo=2330)與[3 月](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240301&stockNo=2330)的每日收盤行情。再查 [TWSE 除權除息資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240101&endDate=20240329)與 [MOPS 公告](https://mops.twse.com.tw/mops/web/t05st01)，確認 2024-03-18 為現金股利除息日：除息前收盤 753.00 元、參考價 749.50 元、息值 3.499789 元。圖與指標使用原始價格，跨越事件時必須把參考價的機械調整與一般供需波動分開。
 
 <!-- figure-spec
 {
@@ -111,14 +111,14 @@ $$
   "end":"2024-03-29",
   "timeframe":"1d",
   "price_mode":"raw",
-  "source_url":"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240301&stockNo=2330",
+  "source_url":"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY",
   "checked_on":"2026-08-10",
-  "corporate_actions":[],
+  "corporate_actions":["2024-03-18 現金股利除息；TWSE 除權息計算結果列示除息前收盤 753.00 元、參考價 749.50 元、息值 3.499789 元。"],
   "indicators":[{"type":"sma","period":20},{"type":"ema","period":20},{"type":"atr","period":14}],
   "annotations":[
     {"type":"zone","start":"2024-02-19","end":"2024-03-08","low":610,"high":660,"label":"均線接近；價格空間仍要看區域"},
-    {"type":"label","date":"2024-03-13","price":790,"label":"ATR 擴大不等於方向成立"},
-    {"type":"zone","start":"2024-03-18","end":"2024-03-29","low":745,"high":810,"label":"決策日：條件式觀察"}
+    {"type":"label","date":"2024-03-13","price":720,"label":"ATR 擴張，方向未定"},
+    {"type":"zone","start":"2024-03-18","end":"2024-03-29","low":745,"high":810,"label":"決策區：條件觀察"}
   ]
 }
 -->
@@ -138,9 +138,9 @@ $$
 3. **市場狀態**：分開描述方向、波動、流動性，不把 ATR 當方向。
 4. **位置**：找前高、前低、區域與可用價格空間。
 5. **K 線／結構**：說明收盤位置、影線與均線距離，不只說「站上」。
-6. **成交量／流動性**：用同標的同期間均量，並說明價差與成交深度是否未知。
+6. **量價關係／流動性**：用同標的同期間均量，並說明價差與成交深度是否未知。
 7. **情境、觸發、失效**：例如收盤突破區域才觸發；回到區域內則失效。
-8. **風險／放棄交易**：由失效點推導風險，若空間不足或資料缺失就不交易。
+8. **風險／不交易條件**：由失效點推導風險，若空間不足或資料缺失就不交易。
 
 ## 練習
 
@@ -150,15 +150,15 @@ $$
 2. 條件層：寫一個多方與一個不交易情境，各自列觸發與失效；不要用「均線上彎所以買」。
 3. 風險層：若結構失效點距離太遠，說明哪個資料或成本會讓計畫放棄。
 
-<details>
-<summary>參考答案與評分方向</summary>
-
-答案只檢查決策日前的證據。能正確指出暖機、ATR 無方向、均量窗口與可用空間各 2 分；情境包含觸發和失效各 2 分；指出價差、成本或風險過大而放棄 2 分。後續價格上漲或下跌不加分。
-</details>
-
 ## 答案與評分
 
-滿分 10 分：資料與公式 3 分、八步觀察 3 分、條件分支 2 分、風險與不交易理由 2 分。若把均線交叉或 ATR 倍數寫成保證訊號，該項不給分，因為那是把摘要誤當成獨立證據。
+<details>
+<summary>展開參考答案與評分</summary>
+
+2024-03-29 收盤為 779 元，SMA(20) 約 766.40 元、EMA(20) 約 757.54 元；ATR(14) 由 3 月 28 日約 15.59 元降至約 15.41 元，只能說波動幅度略收斂。當日成交量 20,212,820 股，低於前 5 個交易日均量 29,016,412.8 股，不能寫成放量確認。多方分支可寫「日線收盤突破決策區上緣，且量能與可成交性補齊後才觸發；收盤回到區內失效」；若失效距離過大、價差／深度未知或扣除成本後空間不足，維持不交易。3 月 18 日另有現金股利除息，原始價格讀值要保留事件註記。
+
+滿分 10 分：資料與公式 3 分、八步觀察 3 分、條件分支 2 分、風險與不交易理由 2 分。若把均線交叉或 ATR 倍數寫成保證訊號，該項不給分；答案只以決策日前證據評分，不看後續漲跌。
+</details>
 
 ## 重點、限制與來源
 
