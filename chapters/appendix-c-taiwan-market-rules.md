@@ -28,14 +28,14 @@
 
 | 價格區間 | 升降單位 | 類別 | 官方來源與查核 |
 | --- | --- | --- | --- |
-| 0.01 元至未滿 5 元 | 0.01 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
-| 5 元至未滿 10 元 | 0.05 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
+| 0.01 元至未滿 10 元 | 0.01 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
 | 10 元至未滿 50 元 | 0.05 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
 | 50 元至未滿 100 元 | 0.10 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
-| 100 元至未滿 150 元 | 0.50 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
-| 150 元至未滿 500 元 | 1 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
+| 100 元至未滿 500 元 | 0.50 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
 | 500 元至未滿 1,000 元 | 1 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
 | 1,000 元以上 | 5 元 | 交易所規則 | [TWSE 交易制度](https://www.twse.com.tw/zh/products/system/trading.html?hl=zh-TW)；查核日期：2026-08-10 |
+
+上述普通股級距另可直接核對 [TWSE 營業細則第 62 條](https://twse-regulation.twse.com.tw/TW/law/DOC01_print.aspx?FLCODE=FL007304&FLNO=62)。同一張官方表另列權證、可轉換公司債與 ETF 等商品；不可把其他商品欄位的升降單位套到普通股。
 
 ### TPEx 上櫃普通股
 
