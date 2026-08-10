@@ -80,6 +80,11 @@ class IndicatorTests(unittest.TestCase):
 
         self.assertEqual((None, None, D("50"), D("50")), result)
 
+    def test_relative_strength_index_handles_later_zero_gain_and_loss_periods(self):
+        result = relative_strength_index(tuple(map(D, (1, 2, 2, 1, 1))), 1)
+
+        self.assertEqual((None, D("100"), D("50"), D("0"), D("50")), result)
+
     def test_stochastic_kd_handles_flat_window_and_smoothing_warmup(self):
         bars = bars_from_rows(
             [
@@ -120,6 +125,20 @@ class IndicatorTests(unittest.TestCase):
         )
         self.assertEqual(expected, result)
 
+    def test_macd_signal_ema_updates_for_nonconstant_macd_values(self):
+        result = macd(tuple(map(D, (0, 0, 0, 6, 4))), fast=2, slow=3, signal=2)
+
+        self.assertEqual(
+            (
+                (None, None, None),
+                (None, None, None),
+                (D("0"), None, None),
+                (D("1"), D("0.5"), D("0.5")),
+                (D("0.5"), D("0.5"), D("0")),
+            ),
+            result,
+        )
+
     def test_bollinger_bands_use_population_standard_deviation(self):
         with localcontext() as context:
             context.prec = 40
@@ -144,6 +163,14 @@ class IndicatorTests(unittest.TestCase):
             average_true_range((), 1)
         with self.assertRaisesRegex(ValueError, "values"):
             relative_strength_index((D("1"), D("2")), 2)
+        with self.assertRaisesRegex(ValueError, "values"):
+            exponential_moving_average((D("1"),), 2)
+        with self.assertRaisesRegex(ValueError, "bars"):
+            stochastic_kd((), 1, 1, 1)
+        with self.assertRaisesRegex(ValueError, "values"):
+            macd((D("1"), D("2")), fast=1, slow=3, signal=1)
+        with self.assertRaisesRegex(ValueError, "values"):
+            bollinger_bands((D("1"),), 2, D("1"))
 
     def test_stochastic_rejects_invalid_smoothing_periods(self):
         bars = bars_from_rows([("1", "2", "1", "2")])
@@ -156,6 +183,8 @@ class IndicatorTests(unittest.TestCase):
     def test_macd_rejects_fast_period_not_below_slow_period(self):
         with self.assertRaisesRegex(ValueError, "fast.*slow"):
             macd(tuple(map(D, (1, 2, 3))), fast=3, slow=3, signal=1)
+        with self.assertRaisesRegex(ValueError, "signal"):
+            macd(tuple(map(D, (1, 2, 3))), fast=1, slow=2, signal=0)
 
     def test_bollinger_rejects_negative_and_non_finite_deviations(self):
         values = tuple(map(D, (1, 2, 3)))
@@ -164,6 +193,45 @@ class IndicatorTests(unittest.TestCase):
             bollinger_bands(values, 2, D("-1"))
         with self.assertRaisesRegex(ValueError, "deviations"):
             bollinger_bands(values, 2, D("NaN"))
+        with self.assertRaisesRegex(ValueError, "deviations"):
+            bollinger_bands(values, 2, D("Infinity"))
+
+    def test_all_indicators_keep_length_warmup_and_decimal_types_on_long_series(self):
+        values = tuple(D(index) for index in range(1, 31))
+        bars = bars_from_rows(
+            [(str(index), str(index + 1), str(index - 1), str(index)) for index in range(1, 31)]
+        )
+
+        single_series = (
+            simple_moving_average(values, 5),
+            exponential_moving_average(values, 5),
+            average_true_range(bars, 5),
+            relative_strength_index(values, 14),
+        )
+        pair_series = stochastic_kd(bars, period=5, smooth_k=3, smooth_d=3)
+        triple_series = (
+            macd(values, fast=3, slow=6, signal=4),
+            bollinger_bands(values, period=5, deviations=D("2")),
+        )
+
+        for series in (*single_series, pair_series, *triple_series):
+            self.assertEqual(len(values), len(series))
+        for series in single_series:
+            self.assertTrue(all(value is None or isinstance(value, Decimal) for value in series))
+        for series in (pair_series, *triple_series):
+            self.assertTrue(
+                all(value is None or isinstance(value, Decimal) for row in series for value in row)
+            )
+
+        self.assertEqual((None,) * 4, single_series[0][:4])
+        self.assertEqual((None,) * 14, single_series[3][:14])
+        self.assertEqual((None, None), pair_series[5])
+        self.assertIsNotNone(pair_series[6][0])
+        self.assertIsNone(pair_series[7][1])
+        self.assertIsNotNone(pair_series[8][1])
+        self.assertIsNotNone(triple_series[0][5][0])
+        self.assertIsNone(triple_series[0][7][1])
+        self.assertIsNotNone(triple_series[0][8][1])
 
 
 if __name__ == "__main__":
