@@ -49,7 +49,47 @@ EXPECTED_CHAPTERS = (
 
 
 FIGURE_SPEC_PATTERN = re.compile(r"<!-- figure-spec\s*(\{.*?\})\s*-->", re.DOTALL)
+FENCED_CODE_FENCE_PATTERN = re.compile(r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})")
+
+
+def mask_fenced_code(markdown: str) -> str:
+    """以空白遮蔽 fenced code，同時保留字元位置與換行。"""
+    characters = list(markdown)
+    opening_offset: int | None = None
+    fence_character = ""
+    fence_length = 0
+    offset = 0
+
+    for line in markdown.splitlines(keepends=True):
+        fence_match = FENCED_CODE_FENCE_PATTERN.match(line)
+        if opening_offset is None:
+            if fence_match is not None:
+                fence = fence_match.group("fence")
+                opening_offset = offset
+                fence_character = fence[0]
+                fence_length = len(fence)
+        elif (
+            fence_match is not None
+            and fence_match.group("fence")[0] == fence_character
+            and len(fence_match.group("fence")) >= fence_length
+        ):
+            _mask_range(characters, opening_offset, offset + len(line))
+            opening_offset = None
+
+        offset += len(line)
+
+    if opening_offset is not None:
+        _mask_range(characters, opening_offset, len(markdown))
+
+    return "".join(characters)
+
+
+def _mask_range(characters: list[str], start: int, end: int) -> None:
+    for index in range(start, end):
+        if characters[index] not in {"\r", "\n"}:
+            characters[index] = " "
 
 
 def extract_figure_specs(markdown: str) -> tuple[dict[str, object], ...]:
-    return tuple(json.loads(match) for match in FIGURE_SPEC_PATTERN.findall(markdown))
+    visible_markdown = mask_fenced_code(markdown)
+    return tuple(json.loads(match) for match in FIGURE_SPEC_PATTERN.findall(visible_markdown))

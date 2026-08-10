@@ -35,3 +35,17 @@ class BookContractTests(unittest.TestCase):
 
         self.assertEqual("synthetic-1", specs[0]["id"])
         self.assertEqual("可讀圖說", specs[0]["alt_text"])
+
+    def test_extract_figure_specs_ignores_fenced_examples(self):
+        markdown = '''```markdown
+<!-- figure-spec
+{"id":"example-only","kind":"synthetic"}
+-->
+```
+<!-- figure-spec
+{"id":"published","kind":"synthetic"}
+-->'''
+
+        specs = extract_figure_specs(markdown)
+
+        self.assertEqual(("published",), tuple(spec["id"] for spec in specs))

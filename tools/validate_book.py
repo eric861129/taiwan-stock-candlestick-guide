@@ -5,7 +5,7 @@ import re
 from typing import Literal
 from urllib.parse import unquote, urlsplit
 
-from book_contract import EXPECTED_CHAPTERS, FIGURE_SPEC_PATTERN, ValidationIssue
+from book_contract import EXPECTED_CHAPTERS, FIGURE_SPEC_PATTERN, ValidationIssue, mask_fenced_code
 
 
 DRAFT_MARKERS = ("T" "BD", "T" "ODO", "FIX" "ME", "PLACE" "HOLDER")
@@ -22,15 +22,19 @@ LESSON_REQUIRED_SECTIONS = (
     "重點、限制與來源",
 )
 LAB_REQUIRED_SECTIONS = ("學習指示", "案例", "評分", "來源")
-HISTORICAL_PROVENANCE_FIELDS = {
-    "期間": ("period", "date_range"),
-    "資料類型": ("data_type", "data_kind"),
-    "來源": ("source", "source_url"),
-}
+HISTORICAL_STRING_FIELDS = (
+    "market",
+    "symbol",
+    "start",
+    "end",
+    "timeframe",
+    "price_mode",
+    "source_url",
+    "checked_on",
+)
 
 HEADING_PATTERN = re.compile(r"^(?P<level>#{1,6})[ \t]+(?P<title>.+?)\s*$", re.MULTILINE)
 HEADING_LINE_PATTERN = re.compile(r"^\s*#{1,6}(?:\s|$)")
-FENCED_CODE_FENCE_PATTERN = re.compile(r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})")
 INLINE_LINK_PATTERN = re.compile(
     r"(?P<image>!)?\[(?P<label>(?:\\.|[^\]])*)\]\((?P<destination>[^)\n]+)\)"
 )
@@ -174,49 +178,6 @@ def _validate_markdown_links(
             )
 
 
-def _has_nonempty_field(specification: dict[str, object], field_names: tuple[str, ...]) -> bool:
-    for field_name in field_names:
-        value = specification.get(field_name)
-        if isinstance(value, str) and value.strip():
-            return True
-    return False
-
-
-def _fenced_code_ranges(markdown: str) -> tuple[tuple[int, int], ...]:
-    ranges: list[tuple[int, int]] = []
-    opening_offset: int | None = None
-    fence_character = ""
-    fence_length = 0
-    offset = 0
-
-    for line in markdown.splitlines(keepends=True):
-        fence_match = FENCED_CODE_FENCE_PATTERN.match(line)
-        if opening_offset is None:
-            if fence_match is not None:
-                fence = fence_match.group("fence")
-                opening_offset = offset
-                fence_character = fence[0]
-                fence_length = len(fence)
-        elif (
-            fence_match is not None
-            and fence_match.group("fence")[0] == fence_character
-            and len(fence_match.group("fence")) >= fence_length
-        ):
-            ranges.append((opening_offset, offset + len(line)))
-            opening_offset = None
-
-        offset += len(line)
-
-    if opening_offset is not None:
-        ranges.append((opening_offset, len(markdown)))
-
-    return tuple(ranges)
-
-
-def _is_in_fenced_code_block(position: int, fenced_code_ranges: tuple[tuple[int, int], ...]) -> bool:
-    return any(start <= position < end for start, end in fenced_code_ranges)
-
-
 def _validate_figure_specs(
     markdown: str,
     relative_path: str,
@@ -224,11 +185,7 @@ def _validate_figure_specs(
     figure_ids: set[str],
     figure_outputs: list[tuple[str, int, str]],
 ) -> None:
-    fenced_code_ranges = _fenced_code_ranges(markdown)
     for match in FIGURE_SPEC_PATTERN.finditer(markdown):
-        if _is_in_fenced_code_block(match.start(), fenced_code_ranges):
-            continue
-
         line = _line_number(markdown, match.start())
         try:
             specification = json.loads(match.group(1))
@@ -270,16 +227,26 @@ def _validate_figure_specs(
             figure_ids.add(figure_id)
 
         if specification.get("kind") == "historical":
-            for label, fields in HISTORICAL_PROVENANCE_FIELDS.items():
-                if not _has_nonempty_field(specification, fields):
+            for field_name in HISTORICAL_STRING_FIELDS:
+                value = specification.get(field_name)
+                if not isinstance(value, str) or not value.strip():
                     issues.append(
                         ValidationIssue(
                             relative_path,
                             "historical-figure-provenance",
-                            f"歷史圖例缺少來源欄位：{label}",
+                            f"歷史圖例缺少有效來源欄位：{field_name}",
                             line,
                         )
                     )
+            if not isinstance(specification.get("corporate_actions"), list):
+                issues.append(
+                    ValidationIssue(
+                        relative_path,
+                        "historical-figure-provenance",
+                        "歷史圖例的 corporate_actions 必須是陣列",
+                        line,
+                    )
+                )
 
         output = specification.get("output")
         if isinstance(output, str) and output.strip().lower().split("?", maxsplit=1)[0].endswith(".svg"):
@@ -355,8 +322,10 @@ def validate_book(root: Path, mode: Literal["draft", "release"]) -> list[Validat
                 )
             )
 
+        visible_markdown = mask_fenced_code(markdown)
+
         for marker, marker_pattern in DRAFT_MARKER_PATTERNS:
-            for marker_match in marker_pattern.finditer(markdown):
+            for marker_match in marker_pattern.finditer(visible_markdown):
                 issues.append(
                     ValidationIssue(
                         relative_path,
@@ -368,12 +337,12 @@ def validate_book(root: Path, mode: Literal["draft", "release"]) -> list[Validat
 
         chapter_kind = EXPECTED_CHAPTER_KINDS.get(relative_path)
         if chapter_kind == "lesson":
-            _validate_required_sections(markdown, LESSON_REQUIRED_SECTIONS, relative_path, issues)
+            _validate_required_sections(visible_markdown, LESSON_REQUIRED_SECTIONS, relative_path, issues)
         elif chapter_kind == "lab":
-            _validate_required_sections(markdown, LAB_REQUIRED_SECTIONS, relative_path, issues)
+            _validate_required_sections(visible_markdown, LAB_REQUIRED_SECTIONS, relative_path, issues)
 
-        _validate_markdown_links(path, relative_path, markdown, issues)
-        _validate_figure_specs(markdown, relative_path, issues, figure_ids, figure_outputs)
+        _validate_markdown_links(path, relative_path, visible_markdown, issues)
+        _validate_figure_specs(visible_markdown, relative_path, issues, figure_ids, figure_outputs)
 
     if mode == "release":
         _validate_release_completeness(root, figure_outputs, issues)

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import shutil
 import sys
 import tempfile
@@ -131,6 +132,34 @@ class ValidateBookTests(unittest.TestCase):
 
         self.assertNotIn("historical-figure-provenance", rules)
 
+    def test_fenced_heading_does_not_satisfy_required_section(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            markdown = lesson_path.read_text(encoding="utf-8").replace(
+                "## 練習\n\n請列出觀察、解釋與失效條件。\n\n",
+                "```markdown\n## 練習\n\n這只是格式範例。\n```\n\n",
+            )
+            lesson_path.write_text(markdown, encoding="utf-8")
+
+            rules = self._rules(root)
+
+        self.assertIn("required-section", rules)
+
+    def test_fenced_markdown_link_is_not_validated(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            lesson_path.write_text(
+                lesson_path.read_text(encoding="utf-8")
+                + "\n```markdown\n![格式範例](missing.svg)\n```\n",
+                encoding="utf-8",
+            )
+
+            rules = self._rules(root)
+
+        self.assertNotIn("missing-local-link", rules)
+
     def test_historical_figure_requires_provenance_fields(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -145,6 +174,74 @@ class ValidateBookTests(unittest.TestCase):
             rules = self._rules(root)
 
         self.assertIn("historical-figure-provenance", rules)
+
+    def test_canonical_historical_figure_provenance_is_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lesson_path = self._write_valid_lesson(root)
+            specification = {
+                "id": "historical-complete",
+                "kind": "historical",
+                "market": "TWSE",
+                "symbol": "2330",
+                "start": "2024-01-02",
+                "end": "2024-03-29",
+                "timeframe": "1d",
+                "price_mode": "raw",
+                "source_url": "https://www.twse.com.tw/zh/trading/historical/stock-day.html",
+                "checked_on": "2026-08-10",
+                "corporate_actions": [],
+                "title": "完整歷史圖例",
+                "alt_text": "歷史日 K 圖。",
+                "output": "assets/figures/history.svg",
+            }
+            figure_spec = f"\n<!-- figure-spec\n{json.dumps(specification, ensure_ascii=False)}\n-->\n"
+            lesson_path.write_text(lesson_path.read_text(encoding="utf-8") + figure_spec, encoding="utf-8")
+
+            rules = self._rules(root)
+
+        self.assertNotIn("historical-figure-provenance", rules)
+
+    def test_each_canonical_historical_provenance_field_is_required(self):
+        canonical_specification = {
+            "id": "historical-complete",
+            "kind": "historical",
+            "market": "TWSE",
+            "symbol": "2330",
+            "start": "2024-01-02",
+            "end": "2024-03-29",
+            "timeframe": "1d",
+            "price_mode": "raw",
+            "source_url": "https://www.twse.com.tw/zh/trading/historical/stock-day.html",
+            "checked_on": "2026-08-10",
+            "corporate_actions": [],
+        }
+
+        for field_name in (
+            "market",
+            "symbol",
+            "start",
+            "end",
+            "timeframe",
+            "price_mode",
+            "source_url",
+            "checked_on",
+            "corporate_actions",
+        ):
+            with self.subTest(field_name=field_name), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                lesson_path = self._write_valid_lesson(root)
+                specification = canonical_specification | {"id": f"missing-{field_name}"}
+                del specification[field_name]
+                figure_spec = f"\n<!-- figure-spec\n{json.dumps(specification)}\n-->\n"
+                lesson_path.write_text(
+                    lesson_path.read_text(encoding="utf-8") + figure_spec,
+                    encoding="utf-8",
+                )
+
+                rules = self._rules(root)
+
+            self.assertIn("historical-figure-provenance", rules)
 
     def test_lab_requires_nonempty_learning_instructions_cases_scoring_and_sources(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
