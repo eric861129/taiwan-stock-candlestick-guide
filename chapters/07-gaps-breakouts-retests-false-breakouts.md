@@ -93,5 +93,5 @@
 
 - [臺灣證券交易所：2330 2024 年 5 月日成交資訊](https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=20240501&stockNo=2330)
 - [臺灣證券交易所：除權息公告查詢](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240501&endDate=20240531)
-- [公開資訊觀測站：除權除息公告](https://mops.twse.com.tw/mops/web/t05st09_2)
+- [公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)
 - [附錄 C：資料、公司行動與比較限制](appendix-c-taiwan-market-rules.md)

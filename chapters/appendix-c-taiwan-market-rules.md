@@ -76,7 +76,7 @@
 
 | 查核步驟 | 要回答的問題 | 類別 | 官方來源與查核 |
 | --- | --- | --- | --- |
-| 1. 查公司公告 | 是否有除權、除息、減資、分割或其他影響基準價格的事件？以公司代號、日期與公告類別查詢。 | 公司行動機制 | [MOPS 公開資訊觀測站入口](https://mops.twse.com.tw/mops/)；查核日期：2026-08-10 |
+| 1. 查公司公告 | 是否有除權、除息、減資、分割或其他影響基準價格的事件？以公司代號、日期與公告類別查詢。 | 公司行動機制 | [公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)；查核日期：2026-08-10 |
 | 2. 查參考價 | 交易所公開的除權息參考價與計算欄位如何呈現？ | 公司行動機制 | [TWSE 除權息參考價](https://www.twse.com.tw/zh/announcement/ex-right/cal.html)、[TWSE 參考價資料](https://wwwc.twse.com.tw/zh/announcement/ex-right/twt49u.html)；查核日期：2026-08-10 |
 | 3. 查原始成交資料 | 圖中的 OHLC 與成交量是否為指定交易日、指定市場的原始紀錄？ | 市場資料事實 | [TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[TPEx 個股日成交資訊](https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock)；查核日期：2026-08-10 |
 | 4. 記錄資料模式 | 分析使用 raw 或 adjusted？若已調整，調整來源、事件與計算規則是什麼？ | 教材／資料慣例 | 本教材的圖表 metadata 與本附錄；查核日期：2026-08-10 |

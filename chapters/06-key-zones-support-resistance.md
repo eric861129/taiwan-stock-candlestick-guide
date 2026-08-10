@@ -166,6 +166,6 @@
 ### 來源與證據類型
 
 - **市場資料事實**：[TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)，圖表 metadata 查核日期為 2026-08-10。
-- **公司行動查核**：[TWSE 除權息計算結果表](https://www.twse.com.tw/zh/announcement/ex-right/twt49u.html) 與 [MOPS 除權息公告](https://mops.twse.com.tw/mops/)。
+- **公司行動查核**：[TWSE 除權息計算結果表](https://www.twse.com.tw/zh/announcement/ex-right/twt49u.html) 與 [公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)。
 - **交易制度**：價格升降單位與其他會變動的規則請查[附錄 C](appendix-c-taiwan-market-rules.md)。
 - **教材慣例**：反覆反應、整理、角色互換與八步流程用來建立條件式情境，不保證任何區域的未來效果。

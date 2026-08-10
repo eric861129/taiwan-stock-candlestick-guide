@@ -76,7 +76,7 @@
 
 ## 歷史案例
 
-本案例使用 TWSE 2330 在 2024-04-01 至 2024-04-30 的官方原始價格日資料，決策日為 2024-04-30，圖表只畫到該日。OHLCV 來自 [TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)；[TWSE 除權除息計算結果（2024-04）](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240401&endDate=20240430)在此日期範圍未列出 2330 的除權息結果，因此圖表規格中的 `corporate_actions` 為空陣列。這只表示該官方結果查詢未列結果，不代表未查其他公司公告；需要時仍須以公開資訊觀測站另查。
+本案例使用 TWSE 2330 在 2024-04-01 至 2024-04-30 的官方原始價格日資料，決策日為 2024-04-30，圖表只畫到該日。OHLCV 來自 [TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)；[TWSE 除權除息計算結果（2024-04）](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240401&endDate=20240430)在此日期範圍未列出 2330 的除權息結果，因此圖表規格中的 `corporate_actions` 為空陣列。這只表示該官方結果查詢未列結果，不代表未查其他公司公告；需要時仍須以[公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)另查。
 
 <!-- figure-spec
 {

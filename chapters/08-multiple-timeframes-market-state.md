@@ -90,5 +90,5 @@
 
 - [證券櫃檯買賣中心：6488 2024 年 4 月日成交資訊](https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?code=6488&date=2024/04/01&response=json)
 - [證券櫃檯買賣中心：除權息公告查詢](https://www.tpex.org.tw/www/zh-tw/bulletin/exDailyQ)
-- [公開資訊觀測站：除權除息公告](https://mops.twse.com.tw/mops/web/t05st09_2)
+- [公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)
 - [附錄 C：資料、公司行動與比較限制](appendix-c-taiwan-market-rules.md)

@@ -61,7 +61,7 @@
 
 ## 歷史案例
 
-此圖使用 TWSE 2603 於 2023-06-26 至 2023-07-07 的官方原始日線。2023-06-30 的價格落差發生在現金股利除息日；TWSE 的 [2603 個股資訊 PDF](https://www.twse.com.tw/pdf/ch/2603_ch.pdf)可核對 111 年度每股現金股利 70 元的記錄，除權息事實則應以 [公開資訊觀測站公告](https://mops.twse.com.tw/mops/) 和 [TWSE 除權息參考價資料](https://wwwc.twse.com.tw/zh/announcement/ex-right/twt49u.html)交叉查核。
+此圖使用 TWSE 2603 於 2023-06-26 至 2023-07-07 的官方原始日線。2023-06-30 的價格落差發生在現金股利除息日；TWSE 的 [2603 個股資訊 PDF](https://www.twse.com.tw/pdf/ch/2603_ch.pdf)可核對 111 年度每股現金股利 70 元的記錄，除權息事實則應以 [公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch) 和 [TWSE 除權息參考價資料](https://wwwc.twse.com.tw/zh/announcement/ex-right/twt49u.html)交叉查核。
 
 這不是「缺口必定完全等於股利」的說法：原始價格當天仍會受到交易與其他資訊影響。教材的結論較窄：在量化賣壓前，先把已公告的公司行動及參考價機制列入解釋。
 
@@ -137,5 +137,5 @@
 ### 來源與證據類型
 
 - **市場資料事實**：[TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)，圖表規格查核日期為 2026-08-10。
-- **公司行動機制**：[MOPS 除權息公告](https://mops.twse.com.tw/mops/)、[TWSE 除權息參考價](https://wwwc.twse.com.tw/zh/announcement/ex-right/twt49u.html)與 [2603 個股資訊](https://www.twse.com.tw/pdf/ch/2603_ch.pdf)。
+- **公司行動機制**：[公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)、[TWSE 除權息參考價](https://wwwc.twse.com.tw/zh/announcement/ex-right/twt49u.html)與 [2603 個股資訊](https://www.twse.com.tw/pdf/ch/2603_ch.pdf)。
 - **教材慣例**：日線／週線比較、線性／對數刻度和多週期流程是分析框架，不是任何交易結果的保證。

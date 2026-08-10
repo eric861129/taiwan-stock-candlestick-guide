@@ -172,5 +172,5 @@
 ### 來源與證據類型
 
 - **市場資料事實**：[TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)，圖表 metadata 查核日期為 2026-08-10。
-- **公司行動查核**：[TWSE 除權息計算結果表](https://www.twse.com.tw/zh/announcement/ex-right/twt49u.html) 與 [MOPS 除權息公告](https://mops.twse.com.tw/mops/)；可視期間無 2330 記錄，6/13 的現金除息在決策日後。
+- **公司行動查核**：[TWSE 除權息計算結果表](https://www.twse.com.tw/zh/announcement/ex-right/twt49u.html) 與 [公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)；可視期間無 2330 記錄，6/13 的現金除息在決策日後。
 - **教材慣例**：相鄰交易日的 k 值規則、結構描述與八步流程是可重現判讀框架，不是交易所對後續走勢的保證。

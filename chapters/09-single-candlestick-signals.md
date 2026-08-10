@@ -75,7 +75,7 @@
 
 本例使用 [TWSE 2330 2024 年 5 月日成交資訊](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=20240501&stockNo=2330) 的官方原始日資料，範圍為 2024-05-06 至**決策日** 2024-05-20。圖表右端就是決策日，沒有繪入 5/20 後的 K 線、標籤或結果。
 
-公司行動以 TWSE [除權息計算結果資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240501&endDate=20240531) 查核；該期間查詢結果沒有 2330 記錄，所以 metadata 的 `corporate_actions` 為空陣列。MOPS 的 [除權息公告入口](https://mops.twse.com.tw/mops/)是公司公告的交叉查核入口。沒有已查得的除權息資料，只能排除已知機械調整，不能替影線或實體指定原因。
+公司行動以 TWSE [除權息計算結果資料](https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json&startDate=20240501&endDate=20240531) 查核；該期間查詢結果沒有 2330 記錄，所以 metadata 的 `corporate_actions` 為空陣列。[公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)是公司公告的交叉查核入口。沒有已查得的除權息資料，只能排除已知機械調整，不能替影線或實體指定原因。
 
 <!-- figure-spec
 {
@@ -163,6 +163,6 @@
 
 ### 來源
 
-- **市場資料與公司行動查核**：[TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[TWSE 除權息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)與 [MOPS 除權息公告入口](https://mops.twse.com.tw/mops/)，查核日期為 2026-08-10。
+- **市場資料與公司行動查核**：[TWSE 每日收盤行情](https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY)、[TWSE 除權息計算結果](https://www.twse.com.tw/rwd/zh/exRight/TWT49U)與 [公開資訊觀測站「公告快易查」](https://mopsov.twse.com.tw/mops/web/ezsearch)，查核日期為 2026-08-10。
 - **研究限制的參考**：[Lo、Mamaysky、Wang〈Foundations of Technical Analysis〉](https://doi.org/10.1111/0022-1082.00265)以美國股票與其研究設計檢驗特定技術型態；本章未把該樣本結果移植成台股或單根 K 線的績效數字。
 - **教材／常用判讀法**：本章的形狀門檻、比較窗、八步判讀與評分規準用於可重現的學習，不是交易所規則或報酬承諾。
