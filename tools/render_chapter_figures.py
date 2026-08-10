@@ -32,8 +32,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         specs = tuple(parse_figure_spec(raw, chapter) for raw in extract_figure_specs(markdown))
         validate_unique_figure_specs(specs)
         rendered = tuple(_render_spec(root, spec) for spec in specs)
-        for output_path, svg in rendered:
-            _write_utf8_atomically(output_path, svg)
+        _publish_rendered(rendered)
+        for output_path, _ in rendered:
             print(output_path.relative_to(root).as_posix())
     except (OSError, RuntimeError, UnicodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
@@ -72,7 +72,51 @@ def _output_path(root: Path, output: Path) -> Path:
     return output_path
 
 
-def _write_utf8_atomically(path: Path, content: str) -> None:
+def _publish_rendered(rendered: tuple[tuple[Path, str], ...]) -> None:
+    """先完成所有 staging，再發布；失敗時還原本批次已碰觸的輸出。"""
+    for path, _ in rendered:
+        if path.exists() and not path.is_file():
+            raise OSError(f"output target is not a file: {path}")
+
+    staged: list[tuple[Path, Path]] = []
+    touched: list[tuple[Path, Path | None]] = []
+    backup_paths: list[Path] = []
+    try:
+        for path, content in rendered:
+            staged.append((path, _stage_utf8(path, content)))
+
+        for path, staged_path in staged:
+            backup_path = _backup_existing(path) if path.exists() else None
+            if backup_path is not None:
+                backup_paths.append(backup_path)
+            touched.append((path, backup_path))
+            _replace_path(staged_path, path)
+    except OSError as publish_error:
+        rollback_errors: list[str] = []
+        for path, backup_path in reversed(touched):
+            try:
+                if backup_path is None:
+                    if path.exists():
+                        path.unlink()
+                else:
+                    _replace_path(backup_path, path)
+            except OSError as rollback_error:
+                rollback_errors.append(f"{path}: {rollback_error}")
+        if rollback_errors:
+            raise OSError(
+                f"publish failed: {publish_error}; rollback failed: {'; '.join(rollback_errors)}"
+            ) from publish_error
+        raise
+    finally:
+        for _, staged_path in staged:
+            if staged_path.exists():
+                staged_path.unlink()
+        for backup_path in backup_paths:
+            if backup_path.exists():
+                backup_path.unlink()
+
+
+def _stage_utf8(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
@@ -89,11 +133,33 @@ def _write_utf8_atomically(path: Path, content: str) -> None:
             temporary_file.write(content)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
-        temporary_path.replace(path)
+        return temporary_path
     except OSError:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
         raise
+
+
+def _backup_existing(path: Path) -> Path:
+    with NamedTemporaryFile(
+        mode="wb",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".bak",
+        delete=False,
+    ) as backup_file:
+        backup_path = Path(backup_file.name)
+    try:
+        _replace_path(path, backup_path)
+    except OSError:
+        if backup_path.exists():
+            backup_path.unlink()
+        raise
+    return backup_path
+
+
+def _replace_path(source: Path, destination: Path) -> None:
+    source.replace(destination)
 
 
 if __name__ == "__main__":

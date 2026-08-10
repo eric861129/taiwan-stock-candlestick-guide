@@ -237,6 +237,96 @@ class RenderChartTests(unittest.TestCase):
             self.assertFalse((root / "assets" / "figures" / "good.svg").exists())
             self.assertFalse((root / "assets" / "figures" / "failing.svg").exists())
 
+    def test_cli_preflights_invalid_output_target_before_publishing(self):
+        from render_chapter_figures import main
+
+        first = self.raw_spec()
+        first["id"] = "first-output"
+        first["output"] = "assets/figures/good.svg"
+        second = self.raw_spec()
+        second["id"] = "invalid-target"
+        second["output"] = "assets/figures/failing.svg"
+
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            chapter = root / "chapters" / "example.md"
+            chapter.parent.mkdir()
+            chapter.write_text(
+                "\n".join(
+                    (
+                        "<!-- figure-spec",
+                        json.dumps(first, ensure_ascii=False),
+                        "-->",
+                        "<!-- figure-spec",
+                        json.dumps(second, ensure_ascii=False),
+                        "-->",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            failing_target = root / "assets" / "figures" / "failing.svg"
+            failing_target.mkdir(parents=True)
+
+            exit_code = main(["--chapter", "chapters/example.md", "--root", str(root)])
+
+            self.assertEqual(1, exit_code)
+            self.assertFalse((root / "assets" / "figures" / "good.svg").exists())
+            self.assertTrue(failing_target.is_dir())
+
+    def test_cli_rolls_back_existing_outputs_when_later_publish_fails(self):
+        import render_chapter_figures
+
+        first = self.raw_spec()
+        first["id"] = "first-output"
+        first["output"] = "assets/figures/first.svg"
+        first["title"] = "新的第一張圖"
+        second = self.raw_spec()
+        second["id"] = "second-output"
+        second["output"] = "assets/figures/second.svg"
+        second["title"] = "新的第二張圖"
+
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            chapter = root / "chapters" / "example.md"
+            chapter.parent.mkdir()
+            chapter.write_text(
+                "\n".join(
+                    (
+                        "<!-- figure-spec",
+                        json.dumps(first, ensure_ascii=False),
+                        "-->",
+                        "<!-- figure-spec",
+                        json.dumps(second, ensure_ascii=False),
+                        "-->",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            figure_root = root / "assets" / "figures"
+            figure_root.mkdir(parents=True)
+            first_output = figure_root / "first.svg"
+            second_output = figure_root / "second.svg"
+            first_output.write_text("old first", encoding="utf-8")
+            second_output.write_text("old second", encoding="utf-8")
+
+            original_replace = render_chapter_figures._replace_path
+
+            def fail_second_publish(source: Path, destination: Path) -> None:
+                if source.suffix == ".tmp" and destination.name == "second.svg":
+                    raise OSError("simulated second publish failure")
+                original_replace(source, destination)
+
+            with patch("render_chapter_figures._replace_path", side_effect=fail_second_publish):
+                exit_code = render_chapter_figures.main(
+                    ["--chapter", "chapters/example.md", "--root", str(root)]
+                )
+
+            self.assertEqual(1, exit_code)
+            self.assertEqual("old first", first_output.read_text(encoding="utf-8"))
+            self.assertEqual("old second", second_output.read_text(encoding="utf-8"))
+            self.assertEqual([], list(figure_root.glob("*.tmp")))
+            self.assertEqual([], list(figure_root.glob("*.bak")))
+
     def test_cli_uses_historical_fetch_range_with_the_ignored_cache(self):
         from render_chapter_figures import main
 

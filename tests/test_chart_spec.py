@@ -81,6 +81,9 @@ class ChartSpecTests(unittest.TestCase):
             ("output", "assets/figures/not-svg.png"),
             ("output", "assets/figures/../outside.svg"),
             ("output", "C:\\temp\\outside.svg"),
+            ("output", "assets/figures/C:/outside.svg"),
+            ("output", "assets/figures/con.svg"),
+            ("output", "assets/figures/chart:stream.svg"),
         )
 
         for field, value in cases:
@@ -252,6 +255,13 @@ class ChartSpecTests(unittest.TestCase):
         duplicate_output = parse_figure_spec(same_output_raw, self.chapter_path)
         with self.assertRaisesRegex(ValueError, "output"):
             validate_unique_figure_specs((first, duplicate_output))
+
+        case_collision_raw = self.synthetic_raw()
+        case_collision_raw["id"] = "case-collision"
+        case_collision_raw["output"] = "assets/figures/SYNTHETIC-BASIC.svg"
+        case_collision = parse_figure_spec(case_collision_raw, self.chapter_path)
+        with self.assertRaisesRegex(ValueError, "output"):
+            validate_unique_figure_specs((first, case_collision))
 
 
 if __name__ == "__main__":

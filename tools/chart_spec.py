@@ -31,6 +31,11 @@ _HISTORICAL_FIELDS = (
     "corporate_actions",
 )
 _SUPPORTED_INDICATORS = frozenset({"sma", "ema", "atr", "rsi", "kd", "macd", "bollinger"})
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +211,7 @@ def validate_unique_figure_specs(specs: tuple[FigureSpec, ...] | list[FigureSpec
         if spec.id in seen_ids:
             _fail("id", f"duplicate figure id: {spec.id}")
         seen_ids.add(spec.id)
-        output = spec.output.as_posix()
+        output = spec.output.as_posix().casefold()
         if output in seen_outputs:
             _fail("output", f"duplicate figure output: {output}")
         seen_outputs.add(output)
@@ -269,6 +274,9 @@ def _output_path(value: object) -> Path:
         _fail("output", "must not be absolute or traverse directories")
     if len(path.parts) < 3 or path.parts[:2] != ("assets", "figures"):
         _fail("output", "must be strictly under assets/figures/")
+    for part in path.parts:
+        if ":" in part or part.rstrip(" .") != part or PurePosixPath(part).stem.upper() in _WINDOWS_RESERVED_NAMES:
+            _fail("output", "contains a Windows drive, device, or unsafe path component")
     if path.suffix != ".svg" or path.name == ".svg":
         _fail("output", "must have a .svg extension")
     return Path(*path.parts)
