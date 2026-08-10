@@ -233,14 +233,23 @@ The valid lesson fixture contains these exact headings:
 ```markdown
 # 測試章節
 ## 學習目標
+讀者能說明一項可觀察的圖表事實。
 ## 先說結論
+先描述證據，再提出一種以上的合理解釋。
 ## 精確定義與證據等級
+本段用明確詞義區分市場機制與常用判讀法。
 ## 人工圖例
+人工圖例只隔離一個教學變因。
 ## 歷史案例
+歷史案例標示期間、資料類型與來源。
 ## 八步判讀
+本段依固定順序完成情境與風險檢查。
 ## 練習
+請列出觀察、解釋與失效條件。
 ## 答案與評分
+答案依推理完整性評分，不以後續漲跌判定。
 ## 重點、限制與來源
+本章限制與來源都在此段清楚列出。
 ```
 
 Add tests named:
@@ -268,7 +277,7 @@ Expected: FAIL because `validate_book` and the validation rules do not exist.
 
 1. Decode every `.md` file as strict UTF-8 and reject `U+FFFD`.
 2. Reject the four configured case-insensitive standalone draft-marker tokens.
-3. Require the nine lesson headings for `lesson` files; require learning instructions, cases, scoring, and sources for `lab` files.
+3. Require the nine lesson headings and non-whitespace body content for `lesson` files; require non-empty learning instructions, cases, scoring, and sources for `lab` files.
 4. Require non-empty alt text for every Markdown image.
 5. Resolve local Markdown and image links relative to their source file.
 6. Parse every `figure-spec`, require unique IDs, and require all provenance fields for `kind="historical"`.
