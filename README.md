@@ -30,7 +30,12 @@
    - [第 6 章：關鍵區域、支撐與壓力](chapters/06-key-zones-support-resistance.md)
    - [第 7 章：缺口、突破、回測與假突破](chapters/07-gaps-breakouts-retests-false-breakouts.md)
    - [第 8 章：多時間週期與市場狀態三面向](chapters/08-multiple-timeframes-market-state.md)
-3. Part III：看型態，也看背景（規劃中，尚未建立）
+3. Part III：看型態，也看背景
+   - [第 9 章：單根 K 線：強弱、拒絕與猶豫](chapters/09-single-candlestick-signals.md)
+   - [第 10 章：雙根與三根 K 線組合](chapters/10-two-three-candlestick-patterns.md)
+   - [第 11 章：整理、反轉與延續型態](chapters/11-consolidation-reversal-continuation-patterns.md)
+   - [第 12 章：量價關係、低流動性與失敗訊號](chapters/12-volume-price-liquidity-failed-signals.md)
+   - [附錄 A：型態速查](chapters/appendix-a-pattern-reference.md)
 4. Part IV：把判讀變成計畫（規劃中，尚未建立）
 5. Part V：面對真實市場（規劃中，尚未建立；含案例實驗室與能力驗收）
 
