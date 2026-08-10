@@ -57,19 +57,19 @@
 
 ## 歷史案例
 
-此圖使用 TWSE 2330 於 2024-01-29 至 2024-02-05 的官方原始日線。它放入收低實體、開收相等與帶下影線的日子，讓讀者以實際 OHLC 練習，而不是挑選「後來很成功」的型態。
+此圖使用 TWSE 2330 於 2024-01-29 至練習決策日 2024-02-01 的官方原始日線。它放入收低實體、開收相等與帶下影線的日子，讓讀者以實際 OHLC 練習；圖表在決策日結束，不提供後續價格線索。
 
 <!-- figure-spec
 {
   "id": "ch02-ohlc-context-2330",
   "kind": "historical",
   "title": "實體與影線需要位置和後續資料",
-  "alt_text": "台積電 2330 於 2024 年 1 月 29 日至 2 月 5 日的官方原始日線，標示收低實體、下影線和收高 K 線，提醒讀者不可只憑顏色判斷強弱。",
+  "alt_text": "台積電 2330 於 2024 年 1 月 29 日至練習決策日 2 月 1 日的官方原始日線，標示收低實體、開收相等與下影線；圖表右端停在決策日。",
   "output": "assets/figures/ch02-cases.svg",
   "market": "TWSE",
   "symbol": "2330",
   "start": "2024-01-29",
-  "end": "2024-02-05",
+  "end": "2024-02-01",
   "timeframe": "1d",
   "price_mode": "raw",
   "source_url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY",
@@ -77,7 +77,7 @@
   "corporate_actions": [],
   "annotations": [
     {"type": "label", "date": "2024-01-31", "price": 640, "label": "1/31：實心，收盤低於開盤"},
-    {"type": "label", "date": "2024-02-01", "price": 632, "label": "2/1：下影線與收盤位置"}
+    {"type": "label", "date": "2024-02-01", "price": 632, "label": "2/1"}
   ]
 }
 -->

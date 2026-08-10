@@ -25,10 +25,10 @@
    - [第 3 章：週期、原始價格與調整後價格](chapters/03-timeframes-raw-adjusted-prices.md)
    - [第 4 章：成交量、流動性與台股市場基礎](chapters/04-volume-liquidity-taiwan-market-basics.md)
    - [附錄 C：台股規則、成本與官方查核](chapters/appendix-c-taiwan-market-rules.md)
-2. Part II：結構、位置與多週期（規劃中，尚未建立）
-3. Part III：情境、進出與風險管理（規劃中，尚未建立）
-4. Part IV：指標、驗證與常見誤用（規劃中，尚未建立）
-5. Part V：練習題與完整案例（規劃中，尚未建立）
+2. Part II：讀懂結構與位置（規劃中，尚未建立）
+3. Part III：看型態，也看背景（規劃中，尚未建立）
+4. Part IV：把判讀變成計畫（規劃中，尚未建立）
+5. Part V：面對真實市場（規劃中，尚未建立；含案例實驗室與能力驗收）
 
 名詞以目前的 [CONTEXT.md](CONTEXT.md) 為準；附錄 D 為規劃中的詞彙表，尚未建立。
 
