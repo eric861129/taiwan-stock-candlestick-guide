@@ -6,6 +6,6 @@ export default defineConfig({
   plugins: process.env.VITEST ? [vue()] : [],
   test: {
     environment: 'happy-dom',
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'tests/support/**/*.test.ts'],
   },
 });

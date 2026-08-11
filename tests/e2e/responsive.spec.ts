@@ -59,7 +59,7 @@ test.describe('響應式與減少動態效果', () => {
     await expect(button).toHaveAttribute('aria-expanded', 'true');
   });
 
-  test('以 640 CSS px 檢查 200% 瀏覽器縮放等效主流程仍可操作', async ({ page }) => {
+  test('640 CSS px reflow 主流程仍可操作', async ({ page }) => {
     await page.setViewportSize({ width: 640, height: 800 });
     await goToRoute(page);
 
@@ -68,5 +68,30 @@ test.describe('響應式與減少動態效果', () => {
     await analyzerLink.click();
     await expect(page.locator('#stock-analyzer-title')).toBeVisible();
     await expectNoDocumentHorizontalOverflow(page);
+  });
+
+  test('Chromium CDP 200% page scale 保留文字、焦點與無文件層級橫向溢位', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'chromium-desktop', 'CDP page scale 以 desktop Chromium 作為可重現 zoom harness。');
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await goToRoute(page);
+
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
+    await expect.poll(() => page.evaluate(() => window.visualViewport?.scale ?? 1)).toBe(2);
+    await expect(page.locator('#VPContent').getByRole('link', { name: '開始學習' })).toBeVisible();
+    await page.keyboard.press('Tab');
+    const skipLink = page.getByRole('link', { name: '跳至主要內容' });
+    await expect(skipLink).toBeFocused();
+    await expect(skipLink).toHaveCSS('outline-style', 'solid');
+
+    const layout = await page.evaluate(() => ({
+      viewportWidth: window.visualViewport?.width ?? 0,
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      mainWidth: document.getElementById('VPContent')?.getBoundingClientRect().width ?? 0,
+    }));
+    expect(layout.viewportWidth).toBeLessThanOrEqual(640);
+    expect(layout.mainWidth).toBeGreaterThan(0);
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
   });
 });

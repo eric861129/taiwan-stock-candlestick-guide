@@ -2,53 +2,19 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
+import { validateAccessibilityAllowlist } from '../../src/domain/site/a11y-allowlist';
 import { goToRoute } from './fixtures';
 
-interface AccessibilityException {
-  readonly ruleId: string;
-  readonly route: string;
-  readonly reason: string;
-  readonly owner: string;
-  readonly expiry: string;
-}
-
 const allowlistPath = resolve(process.cwd(), 'tests/a11y-allowlist.json');
-const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8')) as unknown;
-
-function readAllowlist(): readonly AccessibilityException[] {
-  expect(Array.isArray(allowlist)).toBe(true);
-  if (!Array.isArray(allowlist)) {
-    return [];
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-  for (const exception of allowlist) {
-    expect(exception).toMatchObject({
-      ruleId: expect.any(String),
-      route: expect.any(String),
-      reason: expect.any(String),
-      owner: expect.any(String),
-      expiry: expect.any(String),
-    });
-    const candidate = exception as AccessibilityException;
-    expect(candidate.ruleId.trim()).not.toBe('');
-    expect(candidate.route.trim()).toMatch(/^\//);
-    expect(candidate.reason.trim()).not.toBe('');
-    expect(candidate.owner.trim()).not.toBe('');
-    expect(candidate.expiry).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(candidate.expiry > today).toBe(true);
-  }
-  return allowlist as readonly AccessibilityException[];
-}
+const allowlist = validateAccessibilityAllowlist(JSON.parse(readFileSync(allowlistPath, 'utf8')) as unknown);
 
 async function expectNoBlockingAxeFindings(page: Page, route: string): Promise<void> {
-  const exceptions = readAllowlist();
   const results = await new AxeBuilder({ page }).analyze();
   const blockers = results.violations.filter((violation) => {
     if (violation.impact !== 'critical' && violation.impact !== 'serious') {
       return false;
     }
-    return !exceptions.some((exception) => exception.ruleId === violation.id && exception.route === route);
+    return !allowlist.some((exception) => exception.ruleId === violation.id && exception.route === route);
   });
 
   expect(
@@ -77,7 +43,7 @@ test.describe('自動化可近用性 release gate', () => {
     }
   });
 
-  test('跳至主要內容連結、焦點提示與非僅色彩的 K 線說明可被使用', async ({ page }) => {
+  test('跳至主要內容連結會以鍵盤啟用、定位並將焦點交給 main', async ({ page }) => {
     await goToRoute(page);
 
     await page.keyboard.press('Tab');
@@ -85,6 +51,12 @@ test.describe('自動化可近用性 release gate', () => {
     await expect(skipLink).toBeFocused();
     await expect(skipLink).toBeVisible();
     await expect(skipLink).toHaveCSS('outline-style', 'solid');
+    await page.keyboard.press('Enter');
+
+    const mainContent = page.locator('#VPContent');
+    await expect(page).toHaveURL(/#VPContent$/);
+    await expect(mainContent).toBeFocused();
+    await expect.poll(async () => mainContent.evaluate((element) => Math.abs(element.getBoundingClientRect().top))).toBeLessThanOrEqual(8);
     await expect(page.getByLabel('K 線圖例')).toContainText('實體填滿');
     await expect(page.getByLabel('K 線圖例')).toContainText('實體留白');
     await expect(page.getByLabel('K 線圖例')).toContainText('虛線提示猶豫');

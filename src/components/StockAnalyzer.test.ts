@@ -177,4 +177,21 @@ describe('StockAnalyzer', () => {
     expect(wrapper.text()).toContain('此證券不是第一版支援的普通股。');
     expect(wrapper.text()).toContain('請輸入上市或上櫃普通股代碼');
   });
+
+  it('將盤後資料載入失敗呈現為 unavailable 結果，而非股票輸入錯誤', async () => {
+    clientMocks.loadStockSnapshot.mockRejectedValue({
+      reason: 'load-error',
+      message: '無法載入盤後資料（HTTP 500）。請稍後重新查詢。',
+    });
+    const wrapper = mount(StockAnalyzer);
+    await flushPromises();
+
+    await wrapper.get('input[name="stock-code"]').setValue('2330');
+    await wrapper.get('form[data-stock-search]').trigger('submit');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('暫時無法分析');
+    expect(wrapper.text()).toContain('盤後資料暫時無法載入');
+    expect(wrapper.find('.stock-analyzer__error').exists()).toBe(false);
+  });
 });

@@ -1,5 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
-import { prepareFixtureSnapshot } from './tests/e2e/fixtures';
+import { prepareFixtureSnapshot } from './tests/e2e/fixture-lifecycle';
 
 prepareFixtureSnapshot();
 
@@ -11,6 +11,7 @@ export default defineConfig({
   outputDir: '.cache/playwright-results',
   fullyParallel: false,
   workers: 1,
+  globalTeardown: './tests/e2e/global-teardown.ts',
   timeout: 45_000,
   expect: {
     timeout: 10_000,

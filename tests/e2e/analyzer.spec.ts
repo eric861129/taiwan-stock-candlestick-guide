@@ -36,6 +36,14 @@ function freezeTaipeiClock(page: import('@playwright/test').Page): Promise<void>
   });
 }
 
+function piercingPositiveCase() {
+  const piercing = MVP_CASES.find((candidate) => candidate.cardId === 'piercing-line' && candidate.kind === 'positive');
+  if (!piercing) {
+    throw new Error('E2E fixture 缺少穿透形正向案例。');
+  }
+  return piercing;
+}
+
 test.describe('股票型態比對', () => {
   test('離線 fixture 支援 2330、全形代碼與圖表鍵盤導覽，且候選不超過三張', async ({ page }) => {
     const liveMarketRequests = trackLiveMarketRequests(page);
@@ -72,6 +80,8 @@ test.describe('股票型態比對', () => {
     await searchStock(page, '2330');
     await expect(page.getByRole('heading', { name: /無明顯型態/ })).toBeVisible();
     await expect(page.getByText(/本次沒有候選同時達到必要條件與規則門檻/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: /證據不足/ })).toHaveCount(0);
+    await expect(page.locator('.analysis-result-panel__candidate')).toHaveCount(0);
   });
 
   test('未完成日 K 會顯示證據不足，而不假裝有候選', async ({ page }) => {
@@ -85,6 +95,48 @@ test.describe('股票型態比對', () => {
     await searchStock(page, '2330');
     await expect(page.getByRole('heading', { name: /證據不足/ })).toBeVisible();
     await expect(page.getByText(/沒有可用的已完成日 K/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: /無明顯型態/ })).toHaveCount(0);
+    await expect(page.locator('.analysis-result-panel__candidate')).toHaveCount(0);
+  });
+
+  test('未受公司行動抑制的穿透形正向 fixture 會指定候選且 Top 3 至少一張', async ({ page }) => {
+    const piercing = piercingPositiveCase();
+    const stock = makeBrowserStockFixture(piercing.snapshot.bars);
+    const sessions = [...new Set(stock.bars.map((bar) => bar.date))].sort();
+    await routeBrowserMarketFixture(page, createBrowserMarketFixture(stock, sessions));
+    await goToRoute(page, 'analyzer');
+    await waitForAnalyzerReady(page);
+
+    await searchStock(page, '2330');
+    await expect(page.locator('#analysis-candidate-title')).toBeVisible();
+    const candidates = page.locator('.analysis-result-panel__candidate');
+    const candidateCount = await candidates.count();
+    expect(candidateCount).toBeGreaterThanOrEqual(1);
+    expect(candidateCount).toBeLessThanOrEqual(3);
+    await expect(candidates.filter({ hasText: '穿透形' })).toHaveCount(1);
+  });
+
+  test('股票資料 HTTP 500 顯示 unavailable 結果，而非 ETF 輸入警示', async ({ page }) => {
+    const stock = makeBrowserStockFixture(neutralBars());
+    const fixture = createBrowserMarketFixture(stock);
+    await page.route('**/data/manifest.json', async (route) => {
+      await route.fulfill({ contentType: 'application/json; charset=utf-8', body: fixture.manifestBody });
+    });
+    await page.route(`**/${fixture.stockPath}`, async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json; charset=utf-8',
+        body: '{"error":"fixture failure"}',
+      });
+    });
+    await goToRoute(page, 'analyzer');
+    await waitForAnalyzerReady(page);
+
+    await searchStock(page, '2330');
+    await expect(page.getByRole('heading', { name: '暫時無法分析' })).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText('盤後資料暫時無法載入');
+    await expect(page.locator('.stock-code-search__error')).toHaveCount(0);
+    await expect(page.locator('.stock-analyzer__error')).toHaveCount(0);
   });
 
   test('ETF 清冊項目會明確拒絕為非支援普通股', async ({ page }) => {
@@ -109,14 +161,12 @@ test.describe('股票型態比對', () => {
 
     await searchStock(page, '2330');
     await expect(page.getByRole('heading', { name: /截至 2026-08-07 的型態相似度分析/ })).toBeVisible();
+    await expect(page.getByText('落後兩個以上交易日，請以截止日為準解讀')).toBeVisible();
     await expect(page.getByText('資料截止日符合目前預期交易日')).not.toBeVisible();
   });
 
   test('公司行動會標示並抑制價格連續性型態規則', async ({ page }) => {
-    const piercing = MVP_CASES.find((candidate) => candidate.cardId === 'piercing-line' && candidate.kind === 'positive');
-    if (!piercing) {
-      throw new Error('E2E fixture 缺少穿透形正向案例。');
-    }
+    const piercing = piercingPositiveCase();
     const targetDate = piercing.snapshot.bars.at(-1)?.date;
     if (!targetDate) {
       throw new Error('穿透形案例缺少目標日 K。');

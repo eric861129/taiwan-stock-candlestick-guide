@@ -9,6 +9,17 @@ import StageQuiz from '../../src/components/StageQuiz.vue';
 import StockAnalyzer from '../../src/components/StockAnalyzer.vue';
 import './styles.css';
 
+function focusMainContent(): void {
+  requestAnimationFrame(() => {
+    const mainContent = document.getElementById('VPContent');
+    if (!mainContent) {
+      return;
+    }
+    mainContent.setAttribute('tabindex', '-1');
+    mainContent.focus();
+  });
+}
+
 const theme: Theme = {
   extends: DefaultTheme,
   Layout: () =>
@@ -19,6 +30,7 @@ const theme: Theme = {
           {
             class: 'skip-link',
             href: '#VPContent',
+            onClick: focusMainContent,
           },
           '跳至主要內容',
         ),

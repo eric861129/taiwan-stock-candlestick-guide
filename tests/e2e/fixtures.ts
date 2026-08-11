@@ -1,27 +1,12 @@
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
-import {
-  copyFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { expect, type Page } from '@playwright/test';
 import type { CorporateAction, OhlcvBar } from '../../src/domain/market-data/types';
+export { prepareFixtureSnapshot } from './fixture-lifecycle';
 
 export const SITE_BASE = '/taiwan-stock-candlestick-guide/';
 export const PROGRESS_STORAGE_KEY = 'tw-candlestick-guide:progress:v1';
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const fixtureSnapshotDirectory = resolve(mkdtempSync(join(tmpdir(), 'candlestick-e2e-')), 'site-data');
-const publicDataDirectory = resolve(repositoryRoot, 'public/data');
-const fixtureMarker = join(publicDataDirectory, '.task-8-e2e-fixture');
 const fixtureSourceCommit = 'fixture';
 const officialFixtureSource = 'https://example.test/official-market-source';
 
@@ -55,40 +40,6 @@ export interface BrowserMarketFixture {
   readonly manifestBody: string;
   readonly stockBody: string;
   readonly stockPath: string;
-}
-
-/**
- * 以 Task 5 的離線 CLI 建立快照，並沿用部署流程將已驗證 data 掛入 VitePress public input。
- * 若 public/data 已由非 E2E 流程使用，拒絕覆寫以避免污染使用者資料。
- */
-export function prepareFixtureSnapshot(): void {
-  execFileSync(
-    'python',
-    [
-      'tools/market_snapshot.py',
-      'fixture',
-      '--fixtures',
-      'tests/fixtures/market_snapshot',
-      '--output',
-      fixtureSnapshotDirectory,
-      '--source-commit',
-      fixtureSourceCommit,
-    ],
-    {
-      cwd: repositoryRoot,
-      encoding: 'utf8',
-      stdio: 'pipe',
-    },
-  );
-
-  if (existsSync(publicDataDirectory) && !existsSync(fixtureMarker)) {
-    throw new Error('public/data 已含有非 Task 8 E2E 資料；為避免覆寫，請先使用空白工作區執行測試。');
-  }
-
-  mkdirSync(publicDataDirectory, { recursive: true });
-  cpSync(resolve(fixtureSnapshotDirectory, 'data'), publicDataDirectory, { recursive: true, force: true });
-  copyFileSync(resolve(fixtureSnapshotDirectory, 'manifest.json'), join(publicDataDirectory, 'manifest.json'));
-  writeFileSync(fixtureMarker, 'Task 8 offline fixture; ignored by Git.\n', 'utf8');
 }
 
 export async function goToRoute(page: Page, route = ''): Promise<void> {

@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import { loadManifest, loadStockSnapshot } from '../domain/market-data/client';
 import { computeFreshness } from '../domain/market-data/freshness';
 import type { MarketDataManifest, MarketDataSymbol } from '../domain/market-data/schema';
-import type { AnalysisResult, StockSnapshot } from '../domain/market-data/types';
+import type { AnalysisResult, StockSnapshot, UnavailableReason } from '../domain/market-data/types';
 import { analyzePatterns } from '../domain/patterns/matcher';
 import AnalysisResultPanel from './AnalysisResultPanel.vue';
 import CandlestickChart from './CandlestickChart.vue';
@@ -47,6 +47,21 @@ function messageFromError(error: unknown): string {
     }
   }
   return '資料載入失敗，請稍後重新查詢。';
+}
+
+function unavailableReasonFromError(error: unknown): UnavailableReason {
+  if (error !== null && typeof error === 'object' && 'reason' in error) {
+    const reason = (error as { reason?: unknown }).reason;
+    if (
+      reason === 'not-found'
+      || reason === 'unsupported-security'
+      || reason === 'load-error'
+      || reason === 'schema-error'
+    ) {
+      return reason;
+    }
+  }
+  return 'load-error';
 }
 
 async function prepareManifest(): Promise<void> {
@@ -127,6 +142,16 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
     }
     loadState.value = 'ready';
     statusMessage.value = '';
+    const reason = unavailableReasonFromError(error);
+    if (reason === 'load-error' || reason === 'schema-error') {
+      result.value = {
+        status: 'unavailable',
+        reason,
+        message: messageFromError(error),
+      };
+      errorMessage.value = '';
+      return;
+    }
     errorMessage.value = messageFromError(error);
   }
 }
