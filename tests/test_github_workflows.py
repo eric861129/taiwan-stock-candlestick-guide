@@ -4,11 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import sys
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
+sys.path.insert(0, str(ROOT / "tools"))
+
+from github_actions_artifacts import (  # noqa: E402
+    GitHubArtifactQueryError,
+    find_latest_successful_market_snapshot,
+)
 
 
 ACTION_PINS = {
@@ -30,6 +37,230 @@ def read_workflow(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def shell_run_blocks(text: str) -> tuple[str, ...]:
+    """取出 workflow steps 的 shell body，檢查未信任 context 不會直接進 shell。"""
+    lines = text.splitlines()
+    blocks: list[str] = []
+    for index, line in enumerate(lines):
+        if line != "        run: |":
+            continue
+        body: list[str] = []
+        for following in lines[index + 1 :]:
+            indentation = len(following) - len(following.lstrip())
+            if following and indentation <= 8:
+                break
+            body.append(following)
+        blocks.append("\n".join(body))
+    return tuple(blocks)
+
+
+class GitHubArtifactPaginationTests(unittest.TestCase):
+    """以可控 GitHub API 回應驗證快照查詢不會漏掉下一頁。"""
+
+    def test_follows_link_pagination_before_falling_back_to_bootstrap(self) -> None:
+        """若只讀第一頁，下一頁可用快照會被誤判遺失並觸發 bootstrap。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        second_page = f"{first_page}&page=2"
+        first_page_artifacts = [
+            {
+                "id": artifact_id,
+                "name": f"candidate-market-snapshot-{artifact_id}",
+                "expired": False,
+                "workflow_run": {"id": artifact_id + 1_000},
+            }
+            for artifact_id in range(1, 101)
+        ]
+        calls: list[str] = []
+
+        def fetch_page(url: str) -> tuple[object, object]:
+            calls.append(url)
+            if url == first_page:
+                return (
+                    {"total_count": 101, "artifacts": first_page_artifacts},
+                    {"Link": f'<{second_page}>; rel="next"'},
+                )
+            if url == second_page:
+                return (
+                    {
+                        "total_count": 101,
+                        "artifacts": [
+                            {
+                                "id": 901,
+                                "name": "market-snapshot-2026-08-11-502ff8be2321",
+                                "expired": False,
+                                "created_at": "2026-08-11T12:00:00Z",
+                                "workflow_run": {"id": 1_901},
+                            }
+                        ],
+                    },
+                    {},
+                )
+            raise AssertionError(f"未預期的 API page：{url}")
+
+        artifact = find_latest_successful_market_snapshot(
+            fetch_page,
+            lambda run_id: {"conclusion": "success"} if run_id == 1_901 else {"conclusion": "failure"},
+            first_page,
+            max_pages=10,
+        )
+
+        self.assertIsNotNone(artifact)
+        assert artifact is not None
+        self.assertEqual(901, artifact.artifact_id)
+        self.assertEqual(1_901, artifact.workflow_run_id)
+        self.assertEqual([first_page, second_page], calls)
+
+    def test_pagination_limit_fails_closed_instead_of_bootstrapping(self) -> None:
+        """若 API 聲稱還有下一頁卻超過上限，流程必須失敗而不是誤建基準快照。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+
+        with self.assertRaisesRegex(GitHubArtifactQueryError, "上限"):
+            find_latest_successful_market_snapshot(
+                lambda url: (
+                    {
+                        "total_count": 101,
+                        "artifacts": [
+                            {
+                                "id": 1,
+                                "name": "candidate-market-snapshot-1",
+                                "expired": False,
+                                "workflow_run": {"id": 1_001},
+                            }
+                        ],
+                    },
+                    {"Link": f'<{first_page}&page=2>; rel="next"'},
+                ),
+                lambda run_id: {"conclusion": "success"},
+                first_page,
+                max_pages=1,
+            )
+
+    def test_keeps_paging_to_select_the_newest_successful_snapshot(self) -> None:
+        """若在第一個成功 artifact 停止，未知排序的 API 回應會選到較舊快照。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        second_page = f"{first_page}&page=2"
+        calls: list[str] = []
+
+        def fetch_page(url: str) -> tuple[object, object]:
+            calls.append(url)
+            if url == first_page:
+                return (
+                    {
+                        "total_count": 2,
+                        "artifacts": [
+                            {
+                                "id": 500,
+                                "name": "market-snapshot-2026-08-09-old",
+                                "expired": False,
+                                "created_at": "2026-08-09T12:00:00Z",
+                                "workflow_run": {"id": 1_500},
+                            }
+                        ],
+                    },
+                    {"Link": f'<{second_page}>; rel="next"'},
+                )
+            if url == second_page:
+                return (
+                    {
+                        "total_count": 2,
+                        "artifacts": [
+                            {
+                                "id": 501,
+                                "name": "market-snapshot-2026-08-10-new",
+                                "expired": False,
+                                "created_at": "2026-08-10T12:00:00Z",
+                                "workflow_run": {"id": 1_501},
+                            }
+                        ],
+                    },
+                    {},
+                )
+            raise AssertionError(f"未預期的 API page：{url}")
+
+        artifact = find_latest_successful_market_snapshot(
+            fetch_page,
+            lambda run_id: {"conclusion": "success"},
+            first_page,
+            max_pages=10,
+        )
+
+        self.assertIsNotNone(artifact)
+        assert artifact is not None
+        self.assertEqual(501, artifact.artifact_id)
+        self.assertEqual([first_page, second_page], calls)
+
+    def test_malformed_workflow_run_response_fails_closed(self) -> None:
+        """若成功快照的 workflow run 回應不完整，不得降級成「沒有舊快照」。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        response = {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "id": 700,
+                    "name": "market-snapshot-2026-08-11-incomplete-run",
+                    "expired": False,
+                    "created_at": "2026-08-11T12:00:00Z",
+                    "workflow_run": {"id": 1_700},
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(GitHubArtifactQueryError, "conclusion"):
+            find_latest_successful_market_snapshot(
+                lambda url: (response, {}),
+                lambda run_id: {},
+                first_page,
+                max_pages=10,
+            )
+
+    def test_changed_total_count_between_pages_fails_closed(self) -> None:
+        """分頁期間資料集改變時，不能把可能遺漏的資料當成完整快照清單。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        second_page = f"{first_page}&page=2"
+
+        def fetch_page(url: str) -> tuple[object, object]:
+            if url == first_page:
+                return (
+                    {
+                        "total_count": 101,
+                        "artifacts": [
+                            {
+                                "id": 800,
+                                "name": "candidate-market-snapshot-800",
+                                "expired": False,
+                                "workflow_run": {"id": 1_800},
+                            }
+                        ],
+                    },
+                    {"Link": f'<{second_page}>; rel="next"'},
+                )
+            if url == second_page:
+                return (
+                    {
+                        "total_count": 102,
+                        "artifacts": [
+                            {
+                                "id": 801,
+                                "name": "market-snapshot-2026-08-11-mutated-list",
+                                "expired": False,
+                                "created_at": "2026-08-11T12:00:00Z",
+                                "workflow_run": {"id": 1_801},
+                            }
+                        ],
+                    },
+                    {},
+                )
+            raise AssertionError(f"未預期的 API page：{url}")
+
+        with self.assertRaisesRegex(GitHubArtifactQueryError, "total_count"):
+            find_latest_successful_market_snapshot(
+                fetch_page,
+                lambda run_id: {"conclusion": "success"},
+                first_page,
+                max_pages=10,
+            )
+
+
 class GitHubWorkflowContractTests(unittest.TestCase):
     """防止 CI、快照與 Pages 發布流程在重構時失去原子性。"""
 
@@ -46,7 +277,10 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("pull_request:", text)
         self.assertIn("workflow_call:", text)
         self.assertIn("source_sha:", text)
-        self.assertIn("ref: ${{ inputs.source_sha || github.sha }}", text)
+        self.assertIn("id: validate-source", text)
+        self.assertIn("REQUESTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}", text)
+        self.assertIn("ref: ${{ steps.validate-source.outputs.source_sha }}", text)
+        self.assertIn("VALIDATED_SOURCE_SHA: ${{ steps.validate-source.outputs.source_sha }}", text)
         self.assertIn("git rev-parse HEAD", text)
         self.assertIn("source SHA checkout mismatch", text)
         self.assertIn('python-version: "3.13"', text)
@@ -64,6 +298,32 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(command, text)
         self.assert_pinned_actions(text, "actions/checkout", "actions/setup-python", "actions/setup-node")
+
+    def test_workflow_shells_receive_dynamic_values_only_through_environment(self) -> None:
+        """若把 inputs、needs 或 API output 直接展開到 shell，動態字串可改變 shell 語意。"""
+        for name in ("verify.yml", "deploy-pages.yml", "update-market-data.yml"):
+            for shell_body in shell_run_blocks(read_workflow(name)):
+                self.assertNotRegex(
+                    shell_body,
+                    r"\$\{\{",
+                    msg=f"{name} 的 shell 動態值必須先經 env 邊界傳入。",
+                )
+
+    def test_rollback_artifact_input_is_validated_before_action_consumes_it(self) -> None:
+        """若 download action 直接吃手動輸入，驗證 step 無法成為唯一輸入邊界。"""
+        text = read_workflow("deploy-pages.yml")
+        validate_rollback = text.split("      - id: validate-rollback", 1)[1].split(
+            "\n      - name: Download selected rollback metadata", 1
+        )[0]
+        self.assertIn('output.write(f"rollback_artifact_id={artifact_id}\\n")', validate_rollback)
+        self.assertIn(
+            "artifact-ids: ${{ steps.validate-rollback.outputs.rollback_artifact_id }}",
+            text,
+        )
+        self.assertIn(
+            "ROLLBACK_ARTIFACT_ID: ${{ steps.validate-rollback.outputs.rollback_artifact_id || '' }}",
+            text,
+        )
 
     def test_deploy_workflow_binds_one_verified_snapshot_to_one_pages_artifact(self) -> None:
         """若資料、source 或 artifact 可任意混搭，rollback 可能發布不一致站台。"""
@@ -87,7 +347,7 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("market-snapshot-", text)
         self.assertIn("retention-days: 30", text)
         self.assertIn("actions/artifacts", text)
-        self.assertIn('run.get("conclusion") == "success"', text)
+        self.assertIn("python .workflow-helper/tools/github_actions_artifacts.py", text)
         self.assertIn("rollback_run_id", text)
         self.assertIn("artifact_run_id", text)
         self.assertGreaterEqual(text.count("run-id:"), 3)
@@ -120,6 +380,37 @@ class GitHubWorkflowContractTests(unittest.TestCase):
             "actions/upload-pages-artifact",
             "actions/deploy-pages",
         )
+
+    def test_deploy_workflow_paginates_previous_snapshots_and_same_cutoff_skips_pages(self) -> None:
+        """若漏掃 Link 後頁或 no-op 後繼續 bootstrap，會重複部署或遺失舊快照。"""
+        text = read_workflow("deploy-pages.yml")
+        find_previous = text.split("      - id: find-previous", 1)[1].split(
+            "\n      - name: Download selected rollback snapshot", 1
+        )[0]
+        self.assertIn("python .workflow-helper/tools/github_actions_artifacts.py", find_previous)
+        self.assertIn("--max-pages 10", find_previous)
+        self.assertNotIn("actions/artifacts?per_page=100", find_previous)
+
+        same_cutoff_start = text.index('if [[ "$SKIP_IF_SAME_CUTOFF" == "true" ]]')
+        same_cutoff_exit = text.index("exit 0", same_cutoff_start)
+        fallback_bootstrap = text.index("重建 source-bound 基準快照", same_cutoff_start)
+        self.assertLess(same_cutoff_exit, fallback_bootstrap)
+        self.assertIn('echo "should_deploy=false"', text[same_cutoff_start:same_cutoff_exit])
+        self.assertIn("if: ${{ needs.source-snapshot.outputs.should_deploy == 'true' }}", text)
+        self.assertIn("needs.source-snapshot.outputs.should_deploy == 'true'", text)
+
+    def test_pagination_helper_is_available_for_a_historical_source_sha(self) -> None:
+        """歷史 source SHA 未含新 helper 時，工作流程仍需能查詢舊市場快照。"""
+        text = read_workflow("deploy-pages.yml")
+        helper_checkout = text.split("      - name: Checkout workflow helper", 1)[1].split(
+            "\n      - id: find-previous", 1
+        )[0]
+        find_previous = text.split("      - id: find-previous", 1)[1].split(
+            "\n      - name: Download selected rollback snapshot", 1
+        )[0]
+        self.assertIn("ref: ${{ github.sha }}", helper_checkout)
+        self.assertIn("path: .workflow-helper", helper_checkout)
+        self.assertIn("python .workflow-helper/tools/github_actions_artifacts.py", find_previous)
 
     def test_market_scheduler_resolves_main_once_at_taipei_after_hours(self) -> None:
         """若排程重新解析分支或時區錯誤，資料可能配上另一版程式。"""

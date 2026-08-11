@@ -17,24 +17,34 @@ jobs:
     name: 離線發布驗證
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout requested source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-          fetch-depth: 1
-
-      - name: Confirm immutable source checkout
+      - id: validate-source
+        name: Validate requested source SHA before checkout
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          expected_source_sha='${{ inputs.source_sha || github.sha }}'
-          if ! [[ "$expected_source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+          if ! [[ "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "source SHA 必須是完整的小寫 Git commit SHA。" >&2
             exit 1
           fi
+          printf 'source_sha=%s\n' "$REQUESTED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout requested source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.validate-source.outputs.source_sha }}
+          fetch-depth: 1
+
+      - name: Confirm immutable source checkout
+        env:
+          VALIDATED_SOURCE_SHA: ${{ steps.validate-source.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
           actual_source_sha="$(git rev-parse HEAD)"
-          if [[ "$actual_source_sha" != "$expected_source_sha" ]]; then
-            echo "source SHA checkout mismatch: expected $expected_source_sha, got $actual_source_sha" >&2
+          if [[ "$actual_source_sha" != "$VALIDATED_SOURCE_SHA" ]]; then
+            echo "source SHA checkout mismatch: expected $VALIDATED_SOURCE_SHA, got $actual_source_sha" >&2
             exit 1
           fi
 
