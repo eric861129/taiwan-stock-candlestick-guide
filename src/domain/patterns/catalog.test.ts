@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getPatternCard, PATTERN_CARDS } from './catalog';
 import { PATTERN_ILLUSTRATIONS } from './illustrations';
+import { hasValidRuleBindingParameters } from './rule-parameters';
 import type { PatternCardId } from './types';
 
 const CANONICAL_IDS = [
@@ -121,6 +122,7 @@ describe('canonical Pattern Card catalog', () => {
           .filter((rule) => rule.group === 'invalidating')
           .every((rule) => rule.weight === 0),
       ).toBe(true);
+      expect(matcher?.rules.every((rule) => hasValidRuleBindingParameters(rule))).toBe(true);
     }
   });
 

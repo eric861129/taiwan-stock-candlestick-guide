@@ -1,5 +1,10 @@
 import type { RuleEvaluation } from '../../market-data/types';
 import { quantile, type CandlestickFeatures, type CandleFeatures } from '../features';
+import {
+  hasValidRuleBindingParameters,
+  numberParameter,
+  stringParameter,
+} from '../rule-parameters';
 import type { PatternRuleBinding } from '../types';
 
 function evaluate(
@@ -84,7 +89,11 @@ function evaluateStructureContext(
   features: CandlestickFeatures,
   binding: PatternRuleBinding,
 ): RuleEvaluation {
-  const expected = binding.parameters.expected;
+  const expected = stringParameter(binding, 'expected');
+
+  if (!expected) {
+    return unavailable(binding, 'invalid-binding-parameters');
+  }
 
   if (features.priorStructure === 'unavailable') {
     return unavailable(binding, 'prior-structure-unavailable');
@@ -127,6 +136,10 @@ export function evaluateSharedBinding(
   features: CandlestickFeatures,
   binding: PatternRuleBinding,
 ): RuleEvaluation | undefined {
+  if (!hasValidRuleBindingParameters(binding)) {
+    return unavailable(binding, 'invalid-binding-parameters');
+  }
+
   const feature = target(features);
   const universalInvalidation = evaluateUniversalInvalidation(features, binding);
   if (universalInvalidation) {
@@ -134,10 +147,15 @@ export function evaluateSharedBinding(
   }
 
   switch (binding.ruleId) {
-    case 'same-window-context':
-      return features.comparisonWindow.bodySizes.length === Number(binding.parameters.comparisonWindow ?? 20)
+    case 'same-window-context': {
+      const comparisonWindow = numberParameter(binding, 'comparisonWindow');
+      if (comparisonWindow === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      return features.comparisonWindow.bodySizes.length === comparisonWindow
         ? evaluate(binding, 'met', '比較窗只包含目標 K 之前的二十根完成 K 線。')
         : unavailable(binding, 'prior-body-window-unavailable');
+    }
     case 'prior-structure-falling':
     case 'prior-structure-rising':
     case 'prior-structure-recorded':
@@ -146,10 +164,15 @@ export function evaluateSharedBinding(
     case 'descriptor-language-limited':
       return evaluate(binding, 'met', '判讀只使用分析截止日及以前資料，說明維持在可觀察條件。');
     case 'relative-window-unavailable':
-    case 'harami-window-unavailable':
-      return features.comparisonWindow.bodySizes.length < Number(binding.parameters.minimumPriorBodies ?? 20)
+    case 'harami-window-unavailable': {
+      const minimumPriorBodies = numberParameter(binding, 'minimumPriorBodies');
+      if (minimumPriorBodies === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      return features.comparisonWindow.bodySizes.length < minimumPriorBodies
         ? evaluate(binding, 'met', '相對實體比較窗不足，這張卡不參與計分。', 'prior-body-window-unavailable')
         : evaluate(binding, 'not-met', '相對實體比較窗完整。');
+    }
     case 'invalid-single-candle-data':
     case 'range-or-unit-unavailable': {
       const invalid = !hasUsableRange(feature) || !hasComparisonUnit(feature) || feature?.unavailableReasonCodes.includes('incomplete-bar');
@@ -179,8 +202,14 @@ export function evaluateSharedBinding(
     case 'price-continuity-action-intersects-window':
     case 'star-window-action-or-comparison-unavailable': {
       const priceAction = features.intersectingCorporateActions.some((action) => action.affectsPriceContinuity);
-      const bodyWindowMissing = binding.ruleId === 'star-window-action-or-comparison-unavailable'
-        && features.comparisonWindow.bodySizes.length < Number(binding.parameters.minimumPriorBodies ?? 20);
+      const minimumPriorBodies = binding.ruleId === 'star-window-action-or-comparison-unavailable'
+        ? numberParameter(binding, 'minimumPriorBodies')
+        : undefined;
+      if (binding.ruleId === 'star-window-action-or-comparison-unavailable' && minimumPriorBodies === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      const bodyWindowMissing = minimumPriorBodies !== undefined
+        && features.comparisonWindow.bodySizes.length < minimumPriorBodies;
       if (priceAction) {
         return evaluate(binding, 'met', '公司行動影響候選窗的價格連續性，這張卡不參與計分。', 'price-continuity-action-intersects-window');
       }
@@ -225,8 +254,13 @@ export function evaluateSingleCandleBinding(
 
   switch (binding.ruleId) {
     case 'relative-body-upper-quartile': {
-      const threshold = quantile(features.comparisonWindow.bodySizes, Number(binding.parameters.percentile ?? 0.75));
-      if (feature.bodySize === null || threshold === null) {
+      const percentile = numberParameter(binding, 'percentile');
+      const comparisonWindow = numberParameter(binding, 'comparisonWindow');
+      if (percentile === undefined || comparisonWindow === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      const threshold = quantile(features.comparisonWindow.bodySizes, percentile);
+      if (feature.bodySize === null || features.comparisonWindow.bodySizes.length !== comparisonWindow || threshold === null) {
         return unavailable(binding, 'prior-body-window-unavailable');
       }
       return atLeast(feature.bodySize, threshold, feature.comparisonUnit)
@@ -234,8 +268,13 @@ export function evaluateSingleCandleBinding(
         : evaluate(binding, 'not-met', `目標實體 ${feature.bodySize} 未達比較窗上四分位 ${threshold}。`);
     }
     case 'relative-body-lower-quartile': {
-      const threshold = quantile(features.comparisonWindow.bodySizes, Number(binding.parameters.percentile ?? 0.25));
-      if (feature.bodySize === null || threshold === null) {
+      const percentile = numberParameter(binding, 'percentile');
+      const comparisonWindow = numberParameter(binding, 'comparisonWindow');
+      if (percentile === undefined || comparisonWindow === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      const threshold = quantile(features.comparisonWindow.bodySizes, percentile);
+      if (feature.bodySize === null || features.comparisonWindow.bodySizes.length !== comparisonWindow || threshold === null) {
         return unavailable(binding, 'prior-body-window-unavailable');
       }
       return atMost(feature.bodySize, threshold, feature.comparisonUnit)
@@ -243,7 +282,10 @@ export function evaluateSingleCandleBinding(
         : evaluate(binding, 'not-met', `目標實體 ${feature.bodySize} 超過比較窗下四分位 ${threshold}。`);
     }
     case 'open-close-within-comparison-unit': {
-      const maximumUnits = Number(binding.parameters.maximumUnits ?? 1);
+      const maximumUnits = numberParameter(binding, 'maximumUnits');
+      if (maximumUnits === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
       if (feature.bodySize === null || !hasComparisonUnit(feature)) {
         return unavailable(binding, 'comparison-unit-unavailable');
       }
@@ -260,9 +302,12 @@ export function evaluateSingleCandleBinding(
       if (!bar) {
         return unavailable(binding, 'missing-target-bar');
       }
-      const bodyPosition = Number(binding.parameters.bodyLowMinimumRange ?? 2 / 3);
-      const wickMultiple = Number(binding.parameters.lowerWickBodyMultiple ?? 2);
-      const maximumUpperUnits = Number(binding.parameters.upperWickMaximumUnits ?? 1);
+      const bodyPosition = numberParameter(binding, 'bodyLowMinimumRange');
+      const wickMultiple = numberParameter(binding, 'lowerWickBodyMultiple');
+      const maximumUpperUnits = numberParameter(binding, 'upperWickMaximumUnits');
+      if (bodyPosition === undefined || wickMultiple === undefined || maximumUpperUnits === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
       const met = atLeast(feature.bodyLow, bar.low + feature.range * bodyPosition, feature.comparisonUnit)
         && atLeast(feature.lowerWick, feature.effectiveBodySize * wickMultiple, feature.comparisonUnit)
         && atMost(feature.upperWick, feature.comparisonUnit * maximumUpperUnits, feature.comparisonUnit);
@@ -278,9 +323,12 @@ export function evaluateSingleCandleBinding(
       if (!bar) {
         return unavailable(binding, 'missing-target-bar');
       }
-      const bodyPosition = Number(binding.parameters.bodyHighMaximumRange ?? 1 / 3);
-      const wickMultiple = Number(binding.parameters.upperWickBodyMultiple ?? 2);
-      const maximumLowerUnits = Number(binding.parameters.lowerWickMaximumUnits ?? 1);
+      const bodyPosition = numberParameter(binding, 'bodyHighMaximumRange');
+      const wickMultiple = numberParameter(binding, 'upperWickBodyMultiple');
+      const maximumLowerUnits = numberParameter(binding, 'lowerWickMaximumUnits');
+      if (bodyPosition === undefined || wickMultiple === undefined || maximumLowerUnits === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
       const met = atMost(feature.bodyHigh, bar.low + feature.range * bodyPosition, feature.comparisonUnit)
         && atLeast(feature.upperWick, feature.effectiveBodySize * wickMultiple, feature.comparisonUnit)
         && atMost(feature.lowerWick, feature.comparisonUnit * maximumLowerUnits, feature.comparisonUnit);
@@ -289,7 +337,10 @@ export function evaluateSingleCandleBinding(
         : evaluate(binding, 'not-met', '實體位置、上影或下影未同時符合射擊之星形的固定幾何條件。');
     }
     case 'both-wicks-within-comparison-unit': {
-      const maximumUnits = Number(binding.parameters.maximumUnits ?? 1);
+      const maximumUnits = numberParameter(binding, 'maximumUnits');
+      if (maximumUnits === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
       if (!hasComparisonUnit(feature) || feature.upperWick === null || feature.lowerWick === null) {
         return unavailable(binding, 'comparison-unit-unavailable');
       }
@@ -302,9 +353,12 @@ export function evaluateSingleCandleBinding(
       if (!hasUsableRange(feature) || !hasComparisonUnit(feature) || feature.closeLocation === null || feature.upperWick === null || feature.lowerWick === null || feature.effectiveBodySize === null || feature.bodySize === null) {
         return unavailable(binding, 'single-candle-data-unavailable');
       }
-      const low = Number(binding.parameters.closeLocationLow ?? 1 / 3);
-      const high = Number(binding.parameters.closeLocationHigh ?? 2 / 3);
-      const wickMultiple = Number(binding.parameters.wickBodyMultiple ?? 2);
+      const low = numberParameter(binding, 'closeLocationLow');
+      const high = numberParameter(binding, 'closeLocationHigh');
+      const wickMultiple = numberParameter(binding, 'wickBodyMultiple');
+      if (low === undefined || high === undefined || wickMultiple === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
       const met = feature.closeLocation <= low
         || feature.closeLocation >= high
         || feature.upperWick >= feature.effectiveBodySize * wickMultiple

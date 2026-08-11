@@ -1,13 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import type { OhlcvBar, StockSnapshot } from '../market-data/types';
 import { PATTERN_CARDS } from './catalog';
-import { analyzePatterns } from './matcher';
+import { analyzePatterns, evaluateAllMvpCardsForTesting } from './matcher';
 import { RULE_FAMILIES } from './rule-registry';
 import { makeSnapshot, MVP_CASES } from './test-cases';
 import type { PatternCardId } from './types';
 
 function resultFor(result: ReturnType<typeof analyzePatterns>, cardId: PatternCardId): boolean {
   return result.status === 'matched' && result.matches.some((match) => match.cardId === cardId);
+}
+
+function candidateFor(snapshot: StockSnapshot, cardId: PatternCardId): boolean {
+  const evaluation = evaluateAllMvpCardsForTesting(snapshot).find((item) => item.cardId === cardId);
+  if (!evaluation) {
+    throw new Error(`找不到卡片評估結果：${cardId}`);
+  }
+
+  return evaluation.isCandidate;
 }
 
 function caseFor(cardId: PatternCardId, kind: 'positive' | 'boundary' | 'negative') {
@@ -70,7 +79,7 @@ describe('explainable 17-pattern matcher', () => {
   });
 
   it.each(MVP_CASES)('$cardId $caseId', ({ cardId, snapshot, expected }) => {
-    expect(resultFor(analyzePatterns(snapshot), cardId)).toBe(expected);
+    expect(candidateFor(snapshot, cardId)).toBe(expected);
   });
 
   it('rounds scores to five, preserves unavailable optional weight as zero, and labels only 80-plus as highly matching', () => {
@@ -93,6 +102,8 @@ describe('explainable 17-pattern matcher', () => {
 
   it('sorts deterministic ties and returns only the first three candidates without padding', () => {
     const hammer = caseFor('hammer', 'positive');
+    const candidates = evaluateAllMvpCardsForTesting(hammer.snapshot)
+      .filter((evaluation) => evaluation.isCandidate);
     const result = analyzePatterns(hammer.snapshot);
 
     expect(result.status).toBe('matched');
@@ -105,7 +116,7 @@ describe('explainable 17-pattern matcher', () => {
       'hammer',
       'relative-long-body',
     ]);
-    expect(result.matches).toHaveLength(3);
+    expect(result.matches).toHaveLength(Math.min(3, candidates.length));
   });
 
   it('suppresses price-continuity rules when a verified corporate action intersects their candidate window', () => {
@@ -195,7 +206,43 @@ describe('explainable 17-pattern matcher', () => {
     }
 
     expect(result.context.unavailableCardIds).toContain('near-marubozu');
-    expect(result.context.reasonCodes).toContain('comparison-unit-unavailable');
+    expect(result.context.reasonCodes).toContain('candidate-price-precision-unavailable');
+  });
+
+  it.each([
+    'bullish-engulfing',
+    'piercing-line',
+    'morning-star',
+  ] as const)('returns insufficient evidence when %s candidate bars lack source precision or comparison units', (cardId) => {
+    const positive = caseFor(cardId, 'positive');
+    const finalIndex = positive.snapshot.bars.length - 1;
+    const missingSourcePrecision = positive.snapshot.bars.map((item, index) => (
+      index === finalIndex ? { ...item, sourcePrecision: 0 } : item
+    ));
+    const missingComparisonUnit = positive.snapshot.bars.map((item, index) => (
+      index === finalIndex ? { ...item, comparisonUnit: 0 } : item
+    ));
+
+    for (const bars of [missingSourcePrecision, missingComparisonUnit]) {
+      const result = analyzePatterns(makeSnapshot(bars));
+      expect(result.status).toBe('insufficient-evidence');
+      if (result.status === 'insufficient-evidence') {
+        expect(result.reasonCodes).toContain('candidate-price-precision-unavailable');
+        expect(result.context.unavailableCardIds).toContain(cardId);
+        expect(result.context.analyzedBarCount).toBe(positive.snapshot.bars.length);
+        expect(result.context.analyzedFrom).toBe(positive.snapshot.bars[0]?.date);
+        expect(result.context.analyzedTo).toBe(positive.snapshot.bars.at(-1)?.date);
+      }
+    }
+  });
+
+  it('does not reject a candidate because an unrelated earlier analysis bar lacks price precision', () => {
+    const positive = caseFor('bullish-engulfing', 'positive');
+    const result = analyzePatterns(makeSnapshot(positive.snapshot.bars.map((item, index) => (
+      index === 0 ? { ...item, sourcePrecision: 0, comparisonUnit: 0 } : item
+    ))));
+
+    expect(resultFor(result, 'bullish-engulfing')).toBe(true);
   });
 
   it('keeps normal no-match, evidence gaps, and system-unavailable conditions distinct with analysis context', () => {
@@ -216,7 +263,7 @@ describe('explainable 17-pattern matcher', () => {
     ]));
     expect(insufficient.status).toBe('insufficient-evidence');
     if (insufficient.status === 'insufficient-evidence') {
-      expect(insufficient.reasonCodes).toContain('comparison-unit-unavailable');
+      expect(insufficient.reasonCodes).toContain('candidate-price-precision-unavailable');
       expect(insufficient.context.dataCompleteness).toBe(0);
     }
 
@@ -236,6 +283,21 @@ describe('explainable 17-pattern matcher', () => {
     expect(unsupported).toMatchObject({
       status: 'unavailable',
       reason: 'unsupported-security',
+    });
+
+    const missingFields = analyzePatterns({} as StockSnapshot);
+    expect(missingFields).toMatchObject({
+      status: 'unavailable',
+      reason: 'schema-error',
+    });
+
+    const missingSecurityType = analyzePatterns({
+      ...neutralSnapshot(),
+      securityType: null as unknown as 'common-stock',
+    });
+    expect(missingSecurityType).toMatchObject({
+      status: 'unavailable',
+      reason: 'schema-error',
     });
 
     const malformedActions = analyzePatterns({

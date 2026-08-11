@@ -1,5 +1,10 @@
 import type { RuleEvaluation } from '../../market-data/types';
 import { quantile, type CandlestickFeatures, type CandleFeatures } from '../features';
+import {
+  booleanParameter,
+  numberParameter,
+  stringParameter,
+} from '../rule-parameters';
 import type { PatternRuleBinding } from '../types';
 import { evaluateSharedBinding } from './single-candle';
 
@@ -108,7 +113,11 @@ export function evaluateMultiCandleBinding(
       if (!previousBar || !currentBar || !previous || !current || previous.bodySize === 0 || current.bodySize === 0) {
         return unavailable(binding, 'nonzero-body-unavailable');
       }
-      const bullish = binding.parameters.direction === 'bullish';
+      const direction = stringParameter(binding, 'direction');
+      if (!direction) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      const bullish = direction === 'bullish';
       const directionMatches = bullish
         ? isBearish(previousBar) && isBullish(currentBar)
         : isBullish(previousBar) && isBearish(currentBar);
@@ -121,8 +130,12 @@ export function evaluateMultiCandleBinding(
     case 'bearish-long-parent-contained-child': {
       const bars = windowBars(features, 2);
       const candles = windowFeatures(features, 2);
-      const comparisonWindowSize = Number(binding.parameters.comparisonWindow ?? 20);
-      const threshold = quantile(features.comparisonWindow.bodySizes, Number(binding.parameters.parentPercentile ?? 0.75));
+      const comparisonWindowSize = numberParameter(binding, 'comparisonWindow');
+      const parentPercentile = numberParameter(binding, 'parentPercentile');
+      if (comparisonWindowSize === undefined || parentPercentile === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      const threshold = quantile(features.comparisonWindow.bodySizes, parentPercentile);
       if (!bars || !candles || !validBody(candles[0]) || !validBody(candles[1]) || features.comparisonWindow.bodySizes.length !== comparisonWindowSize || threshold === null) {
         return unavailable(binding, 'harami-comparison-window-unavailable');
       }
@@ -131,7 +144,11 @@ export function evaluateMultiCandleBinding(
       if (!parentBar || !childBar || !parent || !child) {
         return unavailable(binding, 'two-candle-window-unavailable');
       }
-      const bullish = binding.parameters.direction === 'bullish';
+      const direction = stringParameter(binding, 'direction');
+      if (!direction) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      const bullish = direction === 'bullish';
       const parentDirection = bullish ? isBearish(parentBar) : isBullish(parentBar);
       const childDirection = bullish ? isBullish(childBar) : isBearish(childBar);
       const childSmall = child.bodySize <= (child.comparisonUnit ?? 0);
@@ -154,19 +171,29 @@ export function evaluateMultiCandleBinding(
       if (!previous || !current) {
         return unavailable(binding, 'two-candle-window-unavailable');
       }
+      const configuredDirection = stringParameter(binding, 'direction');
+      const requiresMidpoint = booleanParameter(binding, 'requiresMidpoint');
+      const gapConvention = stringParameter(binding, 'gapConvention');
+      if (
+        (configuredDirection !== 'bullish' && configuredDirection !== 'bearish')
+        || requiresMidpoint === undefined
+        || !gapConvention
+      ) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
       const midpoint = (previous.open + previous.close) / 2;
-      const bullish = binding.parameters.direction === 'bullish';
-      const direction = bullish ? 'bullish' : 'bearish';
+      const bullish = configuredDirection === 'bullish';
+      const direction: 'bullish' | 'bearish' = configuredDirection;
       const directionMatches = bullish
         ? isBearish(previous) && isBullish(current)
         : isBullish(previous) && isBearish(current);
-      const crossesMidpoint = binding.parameters.requiresMidpoint === false || (
+      const crossesMidpoint = !requiresMidpoint || (
         bullish
           ? current.close > midpoint && current.close < previous.open
           : current.close < midpoint && current.close > previous.open
       );
       const met = directionMatches
-        && matchesGapConvention(previous, current, direction, binding.parameters.gapConvention)
+        && matchesGapConvention(previous, current, direction, gapConvention)
         && crossesMidpoint;
       return met
         ? evaluate(binding, 'met', '前根方向、固定缺口慣例與實體中點穿越條件都成立。')
@@ -176,8 +203,13 @@ export function evaluateMultiCandleBinding(
     case 'bearish-three-candle-star-midpoint': {
       const bars = windowBars(features, 3);
       const candles = windowFeatures(features, 3);
-      const comparisonWindowSize = Number(binding.parameters.comparisonWindow ?? 20);
-      const threshold = quantile(features.comparisonWindow.bodySizes, Number(binding.parameters.parentPercentile ?? 0.75));
+      const comparisonWindowSize = numberParameter(binding, 'comparisonWindow');
+      const parentPercentile = numberParameter(binding, 'parentPercentile');
+      const requiresMidpoint = booleanParameter(binding, 'requiresMidpoint');
+      if (comparisonWindowSize === undefined || parentPercentile === undefined || requiresMidpoint === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      const threshold = quantile(features.comparisonWindow.bodySizes, parentPercentile);
       if (!bars || !candles || !validBody(candles[0]) || !validBody(candles[1]) || features.comparisonWindow.bodySizes.length !== comparisonWindowSize || threshold === null) {
         return unavailable(binding, 'star-comparison-window-unavailable');
       }
@@ -186,14 +218,18 @@ export function evaluateMultiCandleBinding(
       if (!firstBar || !secondBar || !thirdBar || !first || !second) {
         return unavailable(binding, 'three-candle-window-unavailable');
       }
-      const bullish = binding.parameters.direction === 'bullish';
+      const direction = stringParameter(binding, 'direction');
+      if (!direction) {
+        return unavailable(binding, 'invalid-binding-parameters');
+      }
+      const bullish = direction === 'bullish';
       const firstDirection = bullish ? isBearish(firstBar) : isBullish(firstBar);
       const thirdDirection = bullish ? isBullish(thirdBar) : isBearish(thirdBar);
       const secondSmall = second.bodySize <= (second.comparisonUnit ?? 0) || (
         features.comparisonWindow.bodyLowerQuartile !== null && second.bodySize <= features.comparisonWindow.bodyLowerQuartile
       );
       const midpoint = (firstBar.open + firstBar.close) / 2;
-      const crossesMidpoint = bullish ? thirdBar.close > midpoint : thirdBar.close < midpoint;
+      const crossesMidpoint = !requiresMidpoint || (bullish ? thirdBar.close > midpoint : thirdBar.close < midpoint);
       const met = firstDirection && first.bodySize >= threshold && secondSmall && thirdDirection && crossesMidpoint;
       return met
         ? evaluate(binding, 'met', '第一根相對長實體、第二根小實體與第三根中點穿越條件都成立。')
@@ -215,11 +251,12 @@ export function evaluateMultiCandleBinding(
       if (unit <= 0) {
         return unavailable(binding, 'comparison-unit-unavailable');
       }
-      const bullish = binding.parameters.direction === 'bullish';
-      const maximumOpenGapUnits = Number(binding.parameters.maximumOpenGapUnits ?? 1);
-      if (!Number.isFinite(maximumOpenGapUnits) || maximumOpenGapUnits < 0) {
-        return unavailable(binding, 'invalid-maximum-open-gap-units');
+      const direction = stringParameter(binding, 'direction');
+      const maximumOpenGapUnits = numberParameter(binding, 'maximumOpenGapUnits');
+      if (!direction || maximumOpenGapUnits === undefined) {
+        return unavailable(binding, 'invalid-binding-parameters');
       }
+      const bullish = direction === 'bullish';
       const directional = bullish
         ? isBullish(firstBar) && isBullish(secondBar) && isBullish(thirdBar)
           && firstBar.close < secondBar.close && secondBar.close < thirdBar.close

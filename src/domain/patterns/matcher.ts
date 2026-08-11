@@ -10,6 +10,7 @@ import type {
 } from '../market-data/types';
 import { PATTERN_CARDS } from './catalog';
 import { extractCandlestickFeatures, withAnalysisWindow } from './features';
+import { hasValidRuleBindingParameters } from './rule-parameters';
 import { RULE_FAMILIES } from './rule-registry';
 import type { PatternCardDefinition, PatternCardId, RuleFamilyId } from './types';
 
@@ -23,7 +24,8 @@ interface Candidate extends PatternMatchResult {
   contextScore: number;
 }
 
-interface CardEvaluation {
+/** 單張 MVP 卡的未截斷評估結果。 */
+export interface PatternCardEvaluation {
   cardId: PatternCardId;
   evaluations: readonly RuleEvaluation[];
   score: number;
@@ -32,6 +34,11 @@ interface CardEvaluation {
   isEvaluatable: boolean;
   isCandidate: boolean;
   reasonCodes: readonly string[];
+}
+
+interface EvaluatedCard {
+  card: PatternCardDefinition;
+  evaluation: PatternCardEvaluation;
 }
 
 const DEFAULT_ANALYSIS_BAR_LIMIT = 60;
@@ -171,6 +178,29 @@ function hasValidSnapshotMetadata(snapshot: StockSnapshot): boolean {
   );
 }
 
+function hasValidSnapshotShape(snapshot: StockSnapshot): boolean {
+  return (
+    typeof snapshot.securityType === 'string'
+    && snapshot.securityType.trim().length > 0
+    && typeof snapshot.priceMode === 'string'
+    && snapshot.priceMode.trim().length > 0
+    && Array.isArray(snapshot.bars)
+    && snapshot.bars.length > 0
+    && Array.isArray(snapshot.corporateActions)
+    && hasValidSnapshotMetadata(snapshot)
+    && hasValidDates(snapshot)
+    && hasValidOhlcvRelationships(snapshot)
+    && hasValidCorporateActions(snapshot)
+  );
+}
+
+function resolveAnalysisBarLimit(options: AnalyzePatternsOptions): number | undefined {
+  const analysisBarLimit = options.analysisBarLimit ?? DEFAULT_ANALYSIS_BAR_LIMIT;
+  return Number.isInteger(analysisBarLimit) && analysisBarLimit > 0
+    ? analysisBarLimit
+    : undefined;
+}
+
 function unavailable(reason: UnavailableReason, message: string): AnalysisResult {
   return { status: 'unavailable', reason, message };
 }
@@ -234,27 +264,62 @@ function buildContext(
   };
 }
 
+function unavailableCardEvaluation(
+  cardId: PatternCardId,
+  reasonCode: string,
+): PatternCardEvaluation {
+  return {
+    cardId,
+    evaluations: [],
+    score: 0,
+    contextScore: 0,
+    dataCompleteness: 0,
+    isEvaluatable: false,
+    isCandidate: false,
+    reasonCodes: [reasonCode],
+  };
+}
+
+/**
+ * 所需日 K 僅指各卡 matcher.minimumBars 對應的尾端已完成 K 線。
+ * 這個數量已包含該規則的幾何窗與必要比較窗（例如晨星為前 20 根加三根候選 K），不擴大檢查整個 60 根分析窗。
+ */
+function hasRequiredPricePrecision(
+  analysisBars: StockSnapshot['bars'],
+  minimumBars: number,
+): boolean {
+  const requiredBars = analysisBars.slice(-minimumBars);
+  return (
+    requiredBars.length === minimumBars
+    && requiredBars.every((bar) => (
+      isFiniteNumber(bar.sourcePrecision)
+      && bar.sourcePrecision > 0
+      && isFiniteNumber(bar.comparisonUnit)
+      && bar.comparisonUnit > 0
+    ))
+  );
+}
+
 function evaluateCard(
   card: PatternCardDefinition,
   snapshot: StockSnapshot,
   analysisBars: StockSnapshot['bars'],
-): CardEvaluation {
+): PatternCardEvaluation {
   const matcher = card.matcher;
   if (!matcher) {
     throw new Error(`MVP 卡 ${card.id} 缺少 matcher 設定`);
   }
 
   if (analysisBars.length < matcher.minimumBars) {
-    return {
-      cardId: card.id,
-      evaluations: [],
-      score: 0,
-      contextScore: 0,
-      dataCompleteness: 0,
-      isEvaluatable: false,
-      isCandidate: false,
-      reasonCodes: ['insufficient-bars'],
-    };
+    return unavailableCardEvaluation(card.id, 'insufficient-bars');
+  }
+
+  if (!matcher.rules.every((binding) => hasValidRuleBindingParameters(binding))) {
+    return unavailableCardEvaluation(card.id, 'invalid-binding-parameters');
+  }
+
+  if (!hasRequiredPricePrecision(analysisBars, matcher.minimumBars)) {
+    return unavailableCardEvaluation(card.id, 'candidate-price-precision-unavailable');
   }
 
   const family = RULE_FAMILIES[matcher.ruleFamilyId];
@@ -298,7 +363,7 @@ function evaluateCard(
 
 function candidateFrom(
   card: PatternCardDefinition,
-  evaluation: CardEvaluation,
+  evaluation: PatternCardEvaluation,
   analyzedFrom: string,
   analyzedTo: string,
   warnings: readonly string[],
@@ -316,6 +381,62 @@ function candidateFrom(
   };
 }
 
+function evaluateMvpCards(
+  snapshot: StockSnapshot,
+  analysisBars: StockSnapshot['bars'],
+): readonly EvaluatedCard[] {
+  return PATTERN_CARDS
+    .filter((card) => card.matchSupport === 'mvp')
+    .map((card) => ({
+      card,
+      evaluation: evaluateCard(card, snapshot, analysisBars),
+    }));
+}
+
+/**
+ * 僅供 domain 單元測試檢查未截斷的候選資格；UI 與結果元件不得依賴此函式。
+ * 有效 fixture 以外的輸入回傳空陣列，正式錯誤語意由 analyzePatterns 提供。
+ */
+export function evaluateAllMvpCardsForTesting(
+  snapshot: StockSnapshot,
+  options: AnalyzePatternsOptions = {},
+): readonly PatternCardEvaluation[] {
+  if (!isSnapshotRecord(snapshot) || !hasValidSnapshotShape(snapshot)) {
+    return [];
+  }
+  if (snapshot.securityType !== 'common-stock' || snapshot.priceMode !== 'raw') {
+    return [];
+  }
+
+  const analysisBarLimit = resolveAnalysisBarLimit(options);
+  if (analysisBarLimit === undefined) {
+    return [];
+  }
+
+  const analysisBars = snapshot.bars
+    .filter((bar) => bar.completed !== false)
+    .slice(-analysisBarLimit);
+  if (analysisBars.length === 0) {
+    return [];
+  }
+
+  const analyzedFrom = analysisBars[0]?.date;
+  const analyzedTo = analysisBars.at(-1)?.date;
+  if (!analyzedFrom || !analyzedTo) {
+    return [];
+  }
+
+  const scopedSnapshot: StockSnapshot = {
+    ...snapshot,
+    bars: analysisBars,
+    corporateActions: snapshot.corporateActions.filter(
+      (action) => action.date >= analyzedFrom && action.date <= analyzedTo,
+    ),
+  };
+
+  return evaluateMvpCards(scopedSnapshot, analysisBars).map(({ evaluation }) => evaluation);
+}
+
 /**
  * 將最後一段已完成日 K 與 17 張教學型態卡逐條比對。
  * 結果只描述規則符合度與資料限制，不推導未來價格或交易行動。
@@ -327,25 +448,19 @@ export function analyzePatterns(
   if (!isSnapshotRecord(snapshot)) {
     return unavailable('schema-error', '快照根物件不符合資料契約。');
   }
+  if (!hasValidSnapshotShape(snapshot)) {
+    return unavailable('schema-error', '快照必要欄位、日期、OHLCV 或公司行動不符合資料契約。');
+  }
   if (snapshot.securityType !== 'common-stock') {
     return unavailable('unsupported-security', '此證券不在第一版支援的普通股範圍內。');
   }
   if (snapshot.priceMode !== 'raw') {
     return unavailable('schema-error', '快照價格模式不符合原始盤後日 K 資料契約。');
   }
-  if (!Array.isArray(snapshot.bars) || snapshot.bars.length === 0) {
-    return unavailable('schema-error', '快照沒有可分析的日 K 資料。');
+  const analysisBarLimit = resolveAnalysisBarLimit(options);
+  if (analysisBarLimit === undefined) {
+    return unavailable('schema-error', '分析窗大小必須是正整數。');
   }
-  if (
-    !hasValidSnapshotMetadata(snapshot) ||
-    !hasValidDates(snapshot) ||
-    !hasValidOhlcvRelationships(snapshot) ||
-    !hasValidCorporateActions(snapshot)
-  ) {
-    return unavailable('schema-error', '快照日期或 OHLCV 關係不符合資料契約。');
-  }
-
-  const analysisBarLimit = options.analysisBarLimit ?? DEFAULT_ANALYSIS_BAR_LIMIT;
   const completedBars = snapshot.bars.filter((bar) => bar.completed !== false);
   if (completedBars.length === 0) {
     const analyzedFrom = snapshot.bars[0]?.date;
@@ -355,9 +470,7 @@ export function analyzePatterns(
     }
 
     const actions = snapshot.corporateActions.filter((action) => action.date >= analyzedFrom && action.date <= analyzedTo);
-    const mvpCardIds = PATTERN_CARDS
-      .filter((card) => card.matchSupport === 'mvp')
-      .map((card) => card.id);
+    const mvpCardIds = PATTERN_CARDS.filter((card) => card.matchSupport === 'mvp').map((card) => card.id);
     const reasonCodes = ['no-completed-bars'];
     const context = buildContext(
       snapshot,
@@ -388,11 +501,7 @@ export function analyzePatterns(
     bars: analysisBars,
     corporateActions: actions,
   };
-  const mvpCards = PATTERN_CARDS.filter((card) => card.matchSupport === 'mvp');
-  const cardEvaluations = mvpCards.map((card) => ({
-    card,
-    evaluation: evaluateCard(card, scopedSnapshot, analysisBars),
-  }));
+  const cardEvaluations = evaluateMvpCards(scopedSnapshot, analysisBars);
   const unavailableCardIds = cardEvaluations
     .filter(({ evaluation }) => !evaluation.isEvaluatable)
     .map(({ card }) => card.id);

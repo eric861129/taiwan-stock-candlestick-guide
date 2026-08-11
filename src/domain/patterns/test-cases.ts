@@ -125,18 +125,18 @@ function singlePattern(
     }
     case 'doji': {
       const body = matching ? 0.1 : kind === 'boundary' ? 0.11 : 3;
-      return [...base, candle(patternDate(1), value, value + 1, value - 1, value + body, 1_100)];
+      return [...base, candle(patternDate(1), value, value + Math.max(1, body), value - 1, value + body, 1_100)];
     }
     case 'hammer': {
       if (!matching && kind === 'negative') {
-        return [...base, candle(patternDate(1), value - 0.3, value + 0.1, value - 0.5, value + 0.3, 1_100)];
+        return [...base, candle(patternDate(1), value - 0.3, value + 0.4, value - 0.5, value + 0.3, 1_100)];
       }
       const upperWick = matching ? 0.1 : 0.11;
       return [...base, candle(patternDate(1), value + 1.5, value + 2.1 + upperWick, value - 9.8, value + 2.1, 1_100)];
     }
     case 'shooting-star': {
       if (!matching && kind === 'negative') {
-        return [...base, candle(patternDate(1), value - 0.3, value + 0.5, value - 0.1, value + 0.3, 1_100)];
+        return [...base, candle(patternDate(1), value - 0.3, value + 0.5, value - 0.4, value + 0.3, 1_100)];
       }
       const lowerWick = matching ? 0.1 : 0.11;
       return [...base, candle(patternDate(1), value - 2.1, value + 9.8, value - 2.1 - lowerWick, value - 1.7, 1_100)];

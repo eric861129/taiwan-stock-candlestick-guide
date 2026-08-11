@@ -8,6 +8,7 @@ import {
   type PatternRuleBinding,
   type RuleFamilyId,
 } from './types';
+import { hasValidRuleBindingParameters } from './rule-parameters';
 
 const SINGLE_LESSON = ['/chapters/09-single-candlestick-signals'] as const;
 const MULTI_LESSON = ['/chapters/10-two-three-candlestick-patterns'] as const;
@@ -848,6 +849,10 @@ function validateCatalog(cards: readonly PatternCardDefinition[]): void {
 
     if (matcher.rules.filter((rule) => rule.group === 'invalidating').some((rule) => rule.weight !== 0)) {
       throw new Error(`型態卡 ${pattern.id} 的失效規則不可計分`);
+    }
+
+    if (matcher.rules.some((rule) => !hasValidRuleBindingParameters(rule))) {
+      throw new Error(`型態卡 ${pattern.id} 的規則參數不符合資料契約`);
     }
   }
 }
