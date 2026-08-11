@@ -36,7 +36,7 @@ function isChapterCompleted(chapterId: string): boolean {
       >
         <article>
           <div class="learning-stage__heading">
-            <h3>{{ stage.title }}</h3>
+            <h4>{{ stage.title }}</h4>
             <span :data-stage-status="stage.id">{{ stageStatus(stage.id) }}</span>
           </div>
           <p>{{ stage.summary }}</p>
