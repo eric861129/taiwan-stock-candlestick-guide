@@ -94,7 +94,7 @@ class ValidateBookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             self._write_valid_lesson(root)
-            for directory in (".cache", ".git", ".superpowers", ".worktrees"):
+            for directory in (".cache", ".git", ".superpowers", ".worktrees", "node_modules"):
                 ignored_markdown = root / directory / "invalid.md"
                 ignored_markdown.parent.mkdir(parents=True)
                 ignored_markdown.write_bytes(b"\xff")

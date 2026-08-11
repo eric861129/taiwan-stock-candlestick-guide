@@ -69,7 +69,7 @@ DRAFT_MARKER_PATTERNS = tuple(
     for marker in DRAFT_MARKERS
 )
 EXPECTED_CHAPTER_KINDS = {chapter.path: chapter.kind for chapter in EXPECTED_CHAPTERS}
-IGNORED_WORKSPACE_DIRECTORIES = frozenset({".cache", ".git", ".superpowers", ".worktrees"})
+IGNORED_WORKSPACE_DIRECTORIES = frozenset({".cache", ".git", ".superpowers", ".worktrees", "node_modules"})
 
 
 def _relative_path(root: Path, path: Path) -> str:
