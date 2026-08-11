@@ -4,6 +4,7 @@ import type { Theme } from 'vitepress';
 import LearningHome from '../../src/components/LearningHome.vue';
 import LearningMap from '../../src/components/LearningMap.vue';
 import LearningProgressProvider from '../../src/components/LearningProgressProvider.vue';
+import PatternCatalog from '../../src/components/PatternCatalog.vue';
 import StageQuiz from '../../src/components/StageQuiz.vue';
 import './styles.css';
 
@@ -26,6 +27,7 @@ const theme: Theme = {
     app.component('LearningHome', LearningHome);
     app.component('LearningMap', LearningMap);
     app.component('LearningProgressProvider', LearningProgressProvider);
+    app.component('PatternCatalog', PatternCatalog);
     app.component('StageQuiz', StageQuiz);
   },
 };
