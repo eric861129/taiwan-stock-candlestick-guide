@@ -69,12 +69,10 @@ export default defineConfig({
     sidebar: [
       {
         text: '二十章學習路線',
-        collapsed: false,
         items: chapterItems.map(([text, link]) => ({ text, link })),
       },
       {
         text: '附錄速查',
-        collapsed: true,
         items: appendixItems.map(([text, link]) => ({ text, link })),
       },
     ],

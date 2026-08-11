@@ -2,6 +2,9 @@
   --vp-c-brand-1: #a33a2b;
   --vp-c-brand-2: #7f2b22;
   --vp-c-brand-3: #f1d2ca;
+  --vp-button-brand-bg: var(--vp-c-brand-1);
+  --vp-button-brand-hover-bg: var(--vp-c-brand-2);
+  --vp-button-brand-active-bg: var(--vp-c-brand-2);
   --vp-c-bg: #fffdf9;
   --vp-c-bg-soft: #fff8ef;
   --vp-c-bg-alt: #f6eee4;

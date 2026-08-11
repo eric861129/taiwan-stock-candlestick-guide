@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "test:unit": "vitest run",
     "test:unit:coverage": "vitest run --coverage",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --config=playwright.config.ts",
     "verify": "npm run lint && npm run typecheck && npm run test:unit && npm run build"
   },
   "dependencies": {
