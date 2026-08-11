@@ -32,6 +32,7 @@ from market_snapshot import (
 )
 from market_sources import (
     MarketSourceError,
+    TradingCalendar,
     parse_corporate_actions,
     parse_holiday_calendar,
     parse_supported_symbols,
@@ -67,6 +68,105 @@ def fixture_build_input() -> SnapshotBuildInput:
         ),
         calendar=parse_holiday_calendar(load_fixture("holiday-calendar.json")),
     )
+
+
+def official_fixture_sessions_ending_at(
+    end_date: date,
+    count: int,
+    calendar: TradingCalendar,
+) -> tuple[date, ...]:
+    """依測試用官方行事曆取得截至指定日期的交易日。"""
+
+    sessions: list[date] = []
+    candidate = end_date
+    while len(sessions) < count:
+        if candidate.weekday() < 5 and candidate not in calendar.holiday_dates:
+            sessions.append(candidate)
+        candidate -= timedelta(days=1)
+    return tuple(reversed(sessions))
+
+
+def downgrade_snapshot_to_v1(output: Path) -> None:
+    """將測試產出的 v2 快照轉成舊版 v1 格式。"""
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
+    for entry in manifest["symbols"]:
+        old_path = output / entry["dataPath"]
+        stock = json.loads(old_path.read_text(encoding="utf-8"))
+        stock["snapshotVersion"] = 1
+        stock.pop("listingDate")
+        stock.pop("availableSessions")
+        stock.pop("shortHistoryReason")
+        payload = market_snapshot._canonical_json_bytes(stock)
+        digest = market_snapshot._digest(payload)
+        new_path = output / f"data/stocks/{entry['code']}.{digest[:12]}.json"
+        new_path.write_bytes(payload)
+        old_path.unlink()
+        entry["dataPath"] = new_path.relative_to(output).as_posix()
+        entry["digest"] = digest
+        entry["size"] = len(payload)
+        entry.pop("listingDate")
+        entry.pop("availableSessions")
+        entry.pop("shortHistoryReason")
+
+    manifest["snapshotVersion"] = 1
+    manifest_without_hash = dict(manifest)
+    manifest_without_hash.pop("snapshotHash")
+    manifest["snapshotHash"] = market_snapshot._digest(market_snapshot._canonical_json_bytes(manifest_without_hash))
+    provenance["snapshotVersion"] = 1
+    provenance["snapshotHash"] = manifest["snapshotHash"]
+    (output / "manifest.json").write_bytes(market_snapshot._canonical_json_bytes(manifest))
+    (output / "provenance.json").write_bytes(market_snapshot._canonical_json_bytes(provenance))
+
+    sha256sums_path = output / "SHA256SUMS"
+    sha256sums_path.unlink()
+    archive_path = output / "snapshot.tar.gz"
+    archive_path.unlink()
+    with tarfile.open(archive_path, mode="w:gz") as tar:
+        for path in sorted(
+            path for path in output.rglob("*") if path.is_file() and path.name != "snapshot.tar.gz"
+        ):
+            tar.add(path, arcname=path.relative_to(output).as_posix(), recursive=False)
+    market_snapshot._write_sha256sums(output)
+
+
+def remove_verified_session_from_v2_snapshot(output: Path, removed_date: date) -> None:
+    """建立仍可離線驗證、但市場行事曆有共同缺日的舊 v2 快照。"""
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
+    removed_text = removed_date.isoformat()
+    for entry in manifest["symbols"]:
+        old_path = output / entry["dataPath"]
+        stock = json.loads(old_path.read_text(encoding="utf-8"))
+        stock["bars"] = [bar for bar in stock["bars"] if bar["date"] != removed_text]
+        stock["availableSessions"] = len(stock["bars"])
+        payload = market_snapshot._canonical_json_bytes(stock)
+        digest = market_snapshot._digest(payload)
+        new_path = output / f"data/stocks/{entry['code']}.{digest[:12]}.json"
+        new_path.write_bytes(payload)
+        old_path.unlink()
+        entry["dataPath"] = new_path.relative_to(output).as_posix()
+        entry["digest"] = digest
+        entry["size"] = len(payload)
+        entry["firstDate"] = stock["bars"][0]["date"]
+        entry["lastDate"] = stock["bars"][-1]["date"]
+        entry["barCount"] = len(stock["bars"])
+        entry["availableSessions"] = len(stock["bars"])
+    for market in manifest["markets"].values():
+        market["tradingSessions"] = [session for session in market["tradingSessions"] if session != removed_text]
+    manifest_without_hash = dict(manifest)
+    manifest_without_hash.pop("snapshotHash")
+    manifest["snapshotHash"] = market_snapshot._digest(market_snapshot._canonical_json_bytes(manifest_without_hash))
+    provenance["snapshotHash"] = manifest["snapshotHash"]
+    (output / "manifest.json").write_bytes(market_snapshot._canonical_json_bytes(manifest))
+    (output / "provenance.json").write_bytes(market_snapshot._canonical_json_bytes(provenance))
+
+    archive_path = output / "snapshot.tar.gz"
+    archive_path.unlink()
+    market_snapshot._write_deterministic_tar(output)
+    market_snapshot._write_sha256sums(output)
 
 
 class SnapshotBuildTests(unittest.TestCase):
@@ -392,10 +492,9 @@ class SnapshotBuildTests(unittest.TestCase):
         base = fixture_build_input()
         twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
         tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
-        first_date = date(2026, 4, 13)
+        session_dates = official_fixture_sessions_ending_at(date(2026, 8, 11), 121, base.calendar)
         sessions: list[MarketSession] = []
-        for day_offset in range(121):
-            session_date = first_date + timedelta(days=day_offset)
+        for session_date in session_dates:
             sessions.extend(
                 (
                     MarketSession("TWSE", (replace(twse_quote, trading_date=session_date),)),
@@ -410,8 +509,8 @@ class SnapshotBuildTests(unittest.TestCase):
             stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
 
         self.assertEqual(120, len(stock["bars"]))
-        self.assertEqual("2026-04-14", stock["bars"][0]["date"])
-        self.assertEqual("2026-08-11", stock["bars"][-1]["date"])
+        self.assertEqual(session_dates[-120].isoformat(), stock["bars"][0]["date"])
+        self.assertEqual(session_dates[-1].isoformat(), stock["bars"][-1]["date"])
         self.assertEqual(120, manifest.symbols[0].available_sessions)
         self.assertIsNone(manifest.symbols[0].short_history_reason)
         self.assertEqual(120, stock["availableSessions"])
@@ -422,11 +521,10 @@ class SnapshotBuildTests(unittest.TestCase):
         base = fixture_build_input()
         twse_quote, unsupported_twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))
         tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
-        first_date = date(2026, 4, 14)
-        listing_date = date(2026, 8, 8)
+        session_dates = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)
+        listing_date = session_dates[-4]
         sessions: list[MarketSession] = []
-        for day_offset in range(120):
-            session_date = first_date + timedelta(days=day_offset)
+        for session_date in session_dates:
             twse_quotes = (
                 (replace(twse_quote, trading_date=session_date),)
                 if session_date >= listing_date
@@ -458,11 +556,10 @@ class SnapshotBuildTests(unittest.TestCase):
         base = fixture_build_input()
         twse_quote, unsupported_twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))
         tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
-        first_date = date(2026, 4, 14)
-        missing_date = first_date + timedelta(days=60)
+        session_dates = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)
+        missing_date = session_dates[60]
         sessions: list[MarketSession] = []
-        for day_offset in range(120):
-            session_date = first_date + timedelta(days=day_offset)
+        for session_date in session_dates:
             twse_quotes = (
                 (replace(unsupported_twse_quote, trading_date=session_date),)
                 if session_date == missing_date
@@ -479,6 +576,129 @@ class SnapshotBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(SnapshotValidationError, "不合理缺口"):
                 build_snapshot(None, build_input, Path(temporary_directory) / "site-data")
+
+    def test_rejects_common_official_market_session_gap_in_a_direct_v2_build(self) -> None:
+        """直接建立 v2 時，不可把兩市場共同缺少的官方交易日誤當成不存在。"""
+
+        base = fixture_build_input()
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        expected_sessions = (
+            date(2026, 8, 6),
+            date(2026, 8, 7),
+            date(2026, 8, 10),
+            date(2026, 8, 11),
+            date(2026, 8, 12),
+        )
+        missing_date = date(2026, 8, 10)
+        sessions: list[MarketSession] = []
+        for session_date in expected_sessions:
+            if session_date == missing_date:
+                continue
+            sessions.extend(
+                (
+                    MarketSession("TWSE", (replace(twse_quote, trading_date=session_date),)),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
+        build_input = replace(
+            base,
+            sessions=tuple(sessions),
+            generated_at=datetime(2026, 8, 12, 18, 0, tzinfo=base.calendar.timezone),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(SnapshotValidationError, "官方交易日缺漏"):
+                build_snapshot(None, build_input, Path(temporary_directory) / "site-data")
+
+    def test_rejects_a_common_market_gap_split_between_previous_and_current_sessions(self) -> None:
+        """前次 6、7、11 與本次 12 不可掩蓋官方交易日 10 的共同缺漏。"""
+
+        base = fixture_build_input()
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        previous_dates = (
+            date(2026, 8, 6),
+            date(2026, 8, 7),
+            date(2026, 8, 10),
+            date(2026, 8, 11),
+        )
+        previous_sessions: list[MarketSession] = []
+        for session_date in previous_dates:
+            previous_sessions.extend(
+                (
+                    MarketSession("TWSE", (replace(twse_quote, trading_date=session_date),)),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
+        previous_input = replace(base, sessions=tuple(previous_sessions))
+        next_date = date(2026, 8, 12)
+        next_input = replace(
+            base,
+            sessions=(
+                MarketSession("TWSE", (replace(twse_quote, trading_date=next_date),)),
+                MarketSession("TPEx", (replace(tpex_quote, trading_date=next_date),)),
+            ),
+            generated_at=datetime(2026, 8, 12, 18, 0, tzinfo=base.calendar.timezone),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            previous = root / "previous"
+            next_output = root / "next-output"
+            build_snapshot(None, previous_input, previous)
+            remove_verified_session_from_v2_snapshot(previous, date(2026, 8, 10))
+            self.assertEqual(2, validate_snapshot(previous).snapshot_version)
+
+            with self.assertRaisesRegex(SnapshotValidationError, "官方交易日缺漏"):
+                build_snapshot(previous, next_input, next_output)
+
+            self.assertFalse(next_output.exists())
+
+    def test_allows_a_legal_ipo_history_suffix_from_the_official_market_calendar(self) -> None:
+        """上市日前的共同市場交易日可缺少該股票，且必須明確揭露短歷史原因。"""
+
+        base = fixture_build_input()
+        twse_quote, unsupported_twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        expected_sessions = (
+            date(2026, 8, 6),
+            date(2026, 8, 7),
+            date(2026, 8, 10),
+            date(2026, 8, 11),
+            date(2026, 8, 12),
+        )
+        listing_date = date(2026, 8, 10)
+        sessions: list[MarketSession] = []
+        for session_date in expected_sessions:
+            twse_quotes = (
+                (replace(twse_quote, trading_date=session_date),)
+                if session_date >= listing_date
+                else (replace(unsupported_twse_quote, trading_date=session_date),)
+            )
+            sessions.extend(
+                (
+                    MarketSession("TWSE", twse_quotes),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
+        build_input = replace(
+            base,
+            symbols=(replace(base.symbols[0], listing_date=listing_date), base.symbols[1]),
+            sessions=tuple(sessions),
+            generated_at=datetime(2026, 8, 12, 18, 0, tzinfo=base.calendar.timezone),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, build_input, output)
+            stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+
+        self.assertEqual(tuple(session.isoformat() for session in expected_sessions), manifest.markets["TWSE"].trading_sessions)
+        self.assertEqual(3, manifest.symbols[0].available_sessions)
+        self.assertEqual("listing-history", manifest.symbols[0].short_history_reason)
+        self.assertEqual(["2026-08-10", "2026-08-11", "2026-08-12"], [bar["date"] for bar in stock["bars"]])
+        self.assertEqual("listing-history", stock["shortHistoryReason"])
 
     def test_transition_rejects_count_reduction_even_with_retirement_evidence(self) -> None:
         """若退市證據使普通股總數減少超過 1%，仍需人工核准。"""
@@ -589,7 +809,7 @@ class SnapshotBuildTests(unittest.TestCase):
 
             self.assertFalse(updated)
             self.assertEqual("fixture", manifest.source_commit)
-            self.assertFalse(list(archive_directory.glob(".snapshot.previous-*")))
+            self.assertFalse(list(archive_directory.glob(".snapshot.tar.previous-*")))
 
     def test_update_rejects_a_previous_archive_with_path_traversal_before_writing(self) -> None:
         """若 archive 成員可逃出暫存目錄，--previous 會成為任意檔案寫入途徑。"""
@@ -612,6 +832,34 @@ class SnapshotBuildTests(unittest.TestCase):
                 )
 
             self.assertFalse((root / "escaped.json").exists())
+
+    def test_update_cleans_archive_temp_after_a_legal_member_then_path_traversal(self) -> None:
+        """先解出合法檔案、後遇到穿越路徑時，暫存目錄不得殘留。"""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive = root / "snapshot.tar.gz"
+            with tarfile.open(archive, mode="w:gz") as tar:
+                stock = tarfile.TarInfo("data/stocks/known.json")
+                stock_payload = b"{}"
+                stock.size = len(stock_payload)
+                tar.addfile(stock, BytesIO(stock_payload))
+                traversal = tarfile.TarInfo("../escaped.json")
+                traversal_payload = b"not allowed"
+                traversal.size = len(traversal_payload)
+                tar.addfile(traversal, BytesIO(traversal_payload))
+
+            with self.assertRaisesRegex(SnapshotValidationError, "不安全"):
+                update_snapshot(
+                    archive,
+                    root / "next-output",
+                    "fixture",
+                    root / "cache",
+                    now=datetime(2026, 8, 11, 18, tzinfo=timezone(timedelta(hours=8))),
+                )
+
+            self.assertFalse((root / "escaped.json").exists())
+            self.assertFalse(list(root.glob(".snapshot.tar.previous-*")))
 
     def test_update_rejects_a_previous_archive_symlink_before_writing(self) -> None:
         """若 archive 可放入 symlink，解壓後的資料讀取仍可能跳出暫存目錄。"""
@@ -667,65 +915,65 @@ class SnapshotBuildTests(unittest.TestCase):
 
             self.assertFalse((root / "next-output").exists())
 
-    def test_v1_directory_snapshot_is_validated_then_replaced_by_the_v2_contract(self) -> None:
-        """若舊 v1 目錄無法驗證，升級後第一輪 fixture 或排程會直接卡住。"""
+    def test_rejects_an_incomplete_v1_target_before_a_fresh_v2_replacement(self) -> None:
+        """已有 v1 目錄時，單日 fixture 不可冒充完成回補後的 v2 快照。"""
+
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "site-data"
             build_snapshot(None, fixture_build_input(), output)
-            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-            provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
-            for entry in manifest["symbols"]:
-                old_path = output / entry["dataPath"]
-                stock = json.loads(old_path.read_text(encoding="utf-8"))
-                stock["snapshotVersion"] = 1
-                stock.pop("listingDate")
-                stock.pop("availableSessions")
-                stock.pop("shortHistoryReason")
-                payload = market_snapshot._canonical_json_bytes(stock)
-                digest = market_snapshot._digest(payload)
-                new_path = output / f"data/stocks/{entry['code']}.{digest[:12]}.json"
-                new_path.write_bytes(payload)
-                old_path.unlink()
-                entry["dataPath"] = new_path.relative_to(output).as_posix()
-                entry["digest"] = digest
-                entry["size"] = len(payload)
-                entry.pop("listingDate")
-                entry.pop("availableSessions")
-                entry.pop("shortHistoryReason")
-            manifest["snapshotVersion"] = 1
-            manifest_without_hash = dict(manifest)
-            manifest_without_hash.pop("snapshotHash")
-            manifest["snapshotHash"] = market_snapshot._digest(market_snapshot._canonical_json_bytes(manifest_without_hash))
-            provenance["snapshotVersion"] = 1
-            provenance["snapshotHash"] = manifest["snapshotHash"]
-            (output / "manifest.json").write_bytes(market_snapshot._canonical_json_bytes(manifest))
-            (output / "provenance.json").write_bytes(market_snapshot._canonical_json_bytes(provenance))
-            (output / "snapshot.tar.gz").unlink()
-            (output / "SHA256SUMS").unlink()
-            with tarfile.open(output / "snapshot.tar.gz", mode="w:gz") as tar:
-                for path in sorted(
-                    path for path in output.rglob("*") if path.is_file() and path.name != "snapshot.tar.gz"
-                ):
-                    tar.add(path, arcname=path.relative_to(output).as_posix(), recursive=False)
-            market_snapshot._write_sha256sums(output)
+            downgrade_snapshot_to_v1(output)
+            self.assertEqual(1, validate_snapshot(output).snapshot_version)
 
-            legacy = validate_snapshot(output)
+            with self.assertRaisesRegex(SnapshotValidationError, "v1.*重新 bootstrap"):
+                build_snapshot(None, fixture_build_input(), output)
+
+            self.assertEqual(1, validate_snapshot(output).snapshot_version)
+
+    def test_rejects_a_v1_standalone_archive_without_an_embedded_checksum(self) -> None:
+        """v1 archive 缺少內嵌 SHA256SUMS 時，不可作為安全的增量來源。"""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            output = root / "site-data"
+            build_snapshot(None, fixture_build_input(), output)
+            downgrade_snapshot_to_v1(output)
+
             with self.assertRaisesRegex(SnapshotValidationError, "舊版.*完整.*目錄"):
                 update_snapshot(
                     output / "snapshot.tar.gz",
-                    Path(temporary_directory) / "next-output",
+                    root / "next-output",
                     "fixture",
-                    Path(temporary_directory) / "cache",
+                    root / "cache",
                 )
-            upgraded = build_snapshot(None, fixture_build_input(), output)
-            upgraded_document = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(1, legacy.snapshot_version)
-        self.assertEqual(2, upgraded.snapshot_version)
-        self.assertEqual(2, upgraded_document["snapshotVersion"])
-        self.assertIn("listingDate", upgraded_document["symbols"][0])
-        self.assertIn("availableSessions", upgraded_document["symbols"][0])
-        self.assertIn("shortHistoryReason", upgraded_document["symbols"][0])
+    def test_rejects_an_incomplete_v1_snapshot_before_a_v2_incremental_upgrade(self) -> None:
+        """v1 未能證明完整 120 個官方交易日時，不可用一次增量更新升級成 v2。"""
+
+        base = fixture_build_input()
+        next_date = date(2026, 8, 12)
+        twse_quote = replace(parse_twse_daily(load_fixture("twse-daily.json"))[0], trading_date=next_date)
+        tpex_quote = replace(parse_tpex_daily(load_fixture("tpex-daily.json"))[0], trading_date=next_date)
+        next_input = replace(
+            base,
+            sessions=(
+                MarketSession("TWSE", (twse_quote,)),
+                MarketSession("TPEx", (tpex_quote,)),
+            ),
+            generated_at=datetime(2026, 8, 12, 18, 0, tzinfo=base.calendar.timezone),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            previous = root / "previous"
+            next_output = root / "next-output"
+            build_snapshot(None, base, previous)
+            downgrade_snapshot_to_v1(previous)
+            self.assertEqual(1, validate_snapshot(previous).snapshot_version)
+
+            with self.assertRaisesRegex(SnapshotValidationError, "v1.*重新 bootstrap"):
+                build_snapshot(previous, next_input, next_output)
+
+            self.assertFalse(next_output.exists())
 
     def test_bootstrap_fetches_120_sessions_and_resumes_from_the_daily_cache(self) -> None:
         """若基準資料不滿 120 日或重跑又連線，歷史初始化會不完整且不具續跑性。"""
