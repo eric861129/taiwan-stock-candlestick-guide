@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const defaultPublicDataDirectory = resolve(repositoryRoot, 'public/data');
 const markerFilename = '.task-8-e2e-fixture.json';
+const temporaryRootPrefix = 'candlestick-e2e-';
 const fixtureSourceCommit = 'fixture';
 const fixtureOwner = 'task-8-e2e';
 
@@ -39,10 +40,10 @@ interface OwnedTree {
   readonly directories: readonly string[];
 }
 
-/** 供 lifecycle 契約測試注入 marker 寫入前的 fixture 失敗。 */
+/** 供 lifecycle 契約測試注入建立與寫入失敗；暫存根仍必須位於受信任的 OS tmpdir 前綴內。 */
 export interface FixturePreparationOptions {
   readonly publicDataDirectory?: string;
-  readonly temporaryParent?: string;
+  readonly createTemporaryRoot?: () => string;
   readonly buildFixture?: (snapshotDirectory: string) => void;
   readonly writeMarker?: (markerPath: string, contents: string) => void;
 }
@@ -71,6 +72,28 @@ function resolveOwnedPath(root: string, relativePath: string): string {
     throw new Error(`E2E fixture 路徑超出擁有範圍：${relativePath}。`);
   }
   return resolvedPath;
+}
+
+function resolveTrustedTemporaryRoot(temporaryRoot: string): string {
+  const resolvedTemporaryRoot = resolve(temporaryRoot);
+  const temporaryBase = resolve(tmpdir());
+  const temporaryRelativePath = relative(temporaryBase, resolvedTemporaryRoot).replaceAll('\\', '/');
+  if (
+    !temporaryRelativePath
+    || temporaryRelativePath.startsWith('../')
+    || isAbsolute(temporaryRelativePath)
+    || !temporaryRelativePath.startsWith(temporaryRootPrefix)
+  ) {
+    throw new Error('E2E fixture 的暫存目錄不在受信任的 OS tmpdir 前綴內。');
+  }
+  return resolvedTemporaryRoot;
+}
+
+function createTrustedTemporaryRoot(options: FixturePreparationOptions): string {
+  const temporaryRoot = options.createTemporaryRoot
+    ? options.createTemporaryRoot()
+    : mkdtempSync(join(tmpdir(), temporaryRootPrefix));
+  return resolveTrustedTemporaryRoot(temporaryRoot);
 }
 
 function listOwnedTree(root: string): OwnedTree {
@@ -212,14 +235,7 @@ function readMarker(dataDirectory: string): FixtureMarker | null {
   if (typeof candidate.publicDataDirectoryCreated !== 'boolean' || typeof candidate.temporaryRoot !== 'string') {
     throw new Error('E2E fixture marker 的必要欄位無效。');
   }
-  const temporaryRoot = resolve(candidate.temporaryRoot);
-  const temporaryBase = resolve(tmpdir());
-  if (
-    !temporaryRoot.startsWith(`${temporaryBase}${sep}`)
-    || !temporaryRoot.startsWith(`${temporaryBase}${sep}candlestick-e2e-`)
-  ) {
-    throw new Error('E2E fixture marker 的暫存目錄不在本次允許範圍。');
-  }
+  const temporaryRoot = resolveTrustedTemporaryRoot(candidate.temporaryRoot);
   return {
     schemaVersion: 1,
     owner: fixtureOwner,
@@ -248,8 +264,10 @@ function assertManifestMatchesMarker(dataDirectory: string, marker: FixtureMarke
   }
 }
 
-function ensureDataDirectoryIsAvailable(dataDirectory: string): boolean {
-  cleanupFixtureSnapshot(dataDirectory);
+function ensureDataDirectoryIsAvailable(dataDirectory: string, markerExistedBeforePreparation: boolean): boolean {
+  if (markerExistedBeforePreparation) {
+    cleanupFixtureSnapshot(dataDirectory);
+  }
   if (existsSync(dataDirectory)) {
     if (readdirSync(dataDirectory).length > 0) {
       throw new Error('public/data 已有非本次 E2E fixture 檔案；拒絕覆寫。');
@@ -260,13 +278,42 @@ function ensureDataDirectoryIsAvailable(dataDirectory: string): boolean {
   return true;
 }
 
-function ensurePublicDirectory(dataDirectory: string, relativeDirectory: string, createdDirectories: string[]): void {
-  const target = resolveOwnedPath(dataDirectory, relativeDirectory);
-  if (existsSync(target)) {
-    return;
+function recordCreatedPublicFile(dataDirectory: string, relativePath: string, createdFiles: string[]): void {
+  const target = resolveOwnedPath(dataDirectory, relativePath);
+  if (!existsSync(target)) {
+    createdFiles.push(relativePath);
   }
-  mkdirSync(target, { recursive: true });
-  createdDirectories.push(relativeDirectory);
+}
+
+function copyFixtureFile(
+  source: string,
+  dataDirectory: string,
+  relativePath: string,
+  createdFiles: string[],
+): void {
+  recordCreatedPublicFile(dataDirectory, relativePath, createdFiles);
+  copyFileSync(source, resolveOwnedPath(dataDirectory, relativePath));
+}
+
+function ensurePublicDirectory(dataDirectory: string, relativeDirectory: string, createdDirectories: string[]): void {
+  if (!isSafeRelativePath(relativeDirectory)) {
+    throw new Error(`E2E fixture 目錄路徑不安全：${relativeDirectory}。`);
+  }
+  let currentRelativeDirectory = '';
+  for (const segment of relativeDirectory.split('/')) {
+    currentRelativeDirectory = currentRelativeDirectory
+      ? `${currentRelativeDirectory}/${segment}`
+      : segment;
+    const target = resolveOwnedPath(dataDirectory, currentRelativeDirectory);
+    if (existsSync(target)) {
+      if (!lstatSync(target).isDirectory()) {
+        throw new Error(`E2E fixture 目錄路徑不是目錄：${target}。`);
+      }
+      continue;
+    }
+    mkdirSync(target);
+    createdDirectories.push(currentRelativeDirectory);
+  }
 }
 
 /**
@@ -274,14 +321,16 @@ function ensurePublicDirectory(dataDirectory: string, relativeDirectory: string,
  */
 export function prepareFixtureSnapshot(options: FixturePreparationOptions = {}): void {
   const dataDirectory = resolve(options.publicDataDirectory ?? defaultPublicDataDirectory);
-  const temporaryParent = resolve(options.temporaryParent ?? tmpdir());
+  const markerPath = join(dataDirectory, markerFilename);
+  const markerExistedBeforePreparation = existsSync(markerPath);
   let temporaryRoot: string | undefined;
   let temporaryTree: OwnedTree | undefined;
   let publicDataDirectoryCreated = false;
-  let markerWritten = false;
+  const publicFilesCreated: string[] = [];
+  const publicDirectoriesCreated: string[] = [];
   try {
-    publicDataDirectoryCreated = ensureDataDirectoryIsAvailable(dataDirectory);
-    temporaryRoot = mkdtempSync(join(temporaryParent, 'candlestick-e2e-'));
+    publicDataDirectoryCreated = ensureDataDirectoryIsAvailable(dataDirectory, markerExistedBeforePreparation);
+    temporaryRoot = createTrustedTemporaryRoot(options);
     const fixtureSnapshotDirectory = join(temporaryRoot, 'site-data');
     if (options.buildFixture) {
       options.buildFixture(fixtureSnapshotDirectory);
@@ -307,10 +356,9 @@ export function prepareFixtureSnapshot(options: FixturePreparationOptions = {}):
     }
     temporaryTree = listOwnedTree(temporaryRoot);
     const stockFiles = readStockPathsFromManifest(join(fixtureSnapshotDirectory, 'manifest.json'));
-    const publicDirectories: string[] = [];
     for (const stockFile of stockFiles) {
       const stockDirectory = relative(dataDirectory, dirname(resolveOwnedPath(dataDirectory, stockFile))).replaceAll('\\', '/');
-      ensurePublicDirectory(dataDirectory, stockDirectory, publicDirectories);
+      ensurePublicDirectory(dataDirectory, stockDirectory, publicDirectoriesCreated);
     }
     const marker: FixtureMarker = {
       schemaVersion: 1,
@@ -318,41 +366,45 @@ export function prepareFixtureSnapshot(options: FixturePreparationOptions = {}):
       runId: randomUUID(),
       publicDataDirectoryCreated,
       publicFiles: ['manifest.json', ...stockFiles],
-      publicDirectories,
+      publicDirectories: publicDirectoriesCreated,
       temporaryRoot,
       temporaryFiles: temporaryTree.files,
       temporaryDirectories: temporaryTree.directories,
     };
-    const markerPath = join(dataDirectory, markerFilename);
     const markerContents = `${JSON.stringify(marker, null, 2)}\n`;
+    recordCreatedPublicFile(dataDirectory, markerFilename, publicFilesCreated);
     if (options.writeMarker) {
       options.writeMarker(markerPath, markerContents);
     } else {
       writeFileSync(markerPath, markerContents, 'utf8');
     }
-    markerWritten = true;
-    copyFileSync(join(fixtureSnapshotDirectory, 'manifest.json'), join(dataDirectory, 'manifest.json'));
+    copyFixtureFile(
+      join(fixtureSnapshotDirectory, 'manifest.json'),
+      dataDirectory,
+      'manifest.json',
+      publicFilesCreated,
+    );
     for (const stockFile of stockFiles) {
-      copyFileSync(
+      copyFixtureFile(
         resolveOwnedPath(join(fixtureSnapshotDirectory, 'data'), stockFile),
-        resolveOwnedPath(dataDirectory, stockFile),
+        dataDirectory,
+        stockFile,
+        publicFilesCreated,
       );
     }
   } catch (error) {
     try {
-      if (markerWritten) {
-        cleanupFixtureSnapshot(dataDirectory);
+      for (const relativePath of publicFilesCreated) {
+        removeKnownFile(dataDirectory, relativePath);
+      }
+      removeEmptyDirectories(dataDirectory, publicDirectoriesCreated);
+      if (publicDataDirectoryCreated) {
+        removeEmptyDirectoryIfPossible(dataDirectory);
       }
       if (temporaryRoot && temporaryTree && existsSync(temporaryRoot)) {
         removeOwnedTree(temporaryRoot, temporaryTree, true);
       } else if (temporaryRoot && existsSync(temporaryRoot)) {
         removeOwnedTree(temporaryRoot, listOwnedTree(temporaryRoot), true);
-      }
-      if (publicDataDirectoryCreated) {
-        if (!markerWritten) {
-          removeKnownFile(dataDirectory, markerFilename);
-        }
-        removeEmptyDirectoryIfPossible(dataDirectory);
       }
     } catch {
       // 保留原始建立失敗原因；全域 teardown 仍會再次嘗試 marker 清理。
