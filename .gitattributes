@@ -1,0 +1,2 @@
+# 自動產生的詞彙表必須維持 byte-identical UTF-8／LF，避免 Windows checkout 改寫換行。
+chapters/appendix-d-glossary.md text eol=lf

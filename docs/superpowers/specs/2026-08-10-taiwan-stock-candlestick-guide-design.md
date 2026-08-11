@@ -262,6 +262,6 @@ https://github.com/eric861129/taiwan-stock-candlestick-guide
 
 - 臺灣證券交易所 OpenAPI：<https://openapi.twse.com.tw/>
 - 證券櫃檯買賣中心 OpenAPI：<https://www.tpex.org.tw/openapi/>
-- 公開資訊觀測站：<https://mops.twse.com.tw/>
+- 公開資訊觀測站「公告快易查」：<https://mopsov.twse.com.tw/mops/web/ezsearch>
 - 臺灣證券交易所投資人知識網：<https://investoredu.twse.com.tw/>
 - 臺灣證券交易所使用條款：<https://www.twse.com.tw/zh/terms/use.html>
