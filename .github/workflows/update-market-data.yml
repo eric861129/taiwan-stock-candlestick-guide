@@ -1,0 +1,48 @@
+name: 平日市場資料更新
+
+on:
+  schedule:
+    # Asia/Taipei 17:30，台灣不採日光節約時間。
+    - cron: "30 9 * * 1-5"
+    # Asia/Taipei 20:30，重試相同可重入更新。
+    - cron: "30 12 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-main:
+    name: 只解析一次 main SHA
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+    steps:
+      - id: resolve
+        name: Resolve refs/heads/main exactly once
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git ls-remote "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" refs/heads/main | awk 'NR == 1 { print $1 }')"
+          if ! [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "無法取得 refs/heads/main 的完整不可變 SHA。" >&2
+            exit 1
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: 以鎖定 main SHA 更新與部署
+    needs: resolve-main
+    # 同一日期由 reusable deploy workflow 的 should_deploy=false 成功 no-op，絕不建立 Pages 部署。
+    uses: ./.github/workflows/deploy-pages.yml
+    with:
+      source_sha: ${{ needs.resolve-main.outputs.source_sha }}
+      skip_if_same_cutoff: true
+    # 可重用 workflow 的權限只能由 caller 傳遞或縮減；此 job 是實際部署呼叫邊界。
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write

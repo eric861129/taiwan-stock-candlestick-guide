@@ -55,6 +55,28 @@
 
 教材的歷史圖預設採原始價格，遇到除權息、減資、分割等公司行動時，先查公告與參考價，再討論缺口。可能變動的市場規則、費率與稅率集中在附錄 C，並附官方連結與查核日期；其他章不重複抄寫易變數字。
 
+## 本機驗證與 GitHub Pages 發布
+
+目前儲存庫尚未宣告公開部署完成；在 GitHub Pages 工作流程首次成功、公開網址與核心操作完成驗證前，不應把網站稱為已發布版本。
+
+本機先安裝鎖定版本的前端相依套件，再執行完整離線檢查：
+
+```powershell
+npm ci
+npm run verify
+python -m unittest discover -s tests
+python tools\validate_book.py
+python tools\render_glossary.py --source CONTEXT.md --output chapters\appendix-d-glossary.md --check
+```
+
+`verify.yml` 會在 Pull Request 與 reusable workflow 呼叫時，以指定的完整 commit SHA 執行相同的 Python、詞彙、lint、型別、單元覆蓋率與 VitePress build 檢查；它不會取得正式市場行情。
+
+推送 `main` 時，`deploy-pages.yml` 會先鎖定 source SHA 並重跑驗證，再驗證上一個成功市場快照或建立基準快照。只有 `manifest.json`、`provenance.json`、`SHA256SUMS` 與 `snapshot.tar.gz` 都通過驗證後，資料才會被複製進單一 GitHub Pages artifact。任一前置步驟失敗時，不會呼叫 Pages deployment；每日市場資料也不會提交回 `main`。
+
+`update-market-data.yml` 在台北時間平日 17:30 與 20:30 執行。它只解析一次 `main` 的不可變 SHA，再交給相同部署流程；官方資料日期相同時會成功 no-op，不建立新的 Pages 部署。
+
+每次成功 Pages 部署後，workflow 會保留 30 天的 `market-snapshot-<cutoff>-<short-source-sha>` artifact。若需 rollback，從 Actions 的「原子化 GitHub Pages 部署」手動執行，填入成功 artifact 的數字 `rollback_artifact_id`。流程會由該 artifact 的 `sourceCommit` 鎖定相對應程式碼，重新驗證 digest 與完整快照後才重建部署；不要將舊資料手動配到新版程式或 Schema。
+
 ## 貢獻方式
 
 請把 `CONTEXT.md`、章節中的圖表 metadata、官方來源與已產生的 SVG 視為同一份可驗證教材的一部分：
