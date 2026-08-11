@@ -55,18 +55,50 @@
 
 教材的歷史圖預設採原始價格，遇到除權息、減資、分割等公司行動時，先查公告與參考價，再討論缺口。可能變動的市場規則、費率與稅率集中在附錄 C，並附官方連結與查核日期；其他章不重複抄寫易變數字。
 
-## 本機驗證與 GitHub Pages 發布
+## 互動網站、資料範圍與限制
 
-目前儲存庫尚未宣告公開部署完成；在 GitHub Pages 工作流程首次成功、公開網址與核心操作完成驗證前，不應把網站稱為已發布版本。
+預定的 GitHub Pages 網址是 <https://eric861129.github.io/taiwan-stock-candlestick-guide/>。目前尚未宣告公開部署完成；只有 Pages workflow 成功、公開網址回應與核心互動皆完成驗證後，才可稱為已發布版本。
 
-本機先安裝鎖定版本的前端相依套件，再執行完整離線檢查：
+互動分析器只支援 TWSE／TPEx 的普通股；ETF、ETN、權證、興櫃與其他證券會被拒絕。發布快照保留兩市場最近 120 個官方交易日，型態比對最多使用最後 60 根「連續且合法」的已完成日 K。官方列出未報價，或交易所公告停止買賣時，系統會保留 `official-no-quote`／`official-suspension` 證據，不補造 OHLC，也不跨越該日或停牌區間建立型態視窗；全市場緊急休市則由版本化日曆佐證排除。
+
+瀏覽器只從同源的 `data/manifest.json` 與內容雜湊股票 JSON 載入資料，不直接呼叫交易所。來源 adapter 只讀取 TWSE／TPEx 的官方盤後行情、上市櫃公司清冊、公司行動與 TWSE 年度交易日曆；個股停復牌與緊急休市必須有版本化官方公告佐證。這些資料只供教材式的歷史型態比對，不預測未來價格，也不構成投資建議。
+
+## 本機預覽、快照與完整驗證
+
+先安裝鎖定版本的前端相依套件，開發預覽使用 VitePress：
+
+```powershell
+npm ci
+npm run dev
+```
+
+離線 fixture 可用於不連線官方來源的開發與測試：
+
+```powershell
+$sourceCommit = git rev-parse HEAD
+python tools\market_snapshot.py fixture --fixtures tests\fixtures\market_snapshot --output .cache\fixture-site-data --source-commit $sourceCommit
+python tools\market_snapshot.py validate --snapshot .cache\fixture-site-data
+```
+
+建立正式基準快照時，工具會使用 `.cache\` 暫存成功的官方日行情以安全續跑；快照不應提交到 Git：
+
+```powershell
+$sourceCommit = git rev-parse HEAD
+python tools\market_snapshot.py bootstrap --output .cache\live-site-data --source-commit $sourceCommit --cache .cache\market-snapshot --suspensions data\suspension-intervals.json
+python tools\market_snapshot.py validate --snapshot .cache\live-site-data
+```
+
+提交或部署前應在最終工作樹執行完整 gate：
 
 ```powershell
 npm ci
 npm run verify
+npm run test:e2e
 python -m unittest discover -s tests
 python tools\validate_book.py
 python tools\render_glossary.py --source CONTEXT.md --output chapters\appendix-d-glossary.md --check
+git diff --check
+git status --short --branch
 ```
 
 `verify.yml` 會在 Pull Request 與 reusable workflow 呼叫時，以指定的完整 commit SHA 執行相同的 Python、詞彙、lint、型別、單元覆蓋率與 VitePress build 檢查；它不會取得正式市場行情。

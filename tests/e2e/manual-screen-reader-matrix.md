@@ -4,9 +4,9 @@
 
 | 環境 | 路由 | 檢查項目 | 執行者 | 日期 | 結果／發現 |
 | --- | --- | --- | --- | --- |
-| NVDA + Chrome | `/` | landmark、跳至主要內容連結、首頁焦點可見性與文字圖例 | 待簽核 | 待簽核 | 待簽核 |
-| NVDA + Chrome | `/pattern-cards` | 篩選標籤、結果數 live region、卡片翻面按鈕的展開狀態與鍵盤焦點 | 待簽核 | 待簽核 | 待簽核 |
-| NVDA + Chrome | `/analyzer` | 股票代碼標籤、錯誤提示、圖表 OHLCV 摘要、公司行動與結果狀態 | 待簽核 | 待簽核 | 待簽核 |
+| NVDA + Firefox | `/` | landmark、跳至主要內容連結、首頁焦點可見性與文字圖例 | 待簽核 | 待簽核 | 待簽核 |
+| NVDA + Firefox | `/pattern-cards` | 篩選標籤、結果數 live region、卡片翻面按鈕的展開狀態與鍵盤焦點 | 待簽核 | 待簽核 | 待簽核 |
+| NVDA + Firefox | `/analyzer` | 股票代碼標籤、錯誤提示、圖表 OHLCV 摘要、公司行動與結果狀態 | 待簽核 | 待簽核 | 待簽核 |
 | Narrator + Edge | `/` | landmark、跳至主要內容連結、首頁焦點可見性與文字圖例 | 待簽核 | 待簽核 | 待簽核 |
 | Narrator + Edge | `/pattern-cards` | 篩選標籤、結果數 live region、卡片翻面按鈕的展開狀態與鍵盤焦點 | 待簽核 | 待簽核 | 待簽核 |
 | Narrator + Edge | `/analyzer` | 股票代碼標籤、錯誤提示、圖表 OHLCV 摘要、公司行動與結果狀態 | 待簽核 | 待簽核 | 待簽核 |
