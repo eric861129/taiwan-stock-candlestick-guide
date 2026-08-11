@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 import argparse
@@ -313,11 +313,11 @@ def _available_market_sessions(
         retained_dates = tuple(sorted(dates)[-RETENTION_SESSIONS:])
         if not retained_dates:
             raise SnapshotValidationError(f"缺少 {market} 官方交易日行情。")
-        expected_sessions = _official_trading_sessions_between(
+        expected_sessions = _official_trading_sessions_ending_at(
             build.calendar,
-            retained_dates[0],
             retained_dates[-1],
-        )[-RETENTION_SESSIONS:]
+            RETENTION_SESSIONS,
+        )
         if retained_dates != expected_sessions:
             missing = tuple(session for session in expected_sessions if session not in dates)
             unexpected = tuple(session for session in retained_dates if session not in expected_sessions)
@@ -1433,11 +1433,36 @@ def _fixture_input(fixtures: Path, source_commit: str, overrides_path: Path) -> 
         source_commit=source_commit,
         generated_at=datetime.combine(latest_date, datetime.min.time().replace(hour=18), tzinfo=calendar.timezone),
         symbols=symbols,
-        sessions=(MarketSession("TWSE", twse_daily), MarketSession("TPEx", tpex_daily)),
+        sessions=_fixture_market_sessions(twse_daily, tpex_daily, calendar, latest_date),
         corporate_actions=(*actions, *override_actions),
         calendar=calendar,
         retired_symbols=retired_symbols,
     )
+
+
+def _fixture_market_sessions(
+    twse_daily: Sequence[DailyQuote],
+    tpex_daily: Sequence[DailyQuote],
+    calendar: TradingCalendar,
+    cutoff: date,
+) -> tuple[MarketSession, ...]:
+    """由離線官方形狀樣本重建完整 120 日 fixture，維持與 bootstrap 相同的完整性契約。"""
+
+    sessions: list[MarketSession] = []
+    for session_date in _official_trading_sessions_ending_at(calendar, cutoff, RETENTION_SESSIONS):
+        sessions.append(
+            MarketSession(
+                "TWSE",
+                tuple(replace(quote, trading_date=session_date) for quote in twse_daily),
+            )
+        )
+        sessions.append(
+            MarketSession(
+                "TPEx",
+                tuple(replace(quote, trading_date=session_date) for quote in tpex_daily),
+            )
+        )
+    return tuple(sessions)
 
 
 def _read_fixture(directory: Path, name: str) -> object:

@@ -48,28 +48,6 @@ def load_fixture(name: str) -> object:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def fixture_build_input() -> SnapshotBuildInput:
-    taipei = timezone(timedelta(hours=8), name="Asia/Taipei")
-    return SnapshotBuildInput(
-        source_commit="fixture",
-        generated_at=datetime(2026, 8, 11, 18, 0, tzinfo=taipei),
-        symbols=parse_supported_symbols(
-            load_fixture("twse-companies.json"),
-            load_fixture("tpex-companies.json"),
-        ),
-        sessions=(
-            MarketSession("TWSE", parse_twse_daily(load_fixture("twse-daily.json"))),
-            MarketSession("TPEx", parse_tpex_daily(load_fixture("tpex-daily.json"))),
-        ),
-        corporate_actions=parse_corporate_actions(
-            load_fixture("twse-actions.json"),
-            load_fixture("tpex-actions.json"),
-            verified_at=date(2026, 8, 11),
-        ),
-        calendar=parse_holiday_calendar(load_fixture("holiday-calendar.json")),
-    )
-
-
 def official_fixture_sessions_ending_at(
     end_date: date,
     count: int,
@@ -84,6 +62,44 @@ def official_fixture_sessions_ending_at(
             sessions.append(candidate)
         candidate -= timedelta(days=1)
     return tuple(reversed(sessions))
+
+
+def fixture_build_input() -> SnapshotBuildInput:
+    """建立符合正式 bootstrap 120 日完整性契約的離線官方形狀資料。"""
+
+    taipei = timezone(timedelta(hours=8), name="Asia/Taipei")
+    calendar = parse_holiday_calendar(load_fixture("holiday-calendar.json"))
+    twse_daily = parse_twse_daily(load_fixture("twse-daily.json"))
+    tpex_daily = parse_tpex_daily(load_fixture("tpex-daily.json"))
+    sessions = tuple(
+        market_session
+        for session_date in official_fixture_sessions_ending_at(date(2026, 8, 11), 120, calendar)
+        for market_session in (
+            MarketSession(
+                "TWSE",
+                tuple(replace(quote, trading_date=session_date) for quote in twse_daily),
+            ),
+            MarketSession(
+                "TPEx",
+                tuple(replace(quote, trading_date=session_date) for quote in tpex_daily),
+            ),
+        )
+    )
+    return SnapshotBuildInput(
+        source_commit="fixture",
+        generated_at=datetime(2026, 8, 11, 18, 0, tzinfo=taipei),
+        symbols=parse_supported_symbols(
+            load_fixture("twse-companies.json"),
+            load_fixture("tpex-companies.json"),
+        ),
+        sessions=sessions,
+        corporate_actions=parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            load_fixture("tpex-actions.json"),
+            verified_at=date(2026, 8, 11),
+        ),
+        calendar=calendar,
+    )
 
 
 def downgrade_snapshot_to_v1(output: Path) -> None:
@@ -192,8 +208,9 @@ class SnapshotBuildTests(unittest.TestCase):
             stock = json.loads((output / twse_entry["dataPath"]).read_text(encoding="utf-8"))
             self.assertEqual("raw", stock["priceMode"])
             self.assertEqual("TWD", stock["priceUnit"])
-            self.assertEqual("2026-08-11", stock["bars"][0]["date"])
-            self.assertEqual(5, stock["bars"][0]["comparisonUnit"])
+            self.assertEqual(120, len(stock["bars"]))
+            self.assertEqual("2026-08-11", stock["bars"][-1]["date"])
+            self.assertEqual(5, stock["bars"][-1]["comparisonUnit"])
             self.assertEqual("cash-dividend", stock["corporateActions"][0]["type"])
             self.assertEqual("fresh", document["markets"]["TWSE"]["freshness"])
             self.assertTrue((output / "snapshot.tar.gz").is_file())
@@ -228,6 +245,8 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertEqual(0, exit_code)
             manifest = validate_snapshot(output)
             self.assertEqual("fixture", manifest.source_commit)
+            self.assertEqual(120, len(manifest.markets["TWSE"].trading_sessions))
+            self.assertEqual(120, manifest.symbols[0].bar_count)
 
     def test_fixture_command_invokes_the_cli_entrypoint(self) -> None:
         """若直接執行工具檔沒有進入 main，CI 的 fixture gate 會假成功。"""
@@ -303,11 +322,20 @@ class SnapshotBuildTests(unittest.TestCase):
             parse_twse_daily(load_fixture("twse-daily.json"))[0],
             source_url="https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX",
         )
+        base = fixture_build_input()
         initial = replace(
-            fixture_build_input(),
-            sessions=(
-                MarketSession("TWSE", (original_twse,)),
-                MarketSession("TPEx", parse_tpex_daily(load_fixture("tpex-daily.json"))[:1]),
+            base,
+            sessions=tuple(
+                MarketSession(
+                    session.market,
+                    tuple(
+                        replace(quote, source_url=original_twse.source_url)
+                        if session.market == "TWSE"
+                        else quote
+                        for quote in session.quotes
+                    ),
+                )
+                for session in base.sessions
             ),
         )
         twse_new = replace(parse_twse_daily(load_fixture("twse-daily.json"))[0], trading_date=date(2026, 8, 12))
@@ -334,7 +362,7 @@ class SnapshotBuildTests(unittest.TestCase):
 
             stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
             self.assertTrue(updated)
-            self.assertEqual(["2026-08-11", "2026-08-12"], [bar["date"] for bar in stock["bars"]])
+            self.assertEqual(["2026-08-11", "2026-08-12"], [bar["date"] for bar in stock["bars"]][-2:])
             self.assertTrue(all(url.startswith("https://") for url in stock["sourceUrls"]))
             self.assertIn("https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX", stock["sourceUrls"])
 
@@ -346,13 +374,18 @@ class SnapshotBuildTests(unittest.TestCase):
         expected_backfill_dates = [date(2026, 8, 7), date(2026, 8, 10), expected_date]
         twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
         tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        initial_sessions: list[MarketSession] = []
+        for session_date in official_fixture_sessions_ending_at(prior_date, 120, base.calendar):
+            initial_sessions.extend(
+                (
+                    MarketSession("TWSE", (replace(twse_quote, trading_date=session_date),)),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
         initial = replace(
             base,
             generated_at=datetime(2026, 8, 6, 18, 0, tzinfo=base.calendar.timezone),
-            sessions=(
-                MarketSession("TWSE", (replace(twse_quote, trading_date=prior_date),)),
-                MarketSession("TPEx", (replace(tpex_quote, trading_date=prior_date),)),
-            ),
+            sessions=tuple(initial_sessions),
         )
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -389,7 +422,7 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertTrue(updated)
             self.assertEqual(
                 ["2026-08-06", "2026-08-07", "2026-08-10", "2026-08-11"],
-                [bar["date"] for bar in stock["bars"]],
+                [bar["date"] for bar in stock["bars"]][-4:],
             )
             self.assertEqual(expected_backfill_dates, [call.args[0] for call in twse_history_fetch.call_args_list])
             self.assertEqual(expected_backfill_dates, [call.args[0] for call in tpex_history_fetch.call_args_list])
@@ -401,13 +434,18 @@ class SnapshotBuildTests(unittest.TestCase):
         prior_date = date(2026, 8, 6)
         twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
         tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        initial_sessions: list[MarketSession] = []
+        for session_date in official_fixture_sessions_ending_at(prior_date, 120, base.calendar):
+            initial_sessions.extend(
+                (
+                    MarketSession("TWSE", (replace(twse_quote, trading_date=session_date),)),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
         initial = replace(
             base,
             generated_at=datetime(2026, 8, 6, 18, 0, tzinfo=base.calendar.timezone),
-            sessions=(
-                MarketSession("TWSE", (replace(twse_quote, trading_date=prior_date),)),
-                MarketSession("TPEx", (replace(tpex_quote, trading_date=prior_date),)),
-            ),
+            sessions=tuple(initial_sessions),
         )
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -516,6 +554,92 @@ class SnapshotBuildTests(unittest.TestCase):
         self.assertEqual(120, stock["availableSessions"])
         self.assertIsNone(stock["shortHistoryReason"])
 
+    def test_rejects_an_old_stock_when_the_oldest_expected_market_session_is_missing(self) -> None:
+        """舊股的 trailing 120 日少最早一天時，不能被縮短成看似完整的 119 日視窗。"""
+
+        base = fixture_build_input()
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        expected_sessions = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)
+        sessions: list[MarketSession] = []
+        for session_date in expected_sessions[1:]:
+            sessions.extend(
+                (
+                    MarketSession("TWSE", (replace(twse_quote, trading_date=session_date),)),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
+        build_input = replace(base, sessions=tuple(sessions))
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(SnapshotValidationError, "官方交易日缺漏"):
+                build_snapshot(None, build_input, Path(temporary_directory) / "site-data")
+
+    def test_allows_an_official_119_session_ipo_suffix_and_preserves_listing_evidence(self) -> None:
+        """只有官方上市日期能讓 119 日短歷史成立，且 manifest 與個股都要保留證據。"""
+
+        base = fixture_build_input()
+        twse_quote, unsupported_twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        expected_sessions = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)
+        listing_date = expected_sessions[1]
+        sessions: list[MarketSession] = []
+        for session_date in expected_sessions:
+            twse_quotes = (
+                (replace(twse_quote, trading_date=session_date),)
+                if session_date >= listing_date
+                else (replace(unsupported_twse_quote, trading_date=session_date),)
+            )
+            sessions.extend(
+                (
+                    MarketSession("TWSE", twse_quotes),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
+        symbol = replace(base.symbols[0], listing_date=listing_date)
+        build_input = replace(base, symbols=(symbol, base.symbols[1]), sessions=tuple(sessions))
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, build_input, output)
+            stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+
+        self.assertEqual(119, manifest.symbols[0].available_sessions)
+        self.assertEqual(listing_date.isoformat(), manifest.symbols[0].listing_date)
+        self.assertEqual("listing-history", manifest.symbols[0].short_history_reason)
+        self.assertEqual(listing_date.isoformat(), stock["listingDate"])
+        self.assertIn(symbol.source_url, stock["sourceUrls"])
+
+    def test_rejects_a_short_stock_without_an_official_listing_date(self) -> None:
+        """短歷史沒有官方上市日期時，不能自行推定是 IPO。"""
+
+        base = fixture_build_input()
+        twse_quote, unsupported_twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        expected_sessions = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)
+        sessions: list[MarketSession] = []
+        for index, session_date in enumerate(expected_sessions):
+            twse_quotes = (
+                (replace(unsupported_twse_quote, trading_date=session_date),)
+                if index == 0
+                else (replace(twse_quote, trading_date=session_date),)
+            )
+            sessions.extend(
+                (
+                    MarketSession("TWSE", twse_quotes),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
+        build_input = replace(
+            base,
+            symbols=(replace(base.symbols[0], listing_date=None), base.symbols[1]),
+            sessions=tuple(sessions),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(SnapshotValidationError, "官方上市日期無效"):
+                build_snapshot(None, build_input, Path(temporary_directory) / "site-data")
+
     def test_short_ipo_history_is_disclosed_when_every_available_session_is_present(self) -> None:
         """若新上市股票的短歷史未標示來源，使用者會把資料缺口誤認為完整 120 根 K 線。"""
         base = fixture_build_input()
@@ -583,13 +707,7 @@ class SnapshotBuildTests(unittest.TestCase):
         base = fixture_build_input()
         twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
         tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
-        expected_sessions = (
-            date(2026, 8, 6),
-            date(2026, 8, 7),
-            date(2026, 8, 10),
-            date(2026, 8, 11),
-            date(2026, 8, 12),
-        )
+        expected_sessions = official_fixture_sessions_ending_at(date(2026, 8, 12), 120, base.calendar)
         missing_date = date(2026, 8, 10)
         sessions: list[MarketSession] = []
         for session_date in expected_sessions:
@@ -612,17 +730,12 @@ class SnapshotBuildTests(unittest.TestCase):
                 build_snapshot(None, build_input, Path(temporary_directory) / "site-data")
 
     def test_rejects_a_common_market_gap_split_between_previous_and_current_sessions(self) -> None:
-        """前次 6、7、11 與本次 12 不可掩蓋官方交易日 10 的共同缺漏。"""
+        """前次完整歷史與本次 12 不可掩蓋官方交易日 10 的共同缺漏。"""
 
         base = fixture_build_input()
         twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
         tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
-        previous_dates = (
-            date(2026, 8, 6),
-            date(2026, 8, 7),
-            date(2026, 8, 10),
-            date(2026, 8, 11),
-        )
+        previous_dates = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)
         previous_sessions: list[MarketSession] = []
         for session_date in previous_dates:
             previous_sessions.extend(
@@ -661,13 +774,7 @@ class SnapshotBuildTests(unittest.TestCase):
         base = fixture_build_input()
         twse_quote, unsupported_twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))
         tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
-        expected_sessions = (
-            date(2026, 8, 6),
-            date(2026, 8, 7),
-            date(2026, 8, 10),
-            date(2026, 8, 11),
-            date(2026, 8, 12),
-        )
+        expected_sessions = official_fixture_sessions_ending_at(date(2026, 8, 12), 120, base.calendar)
         listing_date = date(2026, 8, 10)
         sessions: list[MarketSession] = []
         for session_date in expected_sessions:
@@ -916,16 +1023,18 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertFalse((root / "next-output").exists())
 
     def test_rejects_an_incomplete_v1_target_before_a_fresh_v2_replacement(self) -> None:
-        """已有 v1 目錄時，單日 fixture 不可冒充完成回補後的 v2 快照。"""
+        """已有 v1 目錄時，不完整直接 bootstrap 不可覆寫既有快照。"""
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "site-data"
-            build_snapshot(None, fixture_build_input(), output)
+            base = fixture_build_input()
+            build_snapshot(None, base, output)
             downgrade_snapshot_to_v1(output)
             self.assertEqual(1, validate_snapshot(output).snapshot_version)
+            incomplete = replace(base, sessions=base.sessions[2:])
 
-            with self.assertRaisesRegex(SnapshotValidationError, "v1.*重新 bootstrap"):
-                build_snapshot(None, fixture_build_input(), output)
+            with self.assertRaisesRegex(SnapshotValidationError, "官方交易日缺漏"):
+                build_snapshot(None, incomplete, output)
 
             self.assertEqual(1, validate_snapshot(output).snapshot_version)
 
@@ -967,6 +1076,8 @@ class SnapshotBuildTests(unittest.TestCase):
             previous = root / "previous"
             next_output = root / "next-output"
             build_snapshot(None, base, previous)
+            earliest_session = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)[0]
+            remove_verified_session_from_v2_snapshot(previous, earliest_session)
             downgrade_snapshot_to_v1(previous)
             self.assertEqual(1, validate_snapshot(previous).snapshot_version)
 
