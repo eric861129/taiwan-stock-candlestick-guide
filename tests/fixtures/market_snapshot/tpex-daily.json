@@ -1,0 +1,28 @@
+[
+  {
+    "SecuritiesCompanyCode": "6488",
+    "CompanyName": "環球晶",
+    "Date": "1150811",
+    "TradingShares": "9,876,000",
+    "TransactionNumber": "567",
+    "TransactionAmount": "4,800,000,000",
+    "Open": "486.00",
+    "High": "492.00",
+    "Low": "482.00",
+    "Close": "490.00",
+    "Change": "4.00"
+  },
+  {
+    "SecuritiesCompanyCode": "006201",
+    "CompanyName": "元大富櫃50",
+    "Date": "1150811",
+    "TradingShares": "379,131",
+    "TransactionNumber": "192",
+    "TransactionAmount": "16,452,661",
+    "Open": "43.75",
+    "High": "43.95",
+    "Low": "42.98",
+    "Close": "43.80",
+    "Change": "-0.05"
+  }
+]

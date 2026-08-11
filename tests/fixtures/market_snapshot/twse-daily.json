@@ -1,0 +1,28 @@
+[
+  {
+    "Code": "2330",
+    "Name": "台積電",
+    "Date": "1150811",
+    "TradeVolume": "21,345,678",
+    "Transaction": "12,345",
+    "TradeValue": "21,569,000,000",
+    "OpeningPrice": "1,000.00",
+    "HighestPrice": "1,015.00",
+    "LowestPrice": "995.00",
+    "ClosingPrice": "1,010.00",
+    "Change": "10.0000"
+  },
+  {
+    "Code": "00400A",
+    "Name": "主動國泰動能高息",
+    "Date": "1150811",
+    "TradeVolume": "37,751,808",
+    "Transaction": "6,729",
+    "TradeValue": "528,954,418",
+    "OpeningPrice": "13.98",
+    "HighestPrice": "14.12",
+    "LowestPrice": "13.88",
+    "ClosingPrice": "13.94",
+    "Change": "0.2000"
+  }
+]

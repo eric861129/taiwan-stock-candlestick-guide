@@ -9,3 +9,4 @@ dist/
 coverage/
 .vitepress/cache/
 .vitepress/dist/
+public/data/
