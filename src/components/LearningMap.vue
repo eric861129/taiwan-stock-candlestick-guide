@@ -24,9 +24,9 @@ function isChapterCompleted(chapterId: string): boolean {
     class="learning-map"
     aria-labelledby="learning-map-title"
   >
-    <h2 id="learning-map-title">
+    <h3 id="learning-map-title">
       五階段學習地圖
-    </h2>
+    </h3>
     <p>測驗只記錄進度，不會鎖住章節；你可以依自己的節奏重讀與重試。</p>
     <ol class="learning-map__stages">
       <li
@@ -48,7 +48,7 @@ function isChapterCompleted(chapterId: string): boolean {
               <a :href="chapterHref(chapter.link)">{{ chapter.title }}</a>
               <button
                 type="button"
-                :aria-pressed="isChapterCompleted(chapter.id)"
+                :aria-label="`${chapter.title}${isChapterCompleted(chapter.id) ? ' 已完成' : ' 標記完成'}`"
                 @click="emit('completeChapter', chapter.id)"
               >
                 {{ isChapterCompleted(chapter.id) ? '已完成' : '標記完成' }}

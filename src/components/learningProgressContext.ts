@@ -12,6 +12,7 @@ import type { QuizResult } from '../domain/learning/quizzes';
 
 export interface LearningProgressContext {
   readonly progress: Readonly<Ref<LearningProgressV1>>;
+  readonly storageError: Readonly<Ref<string>>;
   readonly markChapterComplete: (chapterId: string) => void;
   readonly recordQuizResult: (result: QuizResult) => void;
   readonly clearProgress: () => void;
@@ -52,14 +53,21 @@ function resolveStorage(storage?: ProgressStorage): ProgressStorage {
 export function createLearningProgressContext(storage?: ProgressStorage): LearningProgressContext {
   const resolvedStorage = resolveStorage(storage);
   const progress = ref<LearningProgressV1>(loadProgress(resolvedStorage));
+  const storageError = ref('');
 
   function persist(nextProgress: LearningProgressV1): void {
     progress.value = nextProgress;
-    saveProgress(resolvedStorage, nextProgress);
+    try {
+      saveProgress(resolvedStorage, nextProgress);
+      storageError.value = '';
+    } catch {
+      storageError.value = '無法儲存學習進度；本頁面會暫時保留目前進度，請稍後再試或匯出備份。';
+    }
   }
 
   return {
     progress: readonly(progress) as unknown as Readonly<Ref<LearningProgressV1>>,
+    storageError: readonly(storageError) as unknown as Readonly<Ref<string>>,
     markChapterComplete(chapterId) {
       if (!chapterId || progress.value.completedChapterIds.includes(chapterId)) return;
       persist({
@@ -81,8 +89,16 @@ export function createLearningProgressContext(storage?: ProgressStorage): Learni
     },
     clearProgress() {
       const removableStorage = resolvedStorage as ProgressStorage & Partial<Pick<Storage, 'removeItem'>>;
-      removableStorage.removeItem?.(PROGRESS_STORAGE_KEY);
-      progress.value = loadProgress(createMemoryStorage());
+      try {
+        if (!removableStorage.removeItem) {
+          throw new Error('removeItem unavailable');
+        }
+        removableStorage.removeItem(PROGRESS_STORAGE_KEY);
+        progress.value = loadProgress(createMemoryStorage());
+        storageError.value = '';
+      } catch {
+        storageError.value = '無法清除學習進度；原有進度仍保留在本頁面，請稍後再試。';
+      }
     },
     exportProgressJson() {
       return exportProgress(progress.value);

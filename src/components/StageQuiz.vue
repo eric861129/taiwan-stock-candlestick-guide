@@ -27,9 +27,9 @@ function retry(): void {
     class="stage-quiz"
     :aria-labelledby="`${props.stageId}-quiz-title`"
   >
-    <h2 :id="`${props.stageId}-quiz-title`">
+    <h5 :id="`${props.stageId}-quiz-title`">
       階段小測驗
-    </h2>
+    </h5>
     <p>共五題，答對四題即可通過；答錯可以不限次數重試。</p>
     <form @submit.prevent="submitQuiz">
       <fieldset

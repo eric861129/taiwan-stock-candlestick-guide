@@ -71,4 +71,15 @@ describe('learning progress v1', () => {
     const oversized = 'x'.repeat(256 * 1024 + 1);
     expect(() => importProgress(oversized)).toThrow('學習進度檔案不可超過 256 KiB');
   });
+
+  it.each([
+    ['unknown chapter ID', { completedChapterIds: ['chapter-99'] }],
+    ['duplicate chapter ID', { completedChapterIds: ['chapter-01', 'chapter-01'] }],
+    ['unknown stage ID', { passedStageIds: ['stage-99'] }],
+    ['duplicate stage ID', { passedStageIds: ['stage-1', 'stage-1'] }],
+    ['unknown quiz attempt stage', { quizAttempts: { 'stage-99': 1 } }],
+  ])('rejects %s outside the approved learning allowlist', (_label, override) => {
+    const invalidProgress = { ...progress, ...override };
+    expect(() => importProgress(JSON.stringify(invalidProgress))).toThrow('學習進度格式無效');
+  });
 });

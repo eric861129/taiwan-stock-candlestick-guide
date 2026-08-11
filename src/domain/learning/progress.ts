@@ -1,3 +1,5 @@
+import { LEARNING_STAGES } from './stages';
+
 /** localStorage 與匯出檔案共用的第一版進度格式。 */
 export interface LearningProgressV1 {
   readonly schemaVersion: 1;
@@ -10,6 +12,9 @@ export interface LearningProgressV1 {
 export const PROGRESS_STORAGE_KEY = 'tw-candlestick-guide:progress:v1' as const;
 export const PASSING_QUESTION_COUNT = 4 as const;
 export const MAX_IMPORT_BYTES = 256 * 1024;
+
+const validChapterIds = new Set<string>(LEARNING_STAGES.flatMap((stage) => stage.chapters.map((chapter) => chapter.id)));
+const validStageIds = new Set<string>(LEARNING_STAGES.map((stage) => stage.id));
 
 export type ProgressStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
@@ -27,18 +32,28 @@ function hasValidStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string' && item.length > 0);
 }
 
+function hasUniqueKnownIds(value: string[], allowedIds: ReadonlySet<string>): boolean {
+  return new Set(value).size === value.length && value.every((id) => allowedIds.has(id));
+}
+
 function isValidProgress(value: unknown): value is LearningProgressV1 {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
   if (candidate.schemaVersion !== 1) return false;
   if (!hasValidStringArray(candidate.completedChapterIds)) return false;
+  if (!hasUniqueKnownIds(candidate.completedChapterIds, validChapterIds)) return false;
   if (!hasValidStringArray(candidate.passedStageIds)) return false;
+  if (!hasUniqueKnownIds(candidate.passedStageIds, validStageIds)) return false;
   if (!candidate.quizAttempts || typeof candidate.quizAttempts !== 'object' || Array.isArray(candidate.quizAttempts)) {
     return false;
   }
   if (
     !Object.entries(candidate.quizAttempts).every(
-      ([stageId, attempts]) => stageId.length > 0 && typeof attempts === 'number' && Number.isInteger(attempts) && attempts >= 0,
+      ([stageId, attempts]) =>
+        validStageIds.has(stageId) &&
+        typeof attempts === 'number' &&
+        Number.isInteger(attempts) &&
+        attempts >= 0,
     )
   ) {
     return false;

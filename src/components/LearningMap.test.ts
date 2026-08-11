@@ -19,5 +19,8 @@ describe('LearningMap', () => {
     expect(wrapper.findAll('a[href*="/chapters/"]')).toHaveLength(20);
     expect(wrapper.find('[data-stage-status="stage-1"]').text()).toContain('已通過');
     expect(wrapper.findAll('a[aria-disabled="true"]')).toHaveLength(0);
+    expect(wrapper.find('h3').text()).toContain('五階段學習地圖');
+    expect(wrapper.find('button').attributes('aria-label')).toContain('第 1 章');
+    expect(wrapper.find('button').attributes('aria-pressed')).toBeUndefined();
   });
 });
