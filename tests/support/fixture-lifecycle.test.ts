@@ -2,6 +2,8 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readFileSync,
+  readdirSync,
   rmdirSync,
   unlinkSync,
   writeFileSync,
@@ -9,7 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanupFixtureSnapshot } from '../e2e/fixture-lifecycle';
+import { cleanupFixtureSnapshot, prepareFixtureSnapshot } from '../e2e/fixture-lifecycle';
 
 interface FixturePaths {
   root: string;
@@ -20,7 +22,15 @@ interface FixturePaths {
   generatedManifest: string;
 }
 
+interface PreparationFailurePaths {
+  root: string;
+  publicDataDirectory: string;
+  temporaryParent: string;
+  preexistingFile?: string;
+}
+
 let activeFixture: FixturePaths | undefined;
+let activePreparationFailure: PreparationFailurePaths | undefined;
 
 function createFixture(): FixturePaths {
   const root = mkdtempSync(join(tmpdir(), 'candlestick-e2e-'));
@@ -60,8 +70,51 @@ function createFixture(): FixturePaths {
   };
 }
 
+function createPreparationFailurePaths(withPreexistingFile = false): PreparationFailurePaths {
+  const root = mkdtempSync(join(tmpdir(), 'candlestick-e2e-'));
+  const publicDataDirectory = join(root, 'public', 'data');
+  const temporaryParent = join(root, 'temporary');
+  mkdirSync(temporaryParent, { recursive: true });
+  const preexistingFile = join(publicDataDirectory, 'pre-existing.txt');
+  if (withPreexistingFile) {
+    mkdirSync(publicDataDirectory, { recursive: true });
+    writeFileSync(preexistingFile, '使用者原有資料', 'utf8');
+  }
+  return {
+    root,
+    publicDataDirectory,
+    temporaryParent,
+    preexistingFile: withPreexistingFile ? preexistingFile : undefined,
+  };
+}
+
+function removePreparationFailurePaths(paths: PreparationFailurePaths): void {
+  if (paths.preexistingFile && existsSync(paths.preexistingFile)) {
+    unlinkSync(paths.preexistingFile);
+  }
+  if (existsSync(paths.publicDataDirectory)) {
+    rmdirSync(paths.publicDataDirectory);
+  }
+  const publicDirectory = dirname(paths.publicDataDirectory);
+  if (existsSync(publicDirectory)) {
+    rmdirSync(publicDirectory);
+  }
+  if (existsSync(paths.temporaryParent)) {
+    rmdirSync(paths.temporaryParent);
+  }
+  if (existsSync(paths.root)) {
+    rmdirSync(paths.root);
+  }
+}
+
 afterEach(() => {
+  cleanupFixtureSnapshot();
   if (!activeFixture) {
+    if (activePreparationFailure) {
+      cleanupFixtureSnapshot(activePreparationFailure.publicDataDirectory);
+      removePreparationFailurePaths(activePreparationFailure);
+      activePreparationFailure = undefined;
+    }
     return;
   }
   cleanupFixtureSnapshot(activeFixture.publicDataDirectory);
@@ -99,5 +152,58 @@ describe('E2E fixture lifecycle', () => {
     expect(existsSync(join(activeFixture.publicDataDirectory, '.task-8-e2e-fixture.json'))).toBe(false);
     expect(existsSync(join(activeFixture.publicDataDirectory, 'stocks'))).toBe(false);
     expect(existsSync(activeFixture.temporaryRoot)).toBe(false);
+  });
+
+  it('marker 前 fixture 強制失敗時會清除本次 public/data 與暫存快照', () => {
+    activePreparationFailure = createPreparationFailurePaths();
+
+    expect(() => prepareFixtureSnapshot({
+      publicDataDirectory: activePreparationFailure.publicDataDirectory,
+      temporaryParent: activePreparationFailure.temporaryParent,
+      buildFixture: (snapshotDirectory: string) => {
+        mkdirSync(snapshotDirectory, { recursive: true });
+        writeFileSync(join(snapshotDirectory, 'partial.json'), '本次暫存資料', 'utf8');
+        throw new Error('marker 前強制失敗');
+      },
+    })).toThrow('marker 前強制失敗');
+
+    expect(existsSync(activePreparationFailure.publicDataDirectory)).toBe(false);
+    expect(readdirSync(activePreparationFailure.temporaryParent)).toEqual([]);
+  });
+
+  it('marker 前失敗不會刪除既有 public/data 檔案', () => {
+    activePreparationFailure = createPreparationFailurePaths(true);
+
+    expect(() => prepareFixtureSnapshot({
+      publicDataDirectory: activePreparationFailure.publicDataDirectory,
+      temporaryParent: activePreparationFailure.temporaryParent,
+      buildFixture: () => {
+        throw new Error('不應執行 fixture 建立');
+      },
+    })).toThrow('public/data 已有非本次 E2E fixture 檔案');
+
+    expect(activePreparationFailure.preexistingFile).toBeDefined();
+    expect(readFileSync(activePreparationFailure.preexistingFile!, 'utf8')).toBe('使用者原有資料');
+    expect(readdirSync(activePreparationFailure.temporaryParent)).toEqual([]);
+  });
+
+  it('marker 寫入失敗時會移除本次 partial marker、public/data 與暫存快照', () => {
+    activePreparationFailure = createPreparationFailurePaths();
+
+    expect(() => prepareFixtureSnapshot({
+      publicDataDirectory: activePreparationFailure.publicDataDirectory,
+      temporaryParent: activePreparationFailure.temporaryParent,
+      buildFixture: (snapshotDirectory: string) => {
+        mkdirSync(snapshotDirectory, { recursive: true });
+        writeFileSync(join(snapshotDirectory, 'manifest.json'), JSON.stringify({ symbols: [] }), 'utf8');
+      },
+      writeMarker: (markerPath: string) => {
+        writeFileSync(markerPath, 'partial marker', 'utf8');
+        throw new Error('marker 寫入強制失敗');
+      },
+    })).toThrow('marker 寫入強制失敗');
+
+    expect(existsSync(activePreparationFailure.publicDataDirectory)).toBe(false);
+    expect(readdirSync(activePreparationFailure.temporaryParent)).toEqual([]);
   });
 });

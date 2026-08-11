@@ -17,7 +17,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const publicDataDirectory = resolve(repositoryRoot, 'public/data');
+const defaultPublicDataDirectory = resolve(repositoryRoot, 'public/data');
 const markerFilename = '.task-8-e2e-fixture.json';
 const fixtureSourceCommit = 'fixture';
 const fixtureOwner = 'task-8-e2e';
@@ -37,6 +37,14 @@ interface FixtureMarker {
 interface OwnedTree {
   readonly files: readonly string[];
   readonly directories: readonly string[];
+}
+
+/** 供 lifecycle 契約測試注入 marker 寫入前的 fixture 失敗。 */
+export interface FixturePreparationOptions {
+  readonly publicDataDirectory?: string;
+  readonly temporaryParent?: string;
+  readonly buildFixture?: (snapshotDirectory: string) => void;
+  readonly writeMarker?: (markerPath: string, contents: string) => void;
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -139,6 +147,23 @@ function removeOwnedTree(root: string, tree: OwnedTree, removeRoot: boolean): vo
   }
 }
 
+function removeEmptyDirectoryIfPossible(directory: string): void {
+  if (!existsSync(directory)) {
+    return;
+  }
+  if (!lstatSync(directory).isDirectory()) {
+    throw new Error(`拒絕刪除非目錄的 E2E fixture 路徑：${directory}。`);
+  }
+  try {
+    rmdirSync(directory);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code !== 'ENOTEMPTY' && code !== 'EEXIST') {
+      throw error;
+    }
+  }
+}
+
 function readStockPathsFromManifest(manifestPath: string): readonly string[] {
   const value = JSON.parse(readFileSync(manifestPath, 'utf8')) as unknown;
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -223,20 +248,20 @@ function assertManifestMatchesMarker(dataDirectory: string, marker: FixtureMarke
   }
 }
 
-function ensureDataDirectoryIsAvailable(): boolean {
-  cleanupFixtureSnapshot();
-  if (existsSync(publicDataDirectory)) {
-    if (readdirSync(publicDataDirectory).length > 0) {
+function ensureDataDirectoryIsAvailable(dataDirectory: string): boolean {
+  cleanupFixtureSnapshot(dataDirectory);
+  if (existsSync(dataDirectory)) {
+    if (readdirSync(dataDirectory).length > 0) {
       throw new Error('public/data 已有非本次 E2E fixture 檔案；拒絕覆寫。');
     }
     return false;
   }
-  mkdirSync(publicDataDirectory, { recursive: true });
+  mkdirSync(dataDirectory, { recursive: true });
   return true;
 }
 
-function ensurePublicDirectory(relativeDirectory: string, createdDirectories: string[]): void {
-  const target = resolveOwnedPath(publicDataDirectory, relativeDirectory);
+function ensurePublicDirectory(dataDirectory: string, relativeDirectory: string, createdDirectories: string[]): void {
+  const target = resolveOwnedPath(dataDirectory, relativeDirectory);
   if (existsSync(target)) {
     return;
   }
@@ -247,37 +272,45 @@ function ensurePublicDirectory(relativeDirectory: string, createdDirectories: st
 /**
  * 建立本次 Playwright run 專屬 fixture；marker 與 manifest 會列出所有可清理檔案。
  */
-export function prepareFixtureSnapshot(): void {
+export function prepareFixtureSnapshot(options: FixturePreparationOptions = {}): void {
+  const dataDirectory = resolve(options.publicDataDirectory ?? defaultPublicDataDirectory);
+  const temporaryParent = resolve(options.temporaryParent ?? tmpdir());
   let temporaryRoot: string | undefined;
   let temporaryTree: OwnedTree | undefined;
+  let publicDataDirectoryCreated = false;
+  let markerWritten = false;
   try {
-    const publicDataDirectoryCreated = ensureDataDirectoryIsAvailable();
-    temporaryRoot = mkdtempSync(join(tmpdir(), 'candlestick-e2e-'));
+    publicDataDirectoryCreated = ensureDataDirectoryIsAvailable(dataDirectory);
+    temporaryRoot = mkdtempSync(join(temporaryParent, 'candlestick-e2e-'));
     const fixtureSnapshotDirectory = join(temporaryRoot, 'site-data');
-    execFileSync(
-      'python',
-      [
-        'tools/market_snapshot.py',
-        'fixture',
-        '--fixtures',
-        'tests/fixtures/market_snapshot',
-        '--output',
-        fixtureSnapshotDirectory,
-        '--source-commit',
-        fixtureSourceCommit,
-      ],
-      {
-        cwd: repositoryRoot,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      },
-    );
+    if (options.buildFixture) {
+      options.buildFixture(fixtureSnapshotDirectory);
+    } else {
+      execFileSync(
+        'python',
+        [
+          'tools/market_snapshot.py',
+          'fixture',
+          '--fixtures',
+          'tests/fixtures/market_snapshot',
+          '--output',
+          fixtureSnapshotDirectory,
+          '--source-commit',
+          fixtureSourceCommit,
+        ],
+        {
+          cwd: repositoryRoot,
+          encoding: 'utf8',
+          stdio: 'pipe',
+        },
+      );
+    }
     temporaryTree = listOwnedTree(temporaryRoot);
     const stockFiles = readStockPathsFromManifest(join(fixtureSnapshotDirectory, 'manifest.json'));
     const publicDirectories: string[] = [];
     for (const stockFile of stockFiles) {
-      const stockDirectory = relative(publicDataDirectory, dirname(resolveOwnedPath(publicDataDirectory, stockFile))).replaceAll('\\', '/');
-      ensurePublicDirectory(stockDirectory, publicDirectories);
+      const stockDirectory = relative(dataDirectory, dirname(resolveOwnedPath(dataDirectory, stockFile))).replaceAll('\\', '/');
+      ensurePublicDirectory(dataDirectory, stockDirectory, publicDirectories);
     }
     const marker: FixtureMarker = {
       schemaVersion: 1,
@@ -290,21 +323,36 @@ export function prepareFixtureSnapshot(): void {
       temporaryFiles: temporaryTree.files,
       temporaryDirectories: temporaryTree.directories,
     };
-    writeFileSync(join(publicDataDirectory, markerFilename), `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
-    copyFileSync(join(fixtureSnapshotDirectory, 'manifest.json'), join(publicDataDirectory, 'manifest.json'));
+    const markerPath = join(dataDirectory, markerFilename);
+    const markerContents = `${JSON.stringify(marker, null, 2)}\n`;
+    if (options.writeMarker) {
+      options.writeMarker(markerPath, markerContents);
+    } else {
+      writeFileSync(markerPath, markerContents, 'utf8');
+    }
+    markerWritten = true;
+    copyFileSync(join(fixtureSnapshotDirectory, 'manifest.json'), join(dataDirectory, 'manifest.json'));
     for (const stockFile of stockFiles) {
       copyFileSync(
         resolveOwnedPath(join(fixtureSnapshotDirectory, 'data'), stockFile),
-        resolveOwnedPath(publicDataDirectory, stockFile),
+        resolveOwnedPath(dataDirectory, stockFile),
       );
     }
   } catch (error) {
     try {
-      cleanupFixtureSnapshot();
+      if (markerWritten) {
+        cleanupFixtureSnapshot(dataDirectory);
+      }
       if (temporaryRoot && temporaryTree && existsSync(temporaryRoot)) {
         removeOwnedTree(temporaryRoot, temporaryTree, true);
       } else if (temporaryRoot && existsSync(temporaryRoot)) {
         removeOwnedTree(temporaryRoot, listOwnedTree(temporaryRoot), true);
+      }
+      if (publicDataDirectoryCreated) {
+        if (!markerWritten) {
+          removeKnownFile(dataDirectory, markerFilename);
+        }
+        removeEmptyDirectoryIfPossible(dataDirectory);
       }
     } catch {
       // 保留原始建立失敗原因；全域 teardown 仍會再次嘗試 marker 清理。
@@ -316,7 +364,7 @@ export function prepareFixtureSnapshot(): void {
 /**
  * 只依 marker 與 manifest 的精確清單移除本次 E2E fixture；未知檔案與非空目錄一律保留。
  */
-export function cleanupFixtureSnapshot(dataDirectory: string = publicDataDirectory): void {
+export function cleanupFixtureSnapshot(dataDirectory: string = defaultPublicDataDirectory): void {
   const marker = readMarker(dataDirectory);
   if (!marker) {
     return;
