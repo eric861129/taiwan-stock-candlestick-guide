@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from decimal import Decimal, InvalidOperation
 import json
+from pathlib import Path
 import ssl
 from typing import Literal
 from urllib.error import HTTPError, URLError
@@ -16,7 +17,7 @@ from market_data import _OfficialMarketRedirectHandler, _is_official_https_url
 
 
 Market = Literal["TWSE", "TPEx"]
-_MISSING_PRICE_MARKERS = frozenset({"", "-", "--", "---", "N/A", "NA", "無", "—"})
+_MISSING_PRICE_MARKERS = frozenset({"", "-", "--", "---", "----", "N/A", "NA", "無", "—"})
 USER_AGENT = "taiwan-stock-candlestick-guide/1.0 (official snapshot adapter)"
 
 TWSE_DAILY_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
@@ -28,6 +29,23 @@ TPEX_COMPANIES_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
 TWSE_ACTIONS_URL = "https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL"
 TPEX_ACTIONS_URL = "https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost"
 HOLIDAY_CALENDAR_URL = "https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule"
+EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION = 1
+DEFAULT_EMERGENCY_CLOSURES_PATH = Path(__file__).resolve().parents[1] / "data" / "emergency-market-closures.json"
+SUSPENSION_EVIDENCE_SCHEMA_VERSION = 1
+DEFAULT_SUSPENSION_INTERVALS_PATH = Path(__file__).resolve().parents[1] / "data" / "suspension-intervals.json"
+
+_EMERGENCY_CLOSURE_OFFICIAL_HOSTS = frozenset(
+    {
+        "investoredu.twse.com.tw",
+        "www.twse.com.tw",
+        "eoc.gov.taipei",
+    }
+)
+_EMERGENCY_CLOSURE_TWSE_HOSTS = frozenset({"investoredu.twse.com.tw", "www.twse.com.tw"})
+_SUSPENSION_OFFICIAL_HOSTS: dict[Market, frozenset[str]] = {
+    "TWSE": frozenset({"www.twse.com.tw"}),
+    "TPEx": frozenset({"dsp.tpex.org.tw"}),
+}
 
 _OFFICIAL_ENDPOINTS = {
     "twse-daily": TWSE_DAILY_URL,
@@ -58,6 +76,35 @@ class DailyQuote:
     transaction_count: int | None
     source_precision: Decimal
     source_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class NoQuoteEvidence:
+    """官方回應明示沒有 OHLC 報價時保留的可稽核證據。"""
+
+    market: Market
+    code: str
+    trading_date: date
+    reason: Literal["official-no-quote", "official-suspension"]
+    source_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class DailyMarketResponse:
+    """單一官方日行情回應中的合法日 K 與未報價證據。"""
+
+    quotes: tuple[DailyQuote, ...]
+    no_quote_evidence: tuple[NoQuoteEvidence, ...]
+
+    def __iter__(self):
+        """維持既有日行情呼叫端可逐筆讀取合法 K 線。"""
+        return iter(self.quotes)
+
+    def __len__(self) -> int:
+        return len(self.quotes)
+
+    def __getitem__(self, index: int) -> DailyQuote:
+        return self.quotes[index]
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +139,34 @@ class CorporateAction:
 
 
 @dataclass(frozen=True, slots=True)
+class EmergencyMarketClosure:
+    """年度休市日曆之外，經官方來源佐證的全市場緊急休市日。"""
+
+    trading_date: date
+    reason: str
+    source_urls: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SuspensionInterval:
+    """交易所公告的單一股票停止買賣區間，結束日採排他語意。"""
+
+    market: Market
+    code: str
+    start_date: date
+    end_date_exclusive: date | None
+    reason: str
+    source_urls: tuple[str, ...]
+
+    def includes(self, trading_date: date) -> bool:
+        """回傳交易日是否落在公告停牌區間；恢復日不包含在內。"""
+
+        return trading_date >= self.start_date and (
+            self.end_date_exclusive is None or trading_date < self.end_date_exclusive
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TradingCalendar:
     """TWSE 官方開休市資料轉成台北時區的預期資料截止日依據。"""
 
@@ -99,25 +174,26 @@ class TradingCalendar:
     source_url: str
     valid_through: date
     timezone: tzinfo
+    emergency_closures: tuple[EmergencyMarketClosure, ...] = ()
 
 
 class MarketSourceError(RuntimeError):
     """官方來源、TLS 或回應契約未通過時提供繁體中文可追蹤錯誤。"""
 
 
-def fetch_twse_daily(requested_date: date) -> tuple[DailyQuote, ...]:
+def fetch_twse_daily(requested_date: date) -> DailyMarketResponse:
     """取得指定交易日的 TWSE 上市日行情，回應日期不符即拒絕使用。"""
     quotes = parse_twse_daily(_fetch_official_json("twse-daily"))
     return _require_requested_date(quotes, requested_date, "TWSE")
 
 
-def fetch_tpex_daily(requested_date: date) -> tuple[DailyQuote, ...]:
+def fetch_tpex_daily(requested_date: date) -> DailyMarketResponse:
     """取得指定交易日的 TPEx 上櫃日行情，回應日期不符即拒絕使用。"""
     quotes = parse_tpex_daily(_fetch_official_json("tpex-daily"))
     return _require_requested_date(quotes, requested_date, "TPEx")
 
 
-def fetch_twse_historical_daily(requested_date: date) -> tuple[DailyQuote, ...]:
+def fetch_twse_historical_daily(requested_date: date) -> DailyMarketResponse:
     """取得 TWSE 全市場歷史日行情，供 120 個交易日基準快照使用。"""
     quotes = parse_twse_historical_daily(
         _fetch_official_json(
@@ -132,7 +208,7 @@ def fetch_twse_historical_daily(requested_date: date) -> tuple[DailyQuote, ...]:
     return _require_requested_date(quotes, requested_date, "TWSE")
 
 
-def fetch_tpex_historical_daily(requested_date: date) -> tuple[DailyQuote, ...]:
+def fetch_tpex_historical_daily(requested_date: date) -> DailyMarketResponse:
     """取得 TPEx 上櫃普通股歷史日行情，限定官方 EW 市場分類。"""
     roc_date = f"{requested_date.year - 1911:03d}/{requested_date:%m/%d}"
     quotes = parse_tpex_historical_daily(
@@ -160,9 +236,15 @@ def fetch_corporate_actions() -> tuple[CorporateAction, ...]:
     )
 
 
-def fetch_trading_calendar() -> TradingCalendar:
+def fetch_trading_calendar(
+    emergency_closures_path: Path = DEFAULT_EMERGENCY_CLOSURES_PATH,
+) -> TradingCalendar:
     """取得 TWSE 官方開休市日曆，供兩市場使用相同的預期截止日基準。"""
-    return parse_holiday_calendar(_fetch_official_json("holiday-calendar"))
+    annual_calendar = parse_holiday_calendar(_fetch_official_json("holiday-calendar"))
+    return apply_emergency_market_closures(
+        annual_calendar,
+        load_emergency_market_closure_evidence(emergency_closures_path),
+    )
 
 
 def parse_holiday_calendar(payload: object) -> TradingCalendar:
@@ -186,6 +268,192 @@ def parse_holiday_calendar(payload: object) -> TradingCalendar:
         valid_through=date(valid_year, 12, 31),
         timezone=timezone(timedelta(hours=8), name="Asia/Taipei"),
     )
+
+
+def load_emergency_market_closure_evidence(path: Path) -> tuple[EmergencyMarketClosure, ...]:
+    """讀取版本化的緊急全市場休市佐證；檔案無效時拒絕猜測交易日。"""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise MarketSourceError(f"無法讀取緊急市場休市佐證：{path}") from error
+    return parse_emergency_market_closure_evidence(payload)
+
+
+def parse_emergency_market_closure_evidence(payload: object) -> tuple[EmergencyMarketClosure, ...]:
+    """驗證緊急休市日期、原因及官方佐證網址，保留可重現的年度日曆例外。"""
+
+    if not isinstance(payload, dict) or payload.get("schemaVersion") != EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION:
+        raise ValueError("緊急市場休市佐證 schemaVersion 必須是 1。")
+    closures_value = payload.get("closures")
+    if not isinstance(closures_value, list):
+        raise ValueError("緊急市場休市佐證必須包含 closures 陣列。")
+
+    closures: list[EmergencyMarketClosure] = []
+    seen_dates: set[date] = set()
+    for value in closures_value:
+        if not isinstance(value, dict):
+            raise ValueError("緊急市場休市佐證列必須是 JSON 物件。")
+        closure_date = _parse_official_date(_required_text(value, "date"))
+        reason = _required_text(value, "reason").strip()
+        source_urls_value = value.get("sourceUrls")
+        if not reason:
+            raise ValueError("緊急市場休市佐證原因不可空白。")
+        if closure_date.weekday() >= 5:
+            raise ValueError("緊急市場休市日期必須是平日。")
+        if not isinstance(source_urls_value, list) or not source_urls_value:
+            raise ValueError("緊急市場休市佐證至少需要一個官方來源。")
+        if any(not isinstance(source_url, str) for source_url in source_urls_value):
+            raise ValueError("緊急市場休市佐證網址必須是文字。")
+        source_urls = tuple(sorted({_validate_emergency_closure_source_url(source_url) for source_url in source_urls_value}))
+        if len(source_urls) != len(source_urls_value):
+            raise ValueError("緊急市場休市佐證網址不可重複。")
+        if not any(urlparse(source_url).hostname in _EMERGENCY_CLOSURE_TWSE_HOSTS for source_url in source_urls):
+            raise ValueError("緊急市場休市佐證必須包含 TWSE 官方來源。")
+        if closure_date in seen_dates:
+            raise ValueError("緊急市場休市佐證日期不可重複。")
+        seen_dates.add(closure_date)
+        closures.append(
+            EmergencyMarketClosure(
+                trading_date=closure_date,
+                reason=reason,
+                source_urls=source_urls,
+            )
+        )
+    return tuple(sorted(closures, key=lambda closure: closure.trading_date))
+
+
+def apply_emergency_market_closures(
+    calendar: TradingCalendar,
+    closures: tuple[EmergencyMarketClosure, ...],
+) -> TradingCalendar:
+    """把經驗證的臨時休市日加入年度日曆，並保留原始官方來源鏈。"""
+
+    coverage_start = date(min(day.year for day in calendar.holiday_dates), 1, 1)
+    for closure in closures:
+        if closure.trading_date < coverage_start or closure.trading_date > calendar.valid_through:
+            raise ValueError("緊急市場休市日期不在年度日曆涵蓋範圍。")
+    return replace(
+        calendar,
+        holiday_dates=tuple(sorted({*calendar.holiday_dates, *(closure.trading_date for closure in closures)})),
+        emergency_closures=closures,
+    )
+
+
+def _validate_emergency_closure_source_url(value: str) -> str:
+    source_url = value.strip()
+    parsed = urlparse(source_url)
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("緊急市場休市佐證網址的連接埠無效。") from error
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in _EMERGENCY_CLOSURE_OFFICIAL_HOSTS
+        or port not in {None, 443}
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("緊急市場休市佐證網址必須是核准官方 HTTPS 來源。")
+    return source_url
+
+
+def load_suspension_interval_evidence(path: Path) -> tuple[SuspensionInterval, ...]:
+    """讀取版本化停復牌區間；檔案或契約無效時拒絕以猜測補洞。"""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise MarketSourceError(f"無法讀取官方停止買賣區間佐證：{path}。") from error
+    return parse_suspension_interval_evidence(payload)
+
+
+def parse_suspension_interval_evidence(payload: object) -> tuple[SuspensionInterval, ...]:
+    """驗證交易所停復牌公告區間，並拒絕重疊、非官方或不明確的資料。"""
+
+    if not isinstance(payload, dict) or payload.get("schemaVersion") != SUSPENSION_EVIDENCE_SCHEMA_VERSION:
+        raise ValueError("停止買賣區間佐證的 schemaVersion 必須為 1。")
+    values = payload.get("intervals")
+    if not isinstance(values, list):
+        raise ValueError("停止買賣區間佐證的 intervals 必須是陣列。")
+
+    intervals: list[SuspensionInterval] = []
+    seen_starts: set[tuple[Market, str, date]] = set()
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("停止買賣區間佐證列必須是 JSON 物件。")
+        market = value.get("market")
+        if market not in {"TWSE", "TPEx"}:
+            raise ValueError("停止買賣區間市場必須為 TWSE 或 TPEx。")
+        code = _required_text(value, "code").strip()
+        reason = _required_text(value, "reason").strip()
+        if not code or not reason:
+            raise ValueError("停止買賣區間代碼與原因不可為空白。")
+        start_date = _parse_official_date(_required_text(value, "startDate"))
+        end_value = value.get("endDateExclusive")
+        if end_value is not None and not isinstance(end_value, str):
+            raise ValueError("停止買賣區間 endDateExclusive 必須是日期或 null。")
+        end_date_exclusive = _parse_official_date(end_value) if isinstance(end_value, str) else None
+        if end_date_exclusive is not None and end_date_exclusive <= start_date:
+            raise ValueError("停止買賣區間的 endDateExclusive 必須晚於 startDate。")
+        source_urls_value = value.get("sourceUrls")
+        if not isinstance(source_urls_value, list) or not source_urls_value or any(
+            not isinstance(source_url, str) for source_url in source_urls_value
+        ):
+            raise ValueError("停止買賣區間必須至少包含一個官方來源網址。")
+        source_urls = tuple(
+            sorted({_validate_suspension_source_url(market, source_url) for source_url in source_urls_value})
+        )
+        if len(source_urls) != len(source_urls_value):
+            raise ValueError("停止買賣區間官方來源網址不可重複。")
+        key = (market, code, start_date)
+        if key in seen_starts:
+            raise ValueError("停止買賣區間有重複起始日。")
+        seen_starts.add(key)
+        intervals.append(
+            SuspensionInterval(
+                market=market,
+                code=code,
+                start_date=start_date,
+                end_date_exclusive=end_date_exclusive,
+                reason=reason,
+                source_urls=source_urls,
+            )
+        )
+
+    ordered = tuple(sorted(intervals, key=lambda item: (item.market, item.code, item.start_date)))
+    _validate_non_overlapping_suspension_intervals(ordered)
+    return ordered
+
+
+def _validate_suspension_source_url(market: Market, value: str) -> str:
+    source_url = value.strip()
+    parsed = urlparse(source_url)
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("停止買賣區間佐證網址的連接埠無效。") from error
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in _SUSPENSION_OFFICIAL_HOSTS[market]
+        or port not in {None, 443}
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError(f"{market} 停止買賣區間佐證網址必須是核准官方 HTTPS 來源。")
+    return source_url
+
+
+def _validate_non_overlapping_suspension_intervals(intervals: tuple[SuspensionInterval, ...]) -> None:
+    previous_by_symbol: dict[tuple[Market, str], SuspensionInterval] = {}
+    for interval in intervals:
+        key = (interval.market, interval.code)
+        previous = previous_by_symbol.get(key)
+        if previous is not None and (
+            previous.end_date_exclusive is None or interval.start_date < previous.end_date_exclusive
+        ):
+            raise ValueError(f"{interval.market} {interval.code} 的停止買賣區間重疊。")
+        previous_by_symbol[key] = interval
 
 
 def expected_cutoff_date(calendar: TradingCalendar, now: datetime) -> date | None:
@@ -237,19 +505,22 @@ def _is_trading_day(calendar: TradingCalendar, candidate: date) -> bool:
 
 
 def _require_requested_date(
-    quotes: tuple[DailyQuote, ...],
+    response: DailyMarketResponse,
     requested_date: date,
     market: Market,
-) -> tuple[DailyQuote, ...]:
-    if not quotes:
+) -> DailyMarketResponse:
+    if not response.quotes and not response.no_quote_evidence:
         raise MarketSourceError(f"{market} 官方日行情為空，不能建立快照。")
-    dates = {quote.trading_date for quote in quotes}
+    dates = {
+        *(quote.trading_date for quote in response.quotes),
+        *(evidence.trading_date for evidence in response.no_quote_evidence),
+    }
     if dates != {requested_date}:
         received = ", ".join(sorted(item.isoformat() for item in dates))
         raise MarketSourceError(
             f"{market} 官方日行情日期與要求日期不符：要求 {requested_date.isoformat()}，實際 {received}。"
         )
-    return quotes
+    return response
 
 
 def _fetch_official_json(endpoint: str, parameters: dict[str, str] | None = None) -> object:
@@ -333,7 +604,7 @@ def _is_known_official_request(url: str) -> bool:
     return False
 
 
-def parse_twse_daily(payload: object) -> tuple[DailyQuote, ...]:
+def parse_twse_daily(payload: object) -> DailyMarketResponse:
     """解析 TWSE `STOCK_DAY_ALL` 的官方 JSON 清單。"""
     return _parse_daily_rows(
         payload,
@@ -351,7 +622,7 @@ def parse_twse_daily(payload: object) -> tuple[DailyQuote, ...]:
     )
 
 
-def parse_tpex_daily(payload: object) -> tuple[DailyQuote, ...]:
+def parse_tpex_daily(payload: object) -> DailyMarketResponse:
     """解析 TPEx `tpex_mainboard_daily_close_quotes` 的官方 JSON 清單。"""
     return _parse_daily_rows(
         payload,
@@ -369,7 +640,7 @@ def parse_tpex_daily(payload: object) -> tuple[DailyQuote, ...]:
     )
 
 
-def parse_twse_historical_daily(payload: object) -> tuple[DailyQuote, ...]:
+def parse_twse_historical_daily(payload: object) -> DailyMarketResponse:
     """解析 TWSE `MI_INDEX` 中含有全部日收盤行情的表格。"""
     rows, trading_date = _historical_rows(
         payload,
@@ -406,7 +677,7 @@ def parse_twse_historical_daily(payload: object) -> tuple[DailyQuote, ...]:
     return quotes
 
 
-def parse_tpex_historical_daily(payload: object) -> tuple[DailyQuote, ...]:
+def parse_tpex_historical_daily(payload: object) -> DailyMarketResponse:
     """解析 TPEx `afterTrading/otc` 的上櫃普通股歷史表格。"""
     rows, trading_date = _historical_rows(
         payload,
@@ -639,7 +910,8 @@ def _positive_decimal(value: object) -> bool:
     if not isinstance(value, str):
         return False
     text = value.strip().replace(",", "")
-    if not text:
+    # TPEx 官方除權息列用此固定文字表示金額尚未公布；保留事件標記，但不虛構現金股利數值。
+    if not text or text == "尚未公告":
         return False
     try:
         return Decimal(text) > 0
@@ -703,11 +975,12 @@ def _parse_daily_rows(
     close_field: str,
     volume_field: str,
     transaction_field: str,
-) -> tuple[DailyQuote, ...]:
+) -> DailyMarketResponse:
     if not isinstance(payload, list):
         raise ValueError("官方日行情回應必須是 JSON 陣列。")
 
     quotes: list[DailyQuote] = []
+    no_quote_evidence: list[NoQuoteEvidence] = []
     for row in payload:
         if not isinstance(row, dict):
             raise ValueError("官方日行情每一列必須是 JSON 物件。")
@@ -720,11 +993,27 @@ def _parse_daily_rows(
         high_text = _required_text(row, high_field)
         low_text = _required_text(row, low_field)
         close_text = _required_text(row, close_field)
+        trading_date = _parse_official_date(_required_text(row, date_field))
+        price_texts = (open_text, high_text, low_text, close_text)
+        missing_prices = tuple(_is_missing_price(text) for text in price_texts)
+        if any(missing_prices):
+            if not all(missing_prices):
+                raise ValueError("官方日行情的 OHLC 缺漏狀態不一致，不能建立快照。")
+            no_quote_evidence.append(
+                NoQuoteEvidence(
+                    market=market,
+                    code=code,
+                    trading_date=trading_date,
+                    reason="official-no-quote",
+                    source_url=source_url,
+                )
+            )
+            continue
         quote = DailyQuote(
             market=market,
             code=code,
             name=name,
-            trading_date=_parse_official_date(_required_text(row, date_field)),
+            trading_date=trading_date,
             open=_parse_price(open_text),
             high=_parse_price(high_text),
             low=_parse_price(low_text),
@@ -736,7 +1025,7 @@ def _parse_daily_rows(
         )
         _validate_quote(quote)
         quotes.append(quote)
-    return tuple(quotes)
+    return DailyMarketResponse(tuple(quotes), tuple(no_quote_evidence))
 
 
 def _required_text(row: dict[object, object], field: str) -> str:
@@ -766,7 +1055,7 @@ def _parse_official_date(value: str) -> date:
 
 def _parse_price(value: str) -> Decimal:
     text = value.strip().replace(",", "")
-    if text.upper() in _MISSING_PRICE_MARKERS:
+    if _is_missing_price(text):
         raise ValueError("官方日行情含有缺漏價格，不能建立快照。")
     try:
         parsed = Decimal(text)
@@ -775,6 +1064,10 @@ def _parse_price(value: str) -> Decimal:
     if not parsed.is_finite() or parsed < 0:
         raise ValueError(f"官方價格必須是非負有限數值：{value!r}。")
     return parsed
+
+
+def _is_missing_price(value: str) -> bool:
+    return value.strip().upper() in _MISSING_PRICE_MARKERS
 
 
 def _parse_non_negative_integer(value: str, field: str) -> int:

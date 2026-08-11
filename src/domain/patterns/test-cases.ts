@@ -87,6 +87,7 @@ function snapshot(
       sourceUrl: SOURCE_URL,
     },
     bars,
+    noQuoteEvidence: [],
     corporateActions: actions,
     sourceUrls: [SOURCE_URL],
     cutoffDate: bars.at(-1)?.date,

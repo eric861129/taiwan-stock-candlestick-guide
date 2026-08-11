@@ -44,6 +44,8 @@ const nextAction = computed(() => {
 });
 
 const reasonCodeLabels: Record<string, string> = {
+  'official-no-quote': '官方在交易日明示未提供完整 OHLC；系統不補值，也不跨越該日建立型態視窗。',
+  'official-suspension': '交易所公告該股票停止買賣；系統保留公告證據，不補值，也不跨越停牌區間建立型態視窗。',
   'no-completed-bars': '沒有可用的已完成日 K，無法建立比對視窗。',
   'insufficient-evidence': '可用資料不足以可靠評估所有必要條件。',
   'prior-body-window-unavailable': '前段實體比較窗不足，無法可靠比較相對大小。',

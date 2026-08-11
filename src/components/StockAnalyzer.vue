@@ -20,12 +20,31 @@ const errorMessage = ref('');
 const marketCutoffDate = ref<string | null>(null);
 const marketExpectedCutoffDate = ref<string | null>(null);
 const stockDataLastDate = computed(() => snapshot.value?.bars.at(-1)?.date ?? null);
+const latestNoQuoteEvidence = computed(() => snapshot.value?.noQuoteEvidence.at(-1));
+const latestNoQuoteDescription = computed(() => {
+  if (latestNoQuoteEvidence.value?.reason === 'official-suspension') {
+    return '交易所公告停止買賣；系統保留官方停牌證據、不補成 K 線，型態比對不跨越該區間。';
+  }
+  return '官方未報價；該日沒有完整 OHLC，因此不會補成 K 線。';
+});
 const marketSnapshotMetadata = computed(() => ({
   marketSnapshotCutoffDate: marketCutoffDate.value,
   officialExpectedCutoffDate: marketExpectedCutoffDate.value,
 }));
 
 let latestRequestId = 0;
+
+function latestObservedStockDate(loaded: StockSnapshot): string | null {
+  const lastLegalBarDate = loaded.bars.at(-1)?.date;
+  const lastNoQuoteDate = loaded.noQuoteEvidence.at(-1)?.date;
+  if (lastLegalBarDate === undefined) {
+    return lastNoQuoteDate ?? null;
+  }
+  if (lastNoQuoteDate === undefined) {
+    return lastLegalBarDate;
+  }
+  return lastLegalBarDate > lastNoQuoteDate ? lastLegalBarDate : lastNoQuoteDate;
+}
 
 function beginRequest(): number {
   latestRequestId += 1;
@@ -113,9 +132,9 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
       return;
     }
     const marketCutoff = activeManifest.markets[loaded.market];
-    const stockCutoffDate = loaded.bars.at(-1)?.date;
+    const stockCutoffDate = latestObservedStockDate(loaded);
     if (!stockCutoffDate) {
-      throw new Error('股票快照沒有可用的日 K 資料。');
+      throw new Error('股票快照沒有可稽核的日 K 或官方未報價證據。');
     }
     const freshness = computeFreshness({
       tradingSessions: marketCutoff.tradingSessions,
@@ -135,7 +154,9 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
       snapshotHash: activeManifest.snapshotHash,
     });
     loadState.value = 'ready';
-    statusMessage.value = `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的原始盤後日 K，可查看圖表與規則比對。`;
+    statusMessage.value = scopedSnapshot.bars.length > 0
+      ? `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的原始盤後日 K，可查看圖表與規則比對。`
+      : `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的官方未報價證據；沒有可畫製的日 K。`;
   } catch (error) {
     if (!isCurrentRequest(requestId)) {
       return;
@@ -224,7 +245,15 @@ onMounted(() => {
         aria-label="已選擇的股票"
       >
         <h3>已選擇：{{ snapshot.code }} {{ snapshot.name }}</h3>
-        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，原始盤後日 K，股票日 K 最後交易日 {{ stockDataLastDate }}。</p>
+        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，原始盤後日 K，股票日 K 最後交易日 {{ stockDataLastDate ?? '無合法日 K' }}。</p>
+        <p v-if="latestNoQuoteEvidence">
+          官方{{ latestNoQuoteEvidence.reason === 'official-suspension' ? '停牌' : '未報價' }}證據 {{ latestNoQuoteEvidence.date }}；{{ latestNoQuoteDescription }}
+          <a
+            :href="latestNoQuoteEvidence.sourceUrl"
+            target="_blank"
+            rel="noreferrer"
+          >查看官方來源</a>
+        </p>
         <p>市場快照截止日 {{ marketCutoffDate ?? '無法判定' }}；官方預期截止日 {{ marketExpectedCutoffDate ?? '無法判定' }}。</p>
         <button
           type="button"
@@ -233,7 +262,10 @@ onMounted(() => {
           重新查詢
         </button>
       </section>
-      <CandlestickChart :snapshot="snapshot" />
+      <CandlestickChart
+        v-if="snapshot.bars.length > 0"
+        :snapshot="snapshot"
+      />
     </template>
 
     <AnalysisResultPanel

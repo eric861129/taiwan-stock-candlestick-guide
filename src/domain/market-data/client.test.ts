@@ -15,12 +15,14 @@ interface StockPayload {
   availableSessions: number;
   shortHistoryReason: string | null;
   bars: Array<{ date: string; [key: string]: unknown }>;
+  noQuoteEvidence: Array<{ date: string; [key: string]: unknown }>;
+  sourceUrls: string[];
   [key: string]: unknown;
 }
 
 const stockSnapshotFixture: StockPayload = {
   schemaVersion: 1,
-  snapshotVersion: 2,
+  snapshotVersion: 3,
   code: '2330',
   name: '台積電',
   market: 'TWSE',
@@ -48,6 +50,7 @@ const stockSnapshotFixture: StockPayload = {
     comparisonUnit: 5,
     priceUnit: 'TWD',
   }],
+  noQuoteEvidence: [],
   corporateActions: [],
   sourceUrls: ['https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
 };
@@ -107,9 +110,21 @@ async function manifestFixture(
 
   const manifestWithoutHash = {
     schemaVersion: 1,
-    snapshotVersion: 2,
+    snapshotVersion: 3,
     sourceCommit: 'a'.repeat(40),
     generatedAt: '2026-08-11T18:00:00+08:00',
+    calendar: {
+      sourceUrl: 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule',
+      validThrough: '2026-12-31',
+      emergencyClosureEvidence: {
+        schemaVersion: 1,
+        closures: [],
+      },
+    },
+    suspensionEvidence: {
+      schemaVersion: 1,
+      intervals: [],
+    },
     markets: {
       TWSE: {
         cutoffDate: '2026-08-11',
@@ -139,6 +154,7 @@ async function manifestFixture(
       firstDate: firstBar.date,
       lastDate: lastBar.date,
       barCount: stockPayload.bars.length,
+      noQuoteCount: stockPayload.noQuoteEvidence.length,
       listingDate: stockPayload.listingDate,
       availableSessions: stockPayload.availableSessions,
       shortHistoryReason: stockPayload.shortHistoryReason,
@@ -177,13 +193,65 @@ describe('browser snapshot client', () => {
     expect(fetchFixture).toHaveBeenCalledWith('/taiwan-stock-candlestick-guide/data/stocks/2330.fixture.json');
   });
 
+  it('accepts only stock suspension evidence that exactly matches the manifest interval', async () => {
+    const announcementUrl = 'https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB';
+    const stock = {
+      ...stockSnapshotFixture,
+      availableSessions: 2,
+      bars: [{ ...stockSnapshotFixture.bars[0], date: '2026-08-11' }],
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-10',
+        reason: 'official-suspension',
+        sourceUrl: announcementUrl,
+      }],
+      sourceUrls: [...stockSnapshotFixture.sourceUrls, announcementUrl],
+    };
+    const stockBytes = utf8Bytes(JSON.stringify(stock));
+    const baseManifest = await manifestFixture(stock, stockBytes);
+    const validManifest = marketManifestSchema.parse({
+      ...baseManifest,
+      suspensionEvidence: {
+        schemaVersion: 1,
+        intervals: [{
+          market: 'TWSE',
+          code: '2330',
+          startDate: '2026-08-10',
+          endDateExclusive: '2026-08-11',
+          reason: '測試用官方停止買賣公告。',
+          sourceUrls: [announcementUrl],
+        }],
+      },
+    });
+
+    await expect(loadStockSnapshot(validManifest, '2330', async () => bytesResponse(stockBytes))).resolves.toMatchObject({
+      noQuoteEvidence: [{ reason: 'official-suspension' }],
+    });
+
+    const mismatchedManifest = marketManifestSchema.parse({
+      ...validManifest,
+      suspensionEvidence: {
+        ...validManifest.suspensionEvidence,
+        intervals: [{
+          ...validManifest.suspensionEvidence.intervals[0],
+          startDate: '2026-08-11',
+          endDateExclusive: '2026-08-12',
+        }],
+      },
+    });
+    await expect(loadStockSnapshot(mismatchedManifest, '2330', async () => bytesResponse(stockBytes))).rejects.toMatchObject({
+      reason: 'schema-error',
+    });
+  });
+
   it('loads the manifest from the configured same-origin base and validates its canonical hash', async () => {
     const manifest = await manifestFixture();
     const fetchFixture = vi.fn(async () => bytesResponse(utf8Bytes(JSON.stringify(manifest))));
 
     const loaded = await loadManifest('/taiwan-stock-candlestick-guide/', fetchFixture);
 
-    expect(loaded.snapshotVersion).toBe(2);
+    expect(loaded.snapshotVersion).toBe(3);
     expect(fetchFixture).toHaveBeenCalledWith('/taiwan-stock-candlestick-guide/data/manifest.json');
   });
 

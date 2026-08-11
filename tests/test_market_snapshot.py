@@ -31,10 +31,17 @@ from market_snapshot import (
     validate_snapshot,
 )
 from market_sources import (
+    EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+    SUSPENSION_EVIDENCE_SCHEMA_VERSION,
     MarketSourceError,
+    NoQuoteEvidence,
+    SuspensionInterval,
     TradingCalendar,
+    apply_emergency_market_closures,
     parse_corporate_actions,
+    parse_emergency_market_closure_evidence,
     parse_holiday_calendar,
+    parse_suspension_interval_evidence,
     parse_supported_symbols,
     parse_tpex_daily,
     parse_twse_daily,
@@ -103,10 +110,14 @@ def fixture_build_input() -> SnapshotBuildInput:
 
 
 def downgrade_snapshot_to_v1(output: Path) -> None:
-    """將測試產出的 v2 快照轉成舊版 v1 格式。"""
+    """將測試產出的 v3 快照轉成舊版 v1 格式。"""
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
+    manifest.pop("calendar")
+    manifest.pop("suspensionEvidence")
+    provenance["calendar"].pop("emergencyClosureEvidence")
+    provenance.pop("suspensionEvidence")
     for entry in manifest["symbols"]:
         old_path = output / entry["dataPath"]
         stock = json.loads(old_path.read_text(encoding="utf-8"))
@@ -114,6 +125,7 @@ def downgrade_snapshot_to_v1(output: Path) -> None:
         stock.pop("listingDate")
         stock.pop("availableSessions")
         stock.pop("shortHistoryReason")
+        stock.pop("noQuoteEvidence")
         payload = market_snapshot._canonical_json_bytes(stock)
         digest = market_snapshot._digest(payload)
         new_path = output / f"data/stocks/{entry['code']}.{digest[:12]}.json"
@@ -125,6 +137,7 @@ def downgrade_snapshot_to_v1(output: Path) -> None:
         entry.pop("listingDate")
         entry.pop("availableSessions")
         entry.pop("shortHistoryReason")
+        entry.pop("noQuoteCount")
 
     manifest["snapshotVersion"] = 1
     manifest_without_hash = dict(manifest)
@@ -147,8 +160,8 @@ def downgrade_snapshot_to_v1(output: Path) -> None:
     market_snapshot._write_sha256sums(output)
 
 
-def remove_verified_session_from_v2_snapshot(output: Path, removed_date: date) -> None:
-    """建立仍可離線驗證、但市場行事曆有共同缺日的舊 v2 快照。"""
+def remove_verified_session_from_v3_snapshot(output: Path, removed_date: date) -> None:
+    """建立仍可離線驗證、但市場行事曆有共同缺日的 v3 快照。"""
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
@@ -196,7 +209,7 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertEqual(1, manifest.schema_version)
             self.assertEqual("fixture", document["sourceCommit"])
             self.assertEqual(1, document["schemaVersion"])
-            self.assertEqual(2, document["snapshotVersion"])
+            self.assertEqual(3, document["snapshotVersion"])
             self.assertEqual({"TWSE", "TPEx"}, set(document["markets"]))
             self.assertEqual(["2330", "6488"], [symbol["code"] for symbol in document["symbols"]])
             self.assertTrue(all(symbol["securityType"] == "common-stock" for symbol in document["symbols"]))
@@ -215,6 +228,132 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertEqual("fresh", document["markets"]["TWSE"]["freshness"])
             self.assertTrue((output / "snapshot.tar.gz").is_file())
             self.assertTrue((output / "SHA256SUMS").is_file())
+
+    def test_records_emergency_market_closure_evidence_in_manifest_and_provenance(self) -> None:
+        base = fixture_build_input()
+        closures = parse_emergency_market_closure_evidence(
+            {
+                "schemaVersion": EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+                "closures": [
+                    {
+                        "date": "2026-07-10",
+                        "reason": "臺灣證券交易所集中交易市場 115 年 7 月 10 日因天然災害全日休市。",
+                        "sourceUrls": [
+                            "https://investoredu.twse.com.tw/pages/TWSE_HotNews.aspx?Page=4",
+                            "https://eoc.gov.taipei/News/Detail/909",
+                            "https://www.twse.com.tw/en/clearing/suspended.html",
+                        ],
+                    }
+                ],
+            }
+        )
+        calendar = apply_emergency_market_closures(base.calendar, closures)
+        twse_daily = parse_twse_daily(load_fixture("twse-daily.json"))
+        tpex_daily = parse_tpex_daily(load_fixture("tpex-daily.json"))
+        sessions = tuple(
+            market_session
+            for session_date in official_fixture_sessions_ending_at(date(2026, 8, 11), 120, calendar)
+            for market_session in (
+                MarketSession("TWSE", tuple(replace(quote, trading_date=session_date) for quote in twse_daily)),
+                MarketSession("TPEx", tuple(replace(quote, trading_date=session_date) for quote in tpex_daily)),
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            build_snapshot(None, replace(base, calendar=calendar, sessions=sessions), output)
+            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
+
+        expected_evidence = {
+            "schemaVersion": 1,
+            "closures": [
+                {
+                    "date": "2026-07-10",
+                    "reason": "臺灣證券交易所集中交易市場 115 年 7 月 10 日因天然災害全日休市。",
+                    "sourceUrls": [
+                        "https://eoc.gov.taipei/News/Detail/909",
+                        "https://investoredu.twse.com.tw/pages/TWSE_HotNews.aspx?Page=4",
+                        "https://www.twse.com.tw/en/clearing/suspended.html",
+                    ],
+                }
+            ],
+        }
+        self.assertEqual(expected_evidence, manifest["calendar"]["emergencyClosureEvidence"])
+        self.assertEqual(expected_evidence, provenance["calendar"]["emergencyClosureEvidence"])
+        self.assertNotIn("2026-07-10", manifest["markets"]["TWSE"]["tradingSessions"])
+        self.assertNotIn("2026-07-10", manifest["markets"]["TPEx"]["tradingSessions"])
+
+    def test_expands_only_verified_suspension_sessions_and_keeps_recovery_bar(self) -> None:
+        """停牌日以 official-suspension 證據補齊；endDateExclusive 當日的合法 K 線不可被覆蓋。"""
+        base = fixture_build_input()
+        interval = SuspensionInterval(
+            market="TWSE",
+            code="2330",
+            start_date=date(2026, 8, 10),
+            end_date_exclusive=date(2026, 8, 11),
+            reason="測試用官方停止買賣區間。",
+            source_urls=("https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB",),
+        )
+        sessions = tuple(
+            replace(
+                session,
+                quotes=tuple(
+                    quote
+                    for quote in session.quotes
+                    if not (
+                        session.market == "TWSE"
+                        and quote.code == "2330"
+                        and quote.trading_date == date(2026, 8, 10)
+                    )
+                ),
+            )
+            for session in base.sessions
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            build_snapshot(None, replace(base, sessions=sessions, suspension_intervals=(interval,)), output)
+            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            stock = json.loads((output / manifest["symbols"][0]["dataPath"]).read_text(encoding="utf-8"))
+
+        evidence = next(item for item in stock["noQuoteEvidence"] if item["date"] == "2026-08-10")
+        self.assertEqual("official-suspension", evidence["reason"])
+        self.assertEqual("2026-08-11", stock["bars"][-1]["date"])
+        self.assertEqual(
+            {
+                "schemaVersion": SUSPENSION_EVIDENCE_SCHEMA_VERSION,
+                "intervals": [
+                    {
+                        "market": "TWSE",
+                        "code": "2330",
+                        "startDate": "2026-08-10",
+                        "endDateExclusive": "2026-08-11",
+                        "reason": "測試用官方停止買賣區間。",
+                        "sourceUrls": [
+                            "https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB"
+                        ],
+                    }
+                ],
+            },
+            manifest["suspensionEvidence"],
+        )
+
+    def test_rejects_a_suspension_interval_that_overlaps_a_legal_bar(self) -> None:
+        """官方停牌區間若與同日合法 K 線衝突，快照必須 fail closed。"""
+        base = fixture_build_input()
+        interval = SuspensionInterval(
+            market="TWSE",
+            code="2330",
+            start_date=date(2026, 8, 11),
+            end_date_exclusive=None,
+            reason="測試用不應覆蓋行情的區間。",
+            source_urls=("https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB",),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(SnapshotValidationError, "停止買賣區間與合法 K 線衝突"):
+                build_snapshot(None, replace(base, suspension_intervals=(interval,)), Path(temporary_directory) / "site-data")
 
     def test_fixture_cli_builds_without_live_network_and_validate_reads_it(self) -> None:
         """若 fixture 模式改打官方 API，前端與 PR 的離線 gate 必須失敗。"""
@@ -350,6 +489,8 @@ class SnapshotBuildTests(unittest.TestCase):
             with patch("market_snapshot.fetch_trading_calendar", return_value=calendar), patch(
                 "market_snapshot.fetch_supported_symbols", return_value=symbols
             ), patch("market_snapshot.fetch_corporate_actions", return_value=actions), patch(
+                "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
                 "market_snapshot.fetch_twse_daily", return_value=(twse_new,)
             ), patch("market_snapshot.fetch_tpex_daily", return_value=(tpex_new,)):
                 manifest, updated = update_snapshot(
@@ -402,6 +543,8 @@ class SnapshotBuildTests(unittest.TestCase):
             with patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar), patch(
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
+                "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
             ) as twse_history_fetch, patch(
                 "market_snapshot.fetch_tpex_historical_daily", side_effect=tpex_history
@@ -467,6 +610,8 @@ class SnapshotBuildTests(unittest.TestCase):
             with patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar), patch(
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
+                "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
             ), patch("market_snapshot.fetch_tpex_historical_daily", side_effect=tpex_history), patch(
                 "market_snapshot.fetch_twse_daily", return_value=(replace(twse_quote, trading_date=date(2026, 8, 11)),)
@@ -675,6 +820,81 @@ class SnapshotBuildTests(unittest.TestCase):
         self.assertEqual(4, stock["availableSessions"])
         self.assertEqual("listing-history", stock["shortHistoryReason"])
 
+    def test_records_official_no_quote_evidence_without_fabricating_ohlc(self) -> None:
+        """官方明示未報價時，該交易日必須保留證據，不能補成一根假 K 線。"""
+
+        base = fixture_build_input()
+        no_quote_date = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)[60]
+        sessions: list[MarketSession] = []
+        for session in base.sessions:
+            if session.market == "TWSE" and session.quotes[0].trading_date == no_quote_date:
+                quote = session.quotes[0]
+                sessions.append(
+                    MarketSession(
+                        "TWSE",
+                        (),
+                        (
+                            NoQuoteEvidence(
+                                market="TWSE",
+                                code=quote.code,
+                                trading_date=no_quote_date,
+                                reason="official-no-quote",
+                                source_url=quote.source_url,
+                            ),
+                        ),
+                    )
+                )
+            else:
+                sessions.append(session)
+        build_input = replace(base, sessions=tuple(sessions))
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, build_input, output)
+            entry = manifest.symbols[0]
+            stock = json.loads((output / entry.data_path).read_text(encoding="utf-8"))
+            validate_snapshot(output)
+
+        self.assertEqual(3, manifest.snapshot_version)
+        self.assertEqual(119, entry.bar_count)
+        self.assertEqual(1, entry.no_quote_count)
+        self.assertEqual(120, entry.available_sessions)
+        self.assertNotIn(no_quote_date.isoformat(), [bar["date"] for bar in stock["bars"]])
+        self.assertEqual(
+            [{
+                "market": "TWSE",
+                "code": "2330",
+                "date": no_quote_date.isoformat(),
+                "reason": "official-no-quote",
+                "sourceUrl": "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+            }],
+            stock["noQuoteEvidence"],
+        )
+
+    def test_rejects_duplicate_official_no_quote_evidence_in_one_market_session(self) -> None:
+        """來源若重複同一股票的未報價列，不能在停牌區間展開前被字典覆蓋。"""
+
+        base = fixture_build_input()
+        target_date = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)[60]
+        sessions: list[MarketSession] = []
+        for session in base.sessions:
+            if session.market == "TWSE" and session.quotes[0].trading_date == target_date:
+                quote = session.quotes[0]
+                evidence = NoQuoteEvidence(
+                    market="TWSE",
+                    code=quote.code,
+                    trading_date=target_date,
+                    reason="official-no-quote",
+                    source_url=quote.source_url,
+                )
+                sessions.append(MarketSession("TWSE", (), (evidence, evidence)))
+            else:
+                sessions.append(session)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(SnapshotValidationError, "重複未報價證據"):
+                build_snapshot(None, replace(base, sessions=tuple(sessions)), Path(temporary_directory) / "site-data")
+
     def test_rejects_a_middle_history_hole_for_an_existing_stock(self) -> None:
         """若既有股票漏掉中間交易日仍可發布，短歷史標記會掩蓋官方來源掉量。"""
         base = fixture_build_input()
@@ -701,8 +921,8 @@ class SnapshotBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(SnapshotValidationError, "不合理缺口"):
                 build_snapshot(None, build_input, Path(temporary_directory) / "site-data")
 
-    def test_rejects_common_official_market_session_gap_in_a_direct_v2_build(self) -> None:
-        """直接建立 v2 時，不可把兩市場共同缺少的官方交易日誤當成不存在。"""
+    def test_rejects_common_official_market_session_gap_in_a_direct_v3_build(self) -> None:
+        """直接建立 v3 時，不可把兩市場共同缺少的官方交易日誤當成不存在。"""
 
         base = fixture_build_input()
         twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
@@ -760,8 +980,8 @@ class SnapshotBuildTests(unittest.TestCase):
             previous = root / "previous"
             next_output = root / "next-output"
             build_snapshot(None, previous_input, previous)
-            remove_verified_session_from_v2_snapshot(previous, date(2026, 8, 10))
-            self.assertEqual(2, validate_snapshot(previous).snapshot_version)
+            remove_verified_session_from_v3_snapshot(previous, date(2026, 8, 10))
+            self.assertEqual(3, validate_snapshot(previous).snapshot_version)
 
             with self.assertRaisesRegex(SnapshotValidationError, "官方交易日缺漏"):
                 build_snapshot(previous, next_input, next_output)
@@ -1022,7 +1242,7 @@ class SnapshotBuildTests(unittest.TestCase):
 
             self.assertFalse((root / "next-output").exists())
 
-    def test_rejects_an_incomplete_v1_target_before_a_fresh_v2_replacement(self) -> None:
+    def test_rejects_an_incomplete_v1_target_before_a_fresh_v3_replacement(self) -> None:
         """已有 v1 目錄時，不完整直接 bootstrap 不可覆寫既有快照。"""
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1055,8 +1275,8 @@ class SnapshotBuildTests(unittest.TestCase):
                     root / "cache",
                 )
 
-    def test_rejects_an_incomplete_v1_snapshot_before_a_v2_incremental_upgrade(self) -> None:
-        """v1 未能證明完整 120 個官方交易日時，不可用一次增量更新升級成 v2。"""
+    def test_rejects_an_incomplete_v1_snapshot_before_a_v3_incremental_upgrade(self) -> None:
+        """v1 未能證明完整 120 個官方交易日時，不可用一次增量更新升級成 v3。"""
 
         base = fixture_build_input()
         next_date = date(2026, 8, 12)
@@ -1077,7 +1297,7 @@ class SnapshotBuildTests(unittest.TestCase):
             next_output = root / "next-output"
             build_snapshot(None, base, previous)
             earliest_session = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)[0]
-            remove_verified_session_from_v2_snapshot(previous, earliest_session)
+            remove_verified_session_from_v3_snapshot(previous, earliest_session)
             downgrade_snapshot_to_v1(previous)
             self.assertEqual(1, validate_snapshot(previous).snapshot_version)
 
@@ -1106,6 +1326,8 @@ class SnapshotBuildTests(unittest.TestCase):
             with patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar), patch(
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
+                "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
             ) as twse_fetch, patch(
                 "market_snapshot.fetch_tpex_historical_daily", side_effect=tpex_history
@@ -1119,6 +1341,8 @@ class SnapshotBuildTests(unittest.TestCase):
             with patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar), patch(
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
+                "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=AssertionError("應使用快取")
             ), patch(
                 "market_snapshot.fetch_tpex_historical_daily", side_effect=AssertionError("應使用快取")

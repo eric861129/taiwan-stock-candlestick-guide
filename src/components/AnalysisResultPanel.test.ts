@@ -40,6 +40,7 @@ const snapshot: StockSnapshot = {
     date: '2026-08-11', open: 100, high: 105, low: 95, close: 102,
     volumeShares: 1000, sourcePrecision: 0.01, comparisonUnit: 0.5,
   }],
+  noQuoteEvidence: [],
   corporateActions: [],
   sourceUrls: ['https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
 };
@@ -142,6 +143,17 @@ describe('AnalysisResultPanel guided rendering', () => {
     expect(wrapper.text()).toContain('下一步');
     expect(wrapper.text()).not.toContain('no-completed-bars');
     expect(wrapper.text()).not.toContain('prior-body-window-unavailable');
+  });
+
+  it('explains official suspension evidence without treating it as a filled OHLC candle', () => {
+    const wrapper = render({
+      status: 'insufficient-evidence',
+      context: { ...context, reasonCodes: ['official-suspension'] },
+      reasonCodes: ['official-suspension'],
+    });
+
+    expect(wrapper.text()).toContain('交易所公告該股票停止買賣');
+    expect(wrapper.text()).not.toContain('official-suspension');
   });
 
   it('maps unavailable reasons to a safe actionable message instead of rendering raw error text', () => {

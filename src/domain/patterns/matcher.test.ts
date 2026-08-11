@@ -276,6 +276,41 @@ describe('explainable 17-pattern matcher', () => {
       expect(noCompletedBars.context.analyzedBarCount).toBe(0);
     }
 
+    const noQuoteAfterLastLegalBar = analyzePatterns({
+      ...makeSnapshot([bar('2026-08-10', 100, 101, 99, 100)]),
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-11',
+        reason: 'official-no-quote',
+        sourceUrl: 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',
+      }],
+    });
+    expect(noQuoteAfterLastLegalBar.status).toBe('insufficient-evidence');
+    if (noQuoteAfterLastLegalBar.status === 'insufficient-evidence') {
+      expect(noQuoteAfterLastLegalBar.reasonCodes).toContain('official-no-quote');
+      expect(noQuoteAfterLastLegalBar.context.analyzedBarCount).toBe(0);
+    }
+
+    const suspensionBreak = analyzePatterns({
+      ...makeSnapshot([
+        bar('2026-08-09', 100, 101, 99, 100),
+        bar('2026-08-11', 100, 101, 99, 100),
+      ]),
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-10',
+        reason: 'official-suspension',
+        sourceUrl: 'https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB',
+      }],
+    });
+    expect(suspensionBreak.status).not.toBe('unavailable');
+    if (suspensionBreak.status !== 'unavailable') {
+      expect(suspensionBreak.context.analyzedFrom).toBe('2026-08-11');
+      expect(suspensionBreak.context.warnings).toContain('交易所公告停止買賣；型態比對不跨越停牌區間。');
+    }
+
     const unsupported = analyzePatterns({
       ...neutralSnapshot(),
       securityType: 'ETF' as 'common-stock',

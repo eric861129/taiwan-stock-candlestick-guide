@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, type Page } from '@playwright/test';
-import type { CorporateAction, OhlcvBar } from '../../src/domain/market-data/types';
+import type { CorporateAction, NoQuoteEvidence, OhlcvBar } from '../../src/domain/market-data/types';
 export { prepareFixtureSnapshot } from './fixture-lifecycle';
 
 export const SITE_BASE = '/taiwan-stock-candlestick-guide/';
@@ -14,7 +14,7 @@ type BrowserOhlcvBar = OhlcvBar & { readonly priceUnit: 'TWD' };
 
 export interface BrowserStockFixture {
   readonly schemaVersion: 1;
-  readonly snapshotVersion: 2;
+  readonly snapshotVersion: 3;
   readonly code: string;
   readonly name: string;
   readonly market: 'TWSE' | 'TPEx';
@@ -31,6 +31,7 @@ export interface BrowserStockFixture {
     readonly sourceUrl: string;
   };
   readonly bars: readonly BrowserOhlcvBar[];
+  readonly noQuoteEvidence: readonly NoQuoteEvidence[];
   readonly corporateActions: readonly CorporateAction[];
   readonly sourceUrls: readonly string[];
 }
@@ -108,7 +109,7 @@ export function makeBrowserStockFixture(
   const shortHistoryReason = serializedBars.length < 120 ? 'listing-history' : null;
   return {
     schemaVersion: 1,
-    snapshotVersion: 2,
+    snapshotVersion: 3,
     code: options.code ?? '2330',
     name: options.name ?? '測試普通股',
     market: options.market ?? 'TWSE',
@@ -125,6 +126,7 @@ export function makeBrowserStockFixture(
       sourceUrl: officialFixtureSource,
     },
     bars: serializedBars,
+    noQuoteEvidence: [],
     corporateActions: options.corporateActions ?? [],
     sourceUrls: [officialFixtureSource],
   };
@@ -148,6 +150,7 @@ export function createBrowserMarketFixture(
     firstDate: stock.bars[0]?.date ?? stock.listingDate,
     lastDate: stock.bars.at(-1)?.date ?? stock.listingDate,
     barCount: stock.bars.length,
+    noQuoteCount: stock.noQuoteEvidence.length,
     listingDate: stock.listingDate,
     availableSessions: stock.availableSessions,
     shortHistoryReason: stock.shortHistoryReason,
@@ -162,9 +165,21 @@ export function createBrowserMarketFixture(
   };
   const manifestWithoutHash = {
     schemaVersion: 1,
-    snapshotVersion: 2,
+    snapshotVersion: 3,
     sourceCommit: fixtureSourceCommit,
     generatedAt: '2026-08-11T18:00:00+08:00',
+    calendar: {
+      sourceUrl: officialFixtureSource,
+      validThrough: marketCutoffDate,
+      emergencyClosureEvidence: {
+        schemaVersion: 1,
+        closures: [],
+      },
+    },
+    suspensionEvidence: {
+      schemaVersion: 1,
+      intervals: [],
+    },
     markets: { TWSE: market, TPEx: market },
     symbols: [stockEntry],
   };

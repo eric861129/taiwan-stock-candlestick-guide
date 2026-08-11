@@ -21,9 +21,16 @@ from uuid import uuid4
 
 from market_sources import (
     CorporateAction,
+    DailyMarketResponse,
+    DEFAULT_SUSPENSION_INTERVALS_PATH,
     DailyQuote,
+    EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+    EmergencyMarketClosure,
     Market,
+    NoQuoteEvidence,
+    SUSPENSION_EVIDENCE_SCHEMA_VERSION,
     SupportedSymbol,
+    SuspensionInterval,
     TradingCalendar,
     comparison_unit_for_prices,
     compute_freshness,
@@ -35,8 +42,11 @@ from market_sources import (
     fetch_trading_calendar,
     fetch_twse_daily,
     fetch_twse_historical_daily,
+    load_suspension_interval_evidence,
     MarketSourceError,
     parse_corporate_actions,
+    parse_emergency_market_closure_evidence,
+    parse_suspension_interval_evidence,
     parse_holiday_calendar,
     parse_supported_symbols,
     parse_tpex_daily,
@@ -45,9 +55,11 @@ from market_sources import (
 
 
 SCHEMA_VERSION = 1
-SNAPSHOT_VERSION = 2
+SNAPSHOT_VERSION = 3
 LEGACY_SNAPSHOT_VERSION = 1
-SUPPORTED_SNAPSHOT_VERSIONS = frozenset({LEGACY_SNAPSHOT_VERSION, SNAPSHOT_VERSION})
+PREVIOUS_SNAPSHOT_VERSION = 2
+SUPPORTED_SNAPSHOT_VERSIONS = frozenset({LEGACY_SNAPSHOT_VERSION, PREVIOUS_SNAPSHOT_VERSION, SNAPSHOT_VERSION})
+HISTORY_METADATA_SNAPSHOT_VERSIONS = frozenset({PREVIOUS_SNAPSHOT_VERSION, SNAPSHOT_VERSION})
 RETENTION_SESSIONS = 120
 PRICE_UNIT = "TWD"
 COMPARISON_UNIT_POLICY_URL = "https://www.twse.com.tw/zh/trading/trading-rule.html"
@@ -64,6 +76,7 @@ class MarketSession:
 
     market: Market
     quotes: tuple[DailyQuote, ...]
+    no_quote_evidence: tuple[NoQuoteEvidence, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +90,7 @@ class SnapshotBuildInput:
     corporate_actions: tuple[CorporateAction, ...]
     calendar: TradingCalendar
     retired_symbols: tuple[tuple[Market, str, str], ...] = ()
+    suspension_intervals: tuple[SuspensionInterval, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,12 +116,22 @@ class StockIndexEntry:
     data_path: str
     digest: str
     size: int
-    first_date: str
-    last_date: str
+    first_date: str | None
+    last_date: str | None
     bar_count: int
     listing_date: str | None = None
     available_sessions: int = 0
     short_history_reason: Literal["listing-history"] | None = None
+    no_quote_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarEvidence:
+    """寫入快照的年度日曆與經驗證緊急休市佐證。"""
+
+    source_url: str
+    valid_through: str
+    emergency_closures: tuple[EmergencyMarketClosure, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +145,8 @@ class SnapshotManifest:
     generated_at: str
     markets: dict[str, MarketCutoff]
     symbols: tuple[StockIndexEntry, ...]
+    calendar: CalendarEvidence | None = None
+    suspension_intervals: tuple[SuspensionInterval, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,8 +170,9 @@ def build_snapshot(
 ) -> SnapshotManifest:
     """驗證完整候選資料後，以暫存同層目錄建立可原子切換的快照。"""
     _validate_build_input(sessions)
+    sessions = _with_official_suspension_evidence(sessions)
     previous_manifest = _load_previous_manifest(previous)
-    _validate_v1_incremental_history(previous, previous_manifest, sessions.calendar)
+    _validate_incremental_history(previous, previous_manifest, sessions.calendar)
     _validate_current_daily_coverage(previous_manifest, sessions, sessions.retired_symbols)
     stock_documents, market_cutoffs = _build_stock_documents(sessions, previous, previous_manifest)
     entries, stock_payloads = _index_stock_documents(stock_documents)
@@ -154,11 +181,14 @@ def build_snapshot(
     _validate_v1_replacement_target(previous, output, market_cutoffs)
 
     generated_at = _iso_datetime(sessions.generated_at)
+    calendar_evidence = _calendar_evidence_from_trading_calendar(sessions.calendar)
     manifest_without_hash = {
         "schemaVersion": SCHEMA_VERSION,
         "snapshotVersion": SNAPSHOT_VERSION,
         "sourceCommit": sessions.source_commit,
         "generatedAt": generated_at,
+        "calendar": _calendar_evidence_json(calendar_evidence),
+        "suspensionEvidence": _suspension_evidence_json(sessions.suspension_intervals),
         "markets": {market: _market_cutoff_json(cutoff) for market, cutoff in market_cutoffs.items()},
         "symbols": [_stock_entry_json(entry) for entry in entries],
     }
@@ -171,6 +201,8 @@ def build_snapshot(
         generated_at=generated_at,
         markets=market_cutoffs,
         symbols=entries,
+        calendar=calendar_evidence,
+        suspension_intervals=sessions.suspension_intervals,
     )
     manifest_document = {
         **manifest_without_hash,
@@ -206,6 +238,88 @@ def _validate_build_input(build: SnapshotBuildInput) -> None:
         symbol_keys.add(key)
     if not build.sessions:
         raise SnapshotValidationError("沒有任何官方交易日行情可建立快照。")
+    try:
+        intervals = _suspension_intervals_from_json(_suspension_evidence_json(build.suspension_intervals))
+    except (TypeError, ValueError) as error:
+        raise SnapshotValidationError("停止買賣區間佐證無效。") from error
+    if any((interval.market, interval.code) not in symbol_keys for interval in intervals):
+        raise SnapshotValidationError("停止買賣區間包含不在支援普通股索引中的股票。")
+
+
+def _with_official_suspension_evidence(build: SnapshotBuildInput) -> SnapshotBuildInput:
+    """僅以已驗證區間補入 expected session，絕不把停牌日偽造成 OHLC。"""
+
+    try:
+        intervals = _suspension_intervals_from_json(_suspension_evidence_json(build.suspension_intervals))
+    except (TypeError, ValueError) as error:
+        raise SnapshotValidationError("停止買賣區間佐證無效。") from error
+    supported_keys = {(symbol.market, symbol.code) for symbol in build.symbols}
+    if any((interval.market, interval.code) not in supported_keys for interval in intervals):
+        raise SnapshotValidationError("停止買賣區間包含不在支援普通股索引中的股票。")
+
+    intervals_by_market: dict[Market, tuple[SuspensionInterval, ...]] = {
+        market: tuple(interval for interval in intervals if interval.market == market)
+        for market in ("TWSE", "TPEx")
+    }
+    expanded_sessions: list[MarketSession] = []
+    for session in build.sessions:
+        observations = {
+            *(quote.trading_date for quote in session.quotes),
+            *(evidence.trading_date for evidence in session.no_quote_evidence),
+        }
+        if len(observations) != 1:
+            raise SnapshotValidationError(f"{session.market} 官方交易日行情日期不一致。")
+        session_date = next(iter(observations))
+        quotes_by_key = {(quote.market, quote.code): quote for quote in session.quotes}
+        evidence_by_key: dict[tuple[Market, str], NoQuoteEvidence] = {}
+        for evidence in session.no_quote_evidence:
+            if evidence.market != session.market or evidence.reason not in {"official-no-quote", "official-suspension"}:
+                raise SnapshotValidationError("官方未報價證據的市場或原因無效。")
+            key = (evidence.market, evidence.code)
+            if key in evidence_by_key:
+                raise SnapshotValidationError(
+                    f"{evidence.market} {evidence.code} 有重複未報價證據 {session_date.isoformat()}。"
+                )
+            evidence_by_key[key] = evidence
+        for interval in intervals_by_market[session.market]:
+            if not interval.includes(session_date):
+                continue
+            key = (interval.market, interval.code)
+            if key in quotes_by_key:
+                raise SnapshotValidationError(
+                    f"{interval.market} {interval.code} 的停止買賣區間與合法 K 線衝突：{session_date.isoformat()}。"
+                )
+            existing = evidence_by_key.get(key)
+            if existing is not None and existing.reason == "official-suspension":
+                if existing.source_url not in interval.source_urls:
+                    raise SnapshotValidationError("官方停牌證據與公告來源不一致。")
+                continue
+            evidence_by_key[key] = NoQuoteEvidence(
+                market=interval.market,
+                code=interval.code,
+                trading_date=session_date,
+                reason="official-suspension",
+                source_url=interval.source_urls[0],
+            )
+        for evidence in evidence_by_key.values():
+            if evidence.reason == "official-suspension" and not any(
+                interval.market == evidence.market
+                and interval.code == evidence.code
+                and interval.includes(evidence.trading_date)
+                and evidence.source_url in interval.source_urls
+                for interval in intervals
+            ):
+                raise SnapshotValidationError("官方停牌證據沒有對應的公告區間。")
+        expanded_sessions.append(
+            MarketSession(
+                market=session.market,
+                quotes=session.quotes,
+                no_quote_evidence=tuple(
+                    sorted(evidence_by_key.values(), key=lambda item: (item.code, item.trading_date, item.reason))
+                ),
+            )
+        )
+    return replace(build, sessions=tuple(expanded_sessions), suspension_intervals=intervals)
 
 
 def _build_stock_documents(
@@ -215,17 +329,25 @@ def _build_stock_documents(
 ) -> tuple[dict[tuple[Market, str], dict[str, Any]], dict[str, MarketCutoff]]:
     symbols = {(symbol.market, symbol.code): symbol for symbol in build.symbols}
     available_sessions_by_market = _available_market_sessions(build, previous, previous_manifest)
-    bars_by_symbol, previous_sources_by_symbol = _load_previous_bars(previous)
+    bars_by_symbol, no_quote_by_symbol, previous_sources_by_symbol = _load_previous_bars(previous)
     sources_by_symbol: dict[tuple[Market, str], set[str]] = {
         key: {symbol.source_url} for key, symbol in symbols.items()
     }
+    for interval in build.suspension_intervals:
+        sources_by_symbol[(interval.market, interval.code)].update(interval.source_urls)
     for key, source_urls in previous_sources_by_symbol.items():
         if key in sources_by_symbol:
             sources_by_symbol[key].update(source_urls)
 
     for session in build.sessions:
-        if not session.quotes:
+        if not session.quotes and not session.no_quote_evidence:
             raise SnapshotValidationError(f"{session.market} 官方交易日行情不可為空。")
+        observed_dates = {
+            *(quote.trading_date for quote in session.quotes),
+            *(evidence.trading_date for evidence in session.no_quote_evidence),
+        }
+        if len(observed_dates) != 1:
+            raise SnapshotValidationError(f"{session.market} 官方交易日行情日期不一致。")
         for quote in session.quotes:
             if quote.market != session.market:
                 raise SnapshotValidationError("交易日行情的市場標記不一致。")
@@ -240,25 +362,70 @@ def _build_stock_documents(
                 )
             existing.append(normalized)
             sources_by_symbol[key].add(quote.source_url)
+        for evidence in session.no_quote_evidence:
+            if evidence.market != session.market or evidence.reason not in {"official-no-quote", "official-suspension"}:
+                raise SnapshotValidationError("官方未報價證據的市場或原因無效。")
+            key = (evidence.market, evidence.code)
+            if key not in symbols:
+                continue
+            if any(bar.trading_date == evidence.trading_date for bar in bars_by_symbol.get(key, ())):
+                raise SnapshotValidationError(
+                    f"{evidence.market} {evidence.code} 的未報價證據與合法 K 線日期重複。"
+                )
+            existing_evidence = no_quote_by_symbol.setdefault(key, [])
+            if any(item.trading_date == evidence.trading_date for item in existing_evidence):
+                raise SnapshotValidationError(
+                    f"{evidence.market} {evidence.code} 有重複未報價證據 {evidence.trading_date.isoformat()}。"
+                )
+            _official_evidence_url(evidence.source_url)
+            existing_evidence.append(evidence)
+            sources_by_symbol[key].add(evidence.source_url)
 
     documents: dict[tuple[Market, str], dict[str, Any]] = {}
-    available_symbol_keys = {key for key, bars in bars_by_symbol.items() if bars and key in symbols}
+    available_symbol_keys = {
+        key
+        for key in symbols
+        if bars_by_symbol.get(key) or no_quote_by_symbol.get(key)
+    }
     coverage = Decimal(len(available_symbol_keys)) / Decimal(len(symbols))
     if coverage < Decimal("0.98"):
         raise SnapshotValidationError(f"官方普通股日行情覆蓋率 {coverage:.2%} 低於 98% 發布門檻。")
 
     for key, symbol in symbols.items():
         bars = sorted(bars_by_symbol.get(key, []), key=lambda item: item.trading_date)
-        if not bars:
-            continue
         _validate_bars(symbol, bars)
-        retained_bars = bars[-RETENTION_SESSIONS:]
+        retained_session_dates = set(available_sessions_by_market[symbol.market])
+        retained_bars = tuple(bar for bar in bars if bar.trading_date in retained_session_dates)
+        retained_no_quote_evidence = tuple(
+            evidence
+            for evidence in sorted(no_quote_by_symbol.get(key, ()), key=lambda item: item.trading_date)
+            if evidence.trading_date in retained_session_dates
+        )
+        _validate_suspension_evidence_for_history(
+            market=symbol.market,
+            code=symbol.code,
+            listing_date=symbol.listing_date,
+            bar_dates=tuple(bar.trading_date for bar in retained_bars),
+            no_quote_evidence=retained_no_quote_evidence,
+            market_sessions=available_sessions_by_market[symbol.market],
+            suspension_intervals=build.suspension_intervals,
+        )
         available_sessions, short_history_reason = _validate_history_availability(
             symbol,
             retained_bars,
+            retained_no_quote_evidence,
             available_sessions_by_market[symbol.market],
         )
-        actions = _actions_for_stock(build.corporate_actions, symbol, retained_bars)
+        actions = _actions_for_stock(
+            build.corporate_actions,
+            symbol,
+            tuple(
+                sorted(
+                    tuple(bar.trading_date for bar in retained_bars)
+                    + tuple(evidence.trading_date for evidence in retained_no_quote_evidence)
+                )
+            ),
+        )
         sources = set(sources_by_symbol[key])
         sources.update(action.source_url for action in actions)
         documents[key] = {
@@ -280,6 +447,7 @@ def _build_stock_documents(
                 "sourceUrl": COMPARISON_UNIT_POLICY_URL,
             },
             "bars": [_bar_json(bar) for bar in retained_bars],
+            "noQuoteEvidence": [_no_quote_evidence_json(evidence) for evidence in retained_no_quote_evidence],
             "corporateActions": [_action_json(action) for action in actions],
             "sourceUrls": sorted(sources),
         }
@@ -338,10 +506,13 @@ def _current_market_session_dates(build: SnapshotBuildInput) -> dict[Market, set
     for session in build.sessions:
         if session.market not in result:
             raise SnapshotValidationError("交易日行情的市場標記無效。")
-        quote_dates = {quote.trading_date for quote in session.quotes}
-        if len(quote_dates) != 1:
+        observed_dates = {
+            *(quote.trading_date for quote in session.quotes),
+            *(evidence.trading_date for evidence in session.no_quote_evidence),
+        }
+        if len(observed_dates) != 1:
             raise SnapshotValidationError(f"{session.market} 官方交易日行情日期不一致。")
-        result[session.market].update(quote_dates)
+        result[session.market].update(observed_dates)
     return result
 
 
@@ -393,14 +564,18 @@ def _calendar_coverage_start(calendar: TradingCalendar) -> date:
     return date(min(day.year for day in calendar.holiday_dates), 1, 1)
 
 
-def _validate_v1_incremental_history(
+def _validate_incremental_history(
     previous: Path | SnapshotManifest | None,
     previous_manifest: SnapshotManifest | None,
     calendar: TradingCalendar,
 ) -> None:
-    """v1 增量來源須先由目前官方行事曆證明具完整保留視窗。"""
+    """增量來源必須與目前無報價證據契約相容，否則強制完整 bootstrap。"""
 
-    if previous_manifest is None or previous_manifest.snapshot_version != LEGACY_SNAPSHOT_VERSION:
+    if previous_manifest is None:
+        return
+    if previous_manifest.snapshot_version == PREVIOUS_SNAPSHOT_VERSION:
+        raise SnapshotValidationError(_v2_rebootstrap_message())
+    if previous_manifest.snapshot_version != LEGACY_SNAPSHOT_VERSION:
         return
     if not isinstance(previous, Path):
         raise SnapshotValidationError(_v1_rebootstrap_message())
@@ -441,20 +616,90 @@ def _v1_rebootstrap_message() -> str:
     return "v1 快照無法由官方交易日曆證明最近 120 個交易日完整；請先以官方歷史資料回補或重新 bootstrap。"
 
 
+def _v2_rebootstrap_message() -> str:
+    return "v2 快照無法承載官方未報價證據；請以官方歷史資料重新 bootstrap。"
+
+
 def _validate_history_availability(
     symbol: SupportedSymbol,
     bars: Sequence[_NormalizedBar],
+    no_quote_evidence: Sequence[NoQuoteEvidence],
     market_sessions: Sequence[date],
 ) -> tuple[int, Literal["listing-history"] | None]:
-    """短歷史只能是官方上市日期造成的連續後綴，不能掩蓋中間行情缺口。"""
+    """每個應有交易日必須是合法 K 線或同日官方未報價證據。"""
     eligible_sessions = tuple(session for session in market_sessions if session >= symbol.listing_date)
-    actual_sessions = tuple(bar.trading_date for bar in bars)
-    if not eligible_sessions or actual_sessions != eligible_sessions:
+    bar_dates = tuple(bar.trading_date for bar in bars)
+    evidence_dates = tuple(evidence.trading_date for evidence in no_quote_evidence)
+    if (
+        not eligible_sessions
+        or len(set(bar_dates)) != len(bar_dates)
+        or len(set(evidence_dates)) != len(evidence_dates)
+        or set(bar_dates) & set(evidence_dates)
+        or tuple(sorted((*bar_dates, *evidence_dates))) != eligible_sessions
+    ):
         raise SnapshotValidationError(f"{symbol.market} {symbol.code} 的歷史交易日有不合理缺口。")
     short_history_reason: Literal["listing-history"] | None = None
     if len(eligible_sessions) < len(market_sessions):
         short_history_reason = "listing-history"
     return len(eligible_sessions), short_history_reason
+
+
+def _validate_suspension_evidence_for_history(
+    *,
+    market: Market,
+    code: str,
+    listing_date: date,
+    bar_dates: Sequence[date],
+    no_quote_evidence: Sequence[NoQuoteEvidence],
+    market_sessions: Sequence[date],
+    suspension_intervals: Sequence[SuspensionInterval],
+) -> None:
+    """確認每一筆 official-suspension 都對應公告，並完整覆蓋其 expected sessions。"""
+
+    intervals = tuple(
+        interval
+        for interval in suspension_intervals
+        if (interval.market, interval.code) == (market, code)
+    )
+    observed_bar_dates = set(bar_dates)
+    evidence_by_date = {evidence.trading_date: evidence for evidence in no_quote_evidence}
+    for evidence in no_quote_evidence:
+        matching = tuple(
+            interval
+            for interval in intervals
+            if interval.includes(evidence.trading_date)
+        )
+        if evidence.reason == "official-suspension":
+            if len(matching) != 1 or evidence.source_url not in matching[0].source_urls:
+                raise SnapshotValidationError(
+                    f"{market} {code} 的官方停牌證據沒有對應公告區間：{evidence.trading_date.isoformat()}。"
+                )
+        elif evidence.reason == "official-no-quote":
+            if matching:
+                raise SnapshotValidationError(
+                    f"{market} {code} 的公告停牌日不可標示為一般未報價：{evidence.trading_date.isoformat()}。"
+                )
+        else:
+            raise SnapshotValidationError("官方未報價證據原因無效。")
+
+    eligible_sessions = tuple(session for session in market_sessions if session >= listing_date)
+    for interval in intervals:
+        for session_date in eligible_sessions:
+            if not interval.includes(session_date):
+                continue
+            if session_date in observed_bar_dates:
+                raise SnapshotValidationError(
+                    f"{market} {code} 的停止買賣區間與合法 K 線衝突：{session_date.isoformat()}。"
+                )
+            evidence = evidence_by_date.get(session_date)
+            if (
+                evidence is None
+                or evidence.reason != "official-suspension"
+                or evidence.source_url not in interval.source_urls
+            ):
+                raise SnapshotValidationError(
+                    f"{market} {code} 的停止買賣區間缺少官方證據：{session_date.isoformat()}。"
+                )
 
 
 def _normalize_quote(quote: DailyQuote) -> _NormalizedBar:
@@ -495,10 +740,12 @@ def _validate_bars(symbol: SupportedSymbol, bars: Sequence[_NormalizedBar]) -> N
 def _actions_for_stock(
     actions: Sequence[CorporateAction],
     symbol: SupportedSymbol,
-    bars: Sequence[_NormalizedBar],
+    observed_dates: Sequence[date],
 ) -> tuple[CorporateAction, ...]:
-    first_date = bars[0].trading_date
-    last_date = bars[-1].trading_date
+    if not observed_dates:
+        raise SnapshotValidationError(f"{symbol.market} {symbol.code} 沒有可稽核交易日。")
+    first_date = min(observed_dates)
+    last_date = max(observed_dates)
     matching = [
         action
         for action in actions
@@ -523,18 +770,12 @@ def _market_cutoffs(
         market_documents = [document for (document_market, _), document in documents.items() if document_market == market]
         if not market_documents:
             raise SnapshotValidationError(f"缺少 {market} 支援普通股。")
-        dates = {
-            bar["date"]
-            for document in market_documents
-            for bar in document["bars"]
-            if bar["date"] == document["bars"][-1]["date"]
-        }
-        if len(dates) != 1:
-            raise SnapshotValidationError(f"{market} 支援普通股的資料截止日不一致。")
-        cutoff_text = next(iter(dates))
-        cutoff = date.fromisoformat(cutoff_text)
         available_sessions = available_sessions_by_market[market]
-        if not available_sessions or cutoff != available_sessions[-1]:
+        if not available_sessions:
+            raise SnapshotValidationError(f"{market} 缺少可驗證交易日。")
+        cutoff = available_sessions[-1]
+        cutoff_text = cutoff.isoformat()
+        if any(document["availableSessions"] < 1 for document in market_documents):
             raise SnapshotValidationError(f"{market} 可用交易日與資料截止日不一致。")
         result[market] = MarketCutoff(
             cutoff_date=cutoff_text,
@@ -582,6 +823,7 @@ def _index_stock_documents(
         digest = _digest(payload)
         path = f"data/stocks/{code}.{digest[:12]}.json"
         bars = document["bars"]
+        no_quote_evidence = document["noQuoteEvidence"]
         entry = StockIndexEntry(
             code=code,
             name=document["name"],
@@ -590,12 +832,13 @@ def _index_stock_documents(
             data_path=path,
             digest=digest,
             size=len(payload),
-            first_date=bars[0]["date"],
-            last_date=bars[-1]["date"],
+            first_date=bars[0]["date"] if bars else None,
+            last_date=bars[-1]["date"] if bars else None,
             bar_count=len(bars),
             listing_date=document["listingDate"],
             available_sessions=document["availableSessions"],
             short_history_reason=document["shortHistoryReason"],
+            no_quote_count=len(no_quote_evidence),
         )
         entries.append(entry)
         payloads[path] = payload
@@ -632,7 +875,12 @@ def _validate_transition(
             raise SnapshotValidationError("普通股總數降低超過 1%，需要人工核准。")
     for key, old_entry in previous_by_key.items():
         current = current_by_key.get(key)
-        if current is not None and current.last_date < old_entry.last_date:
+        if (
+            current is not None
+            and current.last_date is not None
+            and old_entry.last_date is not None
+            and current.last_date < old_entry.last_date
+        ):
             raise SnapshotValidationError(f"{key[0]} {key[1]} 的資料截止日倒退。")
 
 
@@ -651,17 +899,26 @@ def _validate_current_daily_coverage(
         return
     retired_keys = {(market, code) for market, code, _ in retired_symbols}
     latest_session_date = max(
-        quote.trading_date
+        observation_date
         for session in build.sessions
-        for quote in session.quotes
+        for observation_date in (
+            *(quote.trading_date for quote in session.quotes),
+            *(evidence.trading_date for evidence in session.no_quote_evidence),
+        )
     )
-    current_quote_keys = {
+    current_observed_keys = {
         (quote.market, quote.code)
         for session in build.sessions
         for quote in session.quotes
         if quote.trading_date == latest_session_date and (quote.market, quote.code) in coverage_keys
     }
-    coverage = Decimal(len((current_quote_keys | retired_keys) & coverage_keys)) / Decimal(len(coverage_keys))
+    current_observed_keys.update(
+        (evidence.market, evidence.code)
+        for session in build.sessions
+        for evidence in session.no_quote_evidence
+        if evidence.trading_date == latest_session_date and (evidence.market, evidence.code) in coverage_keys
+    )
+    coverage = Decimal(len((current_observed_keys | retired_keys) & coverage_keys)) / Decimal(len(coverage_keys))
     if coverage < Decimal("0.98"):
         raise SnapshotValidationError(
             f"當日官方普通股日行情覆蓋率 {coverage:.2%} 低於 98% 發布門檻。"
@@ -669,16 +926,15 @@ def _validate_current_daily_coverage(
 
 
 def _provenance_document(build: SnapshotBuildInput, manifest: SnapshotManifest) -> dict[str, Any]:
+    calendar_evidence = manifest.calendar or _calendar_evidence_from_trading_calendar(build.calendar)
     return {
         "schemaVersion": SCHEMA_VERSION,
-        "snapshotVersion": SNAPSHOT_VERSION,
+        "snapshotVersion": manifest.snapshot_version,
         "sourceCommit": manifest.source_commit,
         "snapshotHash": manifest.snapshot_hash,
         "generatedAt": manifest.generated_at,
-        "calendar": {
-            "sourceUrl": build.calendar.source_url,
-            "validThrough": build.calendar.valid_through.isoformat(),
-        },
+        "calendar": _calendar_evidence_json(calendar_evidence),
+        "suspensionEvidence": _suspension_evidence_json(manifest.suspension_intervals),
         "markets": {
             market: {
                 "cutoffDate": cutoff.cutoff_date,
@@ -849,6 +1105,7 @@ def _validate_manifest_files(snapshot: Path, manifest: SnapshotManifest) -> None
             entry,
             tuple(date.fromisoformat(session) for session in manifest.markets[entry.market].trading_sessions),
             manifest.snapshot_version,
+            manifest.suspension_intervals,
         )
 
 
@@ -860,6 +1117,7 @@ def _validate_provenance(snapshot: Path, manifest: SnapshotManifest) -> None:
         raise SnapshotValidationError("provenance.json 不是有效 UTF-8 JSON。") from error
     try:
         calendar = document["calendar"]
+        suspension_evidence = document.get("suspensionEvidence")
         markets = document["markets"]
         if (
             not isinstance(document, dict)
@@ -877,6 +1135,13 @@ def _validate_provenance(snapshot: Path, manifest: SnapshotManifest) -> None:
         calendar_valid_through = calendar["validThrough"]
         _official_evidence_url(calendar_source_url)
         date.fromisoformat(calendar_valid_through)
+        if manifest.snapshot_version == SNAPSHOT_VERSION:
+            calendar_evidence = _calendar_evidence_from_json(calendar)
+            suspension_intervals = _suspension_intervals_from_json(suspension_evidence)
+            if manifest.calendar != calendar_evidence or manifest.suspension_intervals != suspension_intervals:
+                raise ValueError
+        elif "emergencyClosureEvidence" in calendar or suspension_evidence is not None:
+            raise ValueError
         for market, cutoff in manifest.markets.items():
             value = markets[market]
             if (
@@ -897,6 +1162,7 @@ def _validate_stock_document(
     entry: StockIndexEntry,
     market_sessions: Sequence[date],
     snapshot_version: int,
+    suspension_intervals: Sequence[SuspensionInterval] = (),
 ) -> None:
     if not isinstance(stock, dict):
         raise SnapshotValidationError("股票快照必須是 JSON 物件。")
@@ -915,10 +1181,14 @@ def _validate_stock_document(
         "corporateActions",
         "sourceUrls",
     }
-    if snapshot_version == SNAPSHOT_VERSION:
+    if snapshot_version in HISTORY_METADATA_SNAPSHOT_VERSIONS:
         required.update({"listingDate", "availableSessions", "shortHistoryReason"})
+    if snapshot_version == SNAPSHOT_VERSION:
+        required.add("noQuoteEvidence")
     if not required.issubset(stock):
         raise SnapshotValidationError(f"股票快照缺少必要欄位：{entry.market} {entry.code}。")
+    if snapshot_version != SNAPSHOT_VERSION and "noQuoteEvidence" in stock:
+        raise SnapshotValidationError("舊版股票快照不可混入 v3 未報價證據欄位。")
     if (
         stock["schemaVersion"] != SCHEMA_VERSION
         or stock["snapshotVersion"] != snapshot_version
@@ -932,7 +1202,8 @@ def _validate_stock_document(
         raise SnapshotValidationError(f"股票快照核心欄位不符：{entry.market} {entry.code}。")
     if not isinstance(stock["name"], str) or not stock["name"].strip():
         raise SnapshotValidationError(f"股票快照名稱無效：{entry.market} {entry.code}。")
-    if snapshot_version == SNAPSHOT_VERSION:
+    listing_date: date | None = None
+    if snapshot_version in HISTORY_METADATA_SNAPSHOT_VERSIONS:
         if (
             stock["listingDate"] != entry.listing_date
             or stock["availableSessions"] != entry.available_sessions
@@ -961,9 +1232,13 @@ def _validate_stock_document(
         _official_evidence_url(policy["sourceUrl"])
     except (KeyError, TypeError, ValueError) as error:
         raise SnapshotValidationError(f"股票快照比較單位規則無效：{entry.market} {entry.code}。") from error
-    _stock_source_urls(stock, entry)
+    source_urls = _stock_source_urls(stock, entry)
     bars = stock["bars"]
-    if not isinstance(bars, list) or not bars or len(bars) > RETENTION_SESSIONS:
+    if (
+        not isinstance(bars, list)
+        or len(bars) > RETENTION_SESSIONS
+        or snapshot_version != SNAPSHOT_VERSION and not bars
+    ):
         raise SnapshotValidationError(f"股票快照 K 線數量不符合範圍：{entry.market} {entry.code}。")
     dates: list[date] = []
     for bar in bars:
@@ -990,17 +1265,80 @@ def _validate_stock_document(
         dates.append(bar_date)
     if dates != sorted(dates) or len(set(dates)) != len(dates):
         raise SnapshotValidationError("股票快照交易日必須遞增且不得重複。")
-    if dates[0].isoformat() != entry.first_date or dates[-1].isoformat() != entry.last_date or len(dates) != entry.bar_count:
-        raise SnapshotValidationError("manifest 與股票快照的日期或筆數不一致。")
+    no_quote_dates: list[date] = []
+    parsed_no_quote_evidence: list[NoQuoteEvidence] = []
     if snapshot_version == SNAPSHOT_VERSION:
+        no_quote_evidence = stock["noQuoteEvidence"]
+        if not isinstance(no_quote_evidence, list) or len(no_quote_evidence) > RETENTION_SESSIONS:
+            raise SnapshotValidationError(f"股票快照未報價證據數量不符合範圍：{entry.market} {entry.code}。")
+        for evidence in no_quote_evidence:
+            if not isinstance(evidence, dict):
+                raise SnapshotValidationError("股票快照未報價證據必須是 JSON 物件。")
+            try:
+                evidence_date = date.fromisoformat(evidence["date"])
+                evidence_source_url = _official_evidence_url(evidence["sourceUrl"])
+                if (
+                    evidence["market"] != entry.market
+                    or evidence["code"] != entry.code
+                    or evidence["reason"] not in {"official-no-quote", "official-suspension"}
+                ):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError, SnapshotValidationError) as error:
+                raise SnapshotValidationError("股票快照未報價證據欄位無效。") from error
+            if evidence_source_url not in source_urls:
+                raise SnapshotValidationError("股票快照未報價證據缺少對應官方來源。")
+            no_quote_dates.append(evidence_date)
+            parsed_no_quote_evidence.append(
+                NoQuoteEvidence(
+                    market=entry.market,
+                    code=entry.code,
+                    trading_date=evidence_date,
+                    reason=evidence["reason"],
+                    source_url=evidence_source_url,
+                )
+            )
+        if no_quote_dates != sorted(no_quote_dates) or len(set(no_quote_dates)) != len(no_quote_dates):
+            raise SnapshotValidationError("股票快照未報價證據日期必須遞增且不得重複。")
+        if set(dates) & set(no_quote_dates):
+            raise SnapshotValidationError("股票快照未報價證據不可與合法 K 線共用日期。")
+        if not dates and not no_quote_dates:
+            raise SnapshotValidationError("股票快照至少需要一筆合法 K 線或官方未報價證據。")
+        expected_first_date = dates[0].isoformat() if dates else None
+        expected_last_date = dates[-1].isoformat() if dates else None
+        if (
+            entry.first_date != expected_first_date
+            or entry.last_date != expected_last_date
+            or len(dates) != entry.bar_count
+            or len(no_quote_dates) != entry.no_quote_count
+        ):
+            raise SnapshotValidationError("manifest 與股票快照的日期、K 線或未報價證據數量不一致。")
+    elif dates[0].isoformat() != entry.first_date or dates[-1].isoformat() != entry.last_date or len(dates) != entry.bar_count:
+        raise SnapshotValidationError("manifest 與股票快照的日期或筆數不一致。")
+    if snapshot_version in HISTORY_METADATA_SNAPSHOT_VERSIONS:
+        if listing_date is None:
+            raise SnapshotValidationError(f"股票快照上市日期無效：{entry.market} {entry.code}。")
         eligible_sessions = tuple(session for session in market_sessions if session >= listing_date)
-        if tuple(dates) != eligible_sessions or len(dates) != stock["availableSessions"]:
+        observed_dates = tuple(sorted((*dates, *no_quote_dates)))
+        if (
+            tuple(observed_dates) != eligible_sessions
+            or len(observed_dates) != stock["availableSessions"]
+        ):
             raise SnapshotValidationError(f"股票快照歷史交易日有不合理缺口：{entry.market} {entry.code}。")
         expected_short_history_reason: Literal["listing-history"] | None = None
         if len(eligible_sessions) < len(market_sessions):
             expected_short_history_reason = "listing-history"
         if stock["shortHistoryReason"] != expected_short_history_reason:
             raise SnapshotValidationError(f"股票快照短歷史原因無效：{entry.market} {entry.code}。")
+        if snapshot_version == SNAPSHOT_VERSION:
+            _validate_suspension_evidence_for_history(
+                market=entry.market,
+                code=entry.code,
+                listing_date=listing_date,
+                bar_dates=tuple(dates),
+                no_quote_evidence=tuple(parsed_no_quote_evidence),
+                market_sessions=market_sessions,
+                suspension_intervals=suspension_intervals,
+            )
     actions = stock["corporateActions"]
     if not isinstance(actions, list):
         raise SnapshotValidationError("股票快照公司行動欄位無效。")
@@ -1112,6 +1450,13 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
         if not isinstance(document["snapshotHash"], str) or len(document["snapshotHash"]) != 64:
             raise ValueError
         datetime.fromisoformat(document["generatedAt"])
+        calendar_evidence: CalendarEvidence | None = None
+        suspension_intervals: tuple[SuspensionInterval, ...] = ()
+        if snapshot_version == SNAPSHOT_VERSION:
+            calendar_evidence = _calendar_evidence_from_json(document["calendar"])
+            suspension_intervals = _suspension_intervals_from_json(document["suspensionEvidence"])
+        elif "calendar" in document or "suspensionEvidence" in document:
+            raise ValueError
         if set(markets_value) != {"TWSE", "TPEx"}:
             raise ValueError
         markets = {
@@ -1121,9 +1466,13 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
         if any(not isinstance(value, dict) for value in symbols_value):
             raise TypeError
         if snapshot_version == LEGACY_SNAPSHOT_VERSION and any(
-            any(field in value for field in ("listingDate", "availableSessions", "shortHistoryReason"))
+            any(field in value for field in ("listingDate", "availableSessions", "shortHistoryReason", "noQuoteCount"))
             for value in symbols_value
         ):
+            raise ValueError
+        if snapshot_version == PREVIOUS_SNAPSHOT_VERSION and any("noQuoteCount" in value for value in symbols_value):
+            raise ValueError
+        if snapshot_version == SNAPSHOT_VERSION and any("noQuoteCount" not in value for value in symbols_value):
             raise ValueError
         symbols = tuple(
             StockIndexEntry(
@@ -1137,9 +1486,10 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
                 first_date=value["firstDate"],
                 last_date=value["lastDate"],
                 bar_count=value["barCount"],
-                listing_date=value.get("listingDate") if snapshot_version == SNAPSHOT_VERSION else None,
-                available_sessions=value.get("availableSessions", 0) if snapshot_version == SNAPSHOT_VERSION else 0,
-                short_history_reason=value.get("shortHistoryReason") if snapshot_version == SNAPSHOT_VERSION else None,
+                listing_date=value.get("listingDate") if snapshot_version in HISTORY_METADATA_SNAPSHOT_VERSIONS else None,
+                available_sessions=value.get("availableSessions", 0) if snapshot_version in HISTORY_METADATA_SNAPSHOT_VERSIONS else 0,
+                short_history_reason=value.get("shortHistoryReason") if snapshot_version in HISTORY_METADATA_SNAPSHOT_VERSIONS else None,
+                no_quote_count=value.get("noQuoteCount", 0) if snapshot_version == SNAPSHOT_VERSION else 0,
             )
             for value in symbols_value
         )
@@ -1155,12 +1505,38 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
                 or not entry.data_path.startswith("data/stocks/")
                 or len(entry.digest) != 64
                 or entry.size <= 0
-                or entry.bar_count < 1
             ):
                 raise ValueError
-            date.fromisoformat(entry.first_date)
-            date.fromisoformat(entry.last_date)
             if snapshot_version == SNAPSHOT_VERSION:
+                if (
+                    not isinstance(entry.bar_count, int)
+                    or isinstance(entry.bar_count, bool)
+                    or entry.bar_count < 0
+                    or not isinstance(entry.no_quote_count, int)
+                    or isinstance(entry.no_quote_count, bool)
+                    or entry.no_quote_count < 0
+                    or entry.bar_count + entry.no_quote_count < 1
+                    or entry.bar_count + entry.no_quote_count > RETENTION_SESSIONS
+                    or entry.bar_count == 0 and (entry.first_date is not None or entry.last_date is not None)
+                    or entry.bar_count > 0 and (not isinstance(entry.first_date, str) or not isinstance(entry.last_date, str))
+                ):
+                    raise ValueError
+                if entry.first_date is not None:
+                    date.fromisoformat(entry.first_date)
+                if entry.last_date is not None:
+                    date.fromisoformat(entry.last_date)
+            else:
+                if (
+                    not isinstance(entry.bar_count, int)
+                    or isinstance(entry.bar_count, bool)
+                    or entry.bar_count < 1
+                    or not isinstance(entry.first_date, str)
+                    or not isinstance(entry.last_date, str)
+                ):
+                    raise ValueError
+                date.fromisoformat(entry.first_date)
+                date.fromisoformat(entry.last_date)
+            if snapshot_version in HISTORY_METADATA_SNAPSHOT_VERSIONS:
                 if (
                     not isinstance(entry.listing_date, str)
                     or not isinstance(entry.available_sessions, int)
@@ -1179,6 +1555,8 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
             generated_at=document["generatedAt"],
             markets=markets,
             symbols=symbols,
+            calendar=calendar_evidence,
+            suspension_intervals=suspension_intervals,
         )
     except (KeyError, TypeError, ValueError) as error:
         raise SnapshotValidationError("manifest 欄位格式無效。") from error
@@ -1186,6 +1564,18 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
     document_without_hash.pop("snapshotHash")
     if _digest(_canonical_json_bytes(document_without_hash)) != manifest.snapshot_hash:
         raise SnapshotValidationError("manifest snapshotHash 驗證失敗。")
+    if manifest.calendar is not None and any(
+        cutoff.calendar_source_url != manifest.calendar.source_url
+        or cutoff.calendar_valid_through != manifest.calendar.valid_through
+        for cutoff in manifest.markets.values()
+    ):
+        raise SnapshotValidationError("manifest 年度日曆與市場交易日視窗不一致。")
+    if manifest.calendar is not None:
+        closure_dates = {closure.trading_date.isoformat() for closure in manifest.calendar.emergency_closures}
+        if any(closure_dates & set(cutoff.trading_sessions) for cutoff in manifest.markets.values()):
+            raise SnapshotValidationError("manifest 交易日視窗不可包含緊急市場休市日。")
+    if any((interval.market, interval.code) not in {(entry.market, entry.code) for entry in manifest.symbols} for interval in manifest.suspension_intervals):
+        raise SnapshotValidationError("manifest 停止買賣區間包含不存在的普通股。")
     _validate_market_cutoffs(manifest.markets)
     return manifest
 
@@ -1230,6 +1620,21 @@ def _market_cutoff_from_json(market: str, value: object) -> MarketCutoff:
     )
 
 
+def _calendar_evidence_from_json(value: object) -> CalendarEvidence:
+    if not isinstance(value, dict):
+        raise ValueError("calendar 必須是 JSON 物件。")
+    source_url = value["sourceUrl"]
+    valid_through = value["validThrough"]
+    _official_evidence_url(source_url)
+    date.fromisoformat(valid_through)
+    closures = parse_emergency_market_closure_evidence(value["emergencyClosureEvidence"])
+    return CalendarEvidence(
+        source_url=source_url,
+        valid_through=valid_through,
+        emergency_closures=closures,
+    )
+
+
 def _load_previous_manifest(previous: Path | SnapshotManifest | None) -> SnapshotManifest | None:
     if previous is None:
         return None
@@ -1242,12 +1647,14 @@ def _load_previous_bars(
     previous: Path | SnapshotManifest | None,
 ) -> tuple[
     dict[tuple[Market, str], list[_NormalizedBar]],
+    dict[tuple[Market, str], list[NoQuoteEvidence]],
     dict[tuple[Market, str], set[str]],
 ]:
     if previous is None or isinstance(previous, SnapshotManifest):
-        return {}, {}
+        return {}, {}, {}
     manifest = validate_snapshot(previous)
     bars_by_symbol: dict[tuple[Market, str], list[_NormalizedBar]] = {}
+    no_quote_by_symbol: dict[tuple[Market, str], list[NoQuoteEvidence]] = {}
     sources_by_symbol: dict[tuple[Market, str], set[str]] = {}
     for entry in manifest.symbols:
         stock = json.loads((previous / entry.data_path).read_text(encoding="utf-8"))
@@ -1268,7 +1675,18 @@ def _load_previous_bars(
             )
             for value in stock["bars"]
         ]
-    return bars_by_symbol, sources_by_symbol
+        if manifest.snapshot_version == SNAPSHOT_VERSION:
+            no_quote_by_symbol[(entry.market, entry.code)] = [
+                NoQuoteEvidence(
+                    market=value["market"],
+                    code=value["code"],
+                    trading_date=date.fromisoformat(value["date"]),
+                    reason=value["reason"],
+                    source_url=value["sourceUrl"],
+                )
+                for value in stock["noQuoteEvidence"]
+            ]
+    return bars_by_symbol, no_quote_by_symbol, sources_by_symbol
 
 
 def _bar_json(bar: _NormalizedBar) -> dict[str, Any]:
@@ -1298,6 +1716,65 @@ def _action_json(action: CorporateAction) -> dict[str, Any]:
     }
 
 
+def _no_quote_evidence_json(evidence: NoQuoteEvidence) -> dict[str, str]:
+    return {
+        "market": evidence.market,
+        "code": evidence.code,
+        "date": evidence.trading_date.isoformat(),
+        "reason": evidence.reason,
+        "sourceUrl": evidence.source_url,
+    }
+
+
+def _calendar_evidence_from_trading_calendar(calendar: TradingCalendar) -> CalendarEvidence:
+    return CalendarEvidence(
+        source_url=calendar.source_url,
+        valid_through=calendar.valid_through.isoformat(),
+        emergency_closures=calendar.emergency_closures,
+    )
+
+
+def _calendar_evidence_json(evidence: CalendarEvidence) -> dict[str, Any]:
+    return {
+        "sourceUrl": evidence.source_url,
+        "validThrough": evidence.valid_through,
+        "emergencyClosureEvidence": {
+            "schemaVersion": EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+            "closures": [
+                {
+                    "date": closure.trading_date.isoformat(),
+                    "reason": closure.reason,
+                    "sourceUrls": list(closure.source_urls),
+                }
+                for closure in evidence.emergency_closures
+            ],
+        },
+    }
+
+
+def _suspension_evidence_json(intervals: Sequence[SuspensionInterval]) -> dict[str, Any]:
+    return {
+        "schemaVersion": SUSPENSION_EVIDENCE_SCHEMA_VERSION,
+        "intervals": [
+            {
+                "market": interval.market,
+                "code": interval.code,
+                "startDate": interval.start_date.isoformat(),
+                "endDateExclusive": (
+                    interval.end_date_exclusive.isoformat() if interval.end_date_exclusive is not None else None
+                ),
+                "reason": interval.reason,
+                "sourceUrls": list(interval.source_urls),
+            }
+            for interval in intervals
+        ],
+    }
+
+
+def _suspension_intervals_from_json(value: object) -> tuple[SuspensionInterval, ...]:
+    return parse_suspension_interval_evidence(value)
+
+
 def _market_cutoff_json(cutoff: MarketCutoff) -> dict[str, Any]:
     return {
         "cutoffDate": cutoff.cutoff_date,
@@ -1324,6 +1801,7 @@ def _stock_entry_json(entry: StockIndexEntry) -> dict[str, Any]:
         "listingDate": entry.listing_date,
         "availableSessions": entry.available_sessions,
         "shortHistoryReason": entry.short_history_reason,
+        "noQuoteCount": entry.no_quote_count,
     }
 
 
@@ -1375,6 +1853,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     bootstrap.add_argument("--source-commit", required=True, help="對應的完整 source commit")
     bootstrap.add_argument("--cache", type=Path, default=Path(".cache/market-snapshot"), help="可續跑快取目錄")
     bootstrap.add_argument("--overrides", type=Path, default=DEFAULT_OVERRIDES_PATH, help="公司行動與下市證據覆寫檔")
+    bootstrap.add_argument("--suspensions", type=Path, default=DEFAULT_SUSPENSION_INTERVALS_PATH, help="官方停止買賣區間佐證檔")
 
     update = commands.add_parser("update", help="從前一成功快照追加一個官方交易日")
     update.add_argument("--previous", type=Path, required=True, help="前一成功快照目錄")
@@ -1382,6 +1861,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     update.add_argument("--source-commit", required=True, help="對應的完整 source commit")
     update.add_argument("--cache", type=Path, default=Path(".cache/market-snapshot"), help="可續跑快取目錄")
     update.add_argument("--overrides", type=Path, default=DEFAULT_OVERRIDES_PATH, help="公司行動與下市證據覆寫檔")
+    update.add_argument("--suspensions", type=Path, default=DEFAULT_SUSPENSION_INTERVALS_PATH, help="官方停止買賣區間佐證檔")
 
     args = parser.parse_args(argv)
     try:
@@ -1398,11 +1878,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"快照封裝完成：{manifest.snapshot_hash}。")
             return 0
         if args.command == "bootstrap":
-            manifest = bootstrap_snapshot(args.output, args.source_commit, args.cache, args.overrides)
+            manifest = bootstrap_snapshot(args.output, args.source_commit, args.cache, args.overrides, args.suspensions)
             print(f"已建立 120 交易日基準快照：{manifest.snapshot_hash}。")
             return 0
         if args.command == "update":
-            manifest, updated = update_snapshot(args.previous, args.output, args.source_commit, args.cache, args.overrides)
+            manifest, updated = update_snapshot(
+                args.previous,
+                args.output,
+                args.source_commit,
+                args.cache,
+                args.overrides,
+                args.suspensions,
+            )
             if updated:
                 print(f"已追加官方交易日快照：{manifest.snapshot_hash}。")
             else:
@@ -1551,7 +2038,12 @@ def _official_evidence_url(value: object) -> str:
         raise SnapshotValidationError("官方證據網址的連接埠無效。") from error
     if (
         parsed.scheme != "https"
-        or parsed.hostname not in {"openapi.twse.com.tw", "www.twse.com.tw", "www.tpex.org.tw"}
+        or parsed.hostname not in {
+            "openapi.twse.com.tw",
+            "www.twse.com.tw",
+            "www.tpex.org.tw",
+            "dsp.tpex.org.tw",
+        }
         or port not in {None, 443}
         or parsed.username is not None
         or parsed.password is not None
@@ -1598,6 +2090,7 @@ def bootstrap_snapshot(
     source_commit: str,
     cache_directory: Path,
     overrides_path: Path = DEFAULT_OVERRIDES_PATH,
+    suspension_intervals_path: Path = DEFAULT_SUSPENSION_INTERVALS_PATH,
     *,
     now: datetime | None = None,
 ) -> SnapshotManifest:
@@ -1608,17 +2101,18 @@ def bootstrap_snapshot(
     symbols = fetch_supported_symbols()
     actions = fetch_corporate_actions()
     override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
+    suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
     market_sessions: list[MarketSession] = []
     for session_date in sessions:
         market_sessions.append(
-            MarketSession(
+            _market_session_from_response(
                 "TWSE",
                 _fetch_cached_daily("TWSE", session_date, cache_directory, fetch_twse_historical_daily),
             )
         )
         _throttle_official_requests()
         market_sessions.append(
-            MarketSession(
+            _market_session_from_response(
                 "TPEx",
                 _fetch_cached_daily("TPEx", session_date, cache_directory, fetch_tpex_historical_daily),
             )
@@ -1632,6 +2126,7 @@ def bootstrap_snapshot(
         corporate_actions=(*actions, *override_actions),
         calendar=calendar,
         retired_symbols=retired_symbols,
+        suspension_intervals=suspension_intervals,
     )
     return build_snapshot(None, build_input, output)
 
@@ -1642,6 +2137,7 @@ def update_snapshot(
     source_commit: str,
     cache_directory: Path,
     overrides_path: Path = DEFAULT_OVERRIDES_PATH,
+    suspension_intervals_path: Path = DEFAULT_SUSPENSION_INTERVALS_PATH,
     *,
     now: datetime | None = None,
 ) -> tuple[SnapshotManifest, bool]:
@@ -1650,6 +2146,8 @@ def update_snapshot(
     previous_manifest: SnapshotManifest | None = None
     try:
         previous_manifest = validate_snapshot(previous_directory)
+        if previous_manifest.snapshot_version == PREVIOUS_SNAPSHOT_VERSION:
+            raise SnapshotValidationError(_v2_rebootstrap_message())
         calendar = fetch_trading_calendar()
         generated_at = now or datetime.now(calendar.timezone)
         expected = expected_cutoff_date(calendar, generated_at)
@@ -1671,23 +2169,27 @@ def update_snapshot(
         symbols = fetch_supported_symbols()
         actions = fetch_corporate_actions()
         override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
+        suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
         if len(missing_sessions) == 1:
-            twse_quotes = _fetch_cached_daily("TWSE", expected, cache_directory, fetch_twse_daily)
+            twse_response = _fetch_cached_daily("TWSE", expected, cache_directory, fetch_twse_daily)
             _throttle_official_requests()
-            tpex_quotes = _fetch_cached_daily("TPEx", expected, cache_directory, fetch_tpex_daily)
-            market_sessions = (MarketSession("TWSE", twse_quotes), MarketSession("TPEx", tpex_quotes))
+            tpex_response = _fetch_cached_daily("TPEx", expected, cache_directory, fetch_tpex_daily)
+            market_sessions = (
+                _market_session_from_response("TWSE", twse_response),
+                _market_session_from_response("TPEx", tpex_response),
+            )
         else:
             market_sessions_list: list[MarketSession] = []
             for session_date in missing_sessions:
                 market_sessions_list.append(
-                    MarketSession(
+                    _market_session_from_response(
                         "TWSE",
                         _fetch_cached_daily("TWSE", session_date, cache_directory, fetch_twse_historical_daily),
                     )
                 )
                 _throttle_official_requests()
                 market_sessions_list.append(
-                    MarketSession(
+                    _market_session_from_response(
                         "TPEx",
                         _fetch_cached_daily("TPEx", session_date, cache_directory, fetch_tpex_historical_daily),
                     )
@@ -1702,6 +2204,7 @@ def update_snapshot(
             corporate_actions=(*actions, *override_actions),
             calendar=calendar,
             retired_symbols=retired_symbols,
+            suspension_intervals=suspension_intervals,
         )
         return build_snapshot(previous_directory, build_input, output), True
     finally:
@@ -1862,37 +2365,64 @@ def _recent_trading_sessions(calendar: TradingCalendar, now: datetime, count: in
     return tuple(reversed(sessions))
 
 
+def _market_session_from_response(market: Market, response: DailyMarketResponse) -> MarketSession:
+    if not response.quotes and not response.no_quote_evidence:
+        raise SnapshotValidationError(f"{market} 官方日行情不可為空。")
+    return MarketSession(market, response.quotes, response.no_quote_evidence)
+
+
 def _fetch_cached_daily(
     market: Market,
     session_date: date,
     cache_directory: Path,
     fetcher: Any,
-) -> tuple[DailyQuote, ...]:
+) -> DailyMarketResponse:
     path = cache_directory / market / f"{session_date.isoformat()}.json"
     if path.is_file():
         try:
-            quotes = _quotes_from_cache(json.loads(path.read_text(encoding="utf-8")))
+            response = _daily_response_from_cache(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
             raise SnapshotValidationError(f"快取資料無效：{path}。") from error
-        if not quotes or any(quote.market != market or quote.trading_date != session_date for quote in quotes):
+        if (
+            not response.quotes and not response.no_quote_evidence
+            or any(quote.market != market or quote.trading_date != session_date for quote in response.quotes)
+            or any(
+                evidence.market != market or evidence.trading_date != session_date
+                for evidence in response.no_quote_evidence
+            )
+        ):
             raise SnapshotValidationError(f"快取資料市場或交易日不符：{path}。")
-        return quotes
-    quotes = _fetch_with_retries(market, session_date, fetcher)
-    if any(quote.market != market or quote.trading_date != session_date for quote in quotes):
+        return response
+    response = _fetch_with_retries(market, session_date, fetcher)
+    if (
+        any(quote.market != market or quote.trading_date != session_date for quote in response.quotes)
+        or any(
+            evidence.market != market or evidence.trading_date != session_date
+            for evidence in response.no_quote_evidence
+        )
+    ):
         raise SnapshotValidationError(f"下載日行情市場或交易日不符：{market} {session_date.isoformat()}。")
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_bytes(path, _canonical_json_bytes([_quote_cache_json(quote) for quote in quotes]))
-    return quotes
+    _write_bytes(
+        path,
+        _canonical_json_bytes(
+            {
+                "quotes": [_quote_cache_json(quote) for quote in response.quotes],
+                "noQuoteEvidence": [_no_quote_evidence_json(evidence) for evidence in response.no_quote_evidence],
+            }
+        ),
+    )
+    return response
 
 
-def _fetch_with_retries(market: Market, session_date: date, fetcher: Any) -> tuple[DailyQuote, ...]:
+def _fetch_with_retries(market: Market, session_date: date, fetcher: Any) -> DailyMarketResponse:
     last_error: Exception | None = None
     for attempt in range(1, 4):
         try:
-            quotes = fetcher(session_date)
-            if not quotes:
+            response = _as_daily_market_response(fetcher(session_date))
+            if not response.quotes and not response.no_quote_evidence:
                 raise SnapshotValidationError(f"{market} 官方日行情不可為空。")
-            return quotes
+            return response
         except (MarketSourceError, OSError, SnapshotValidationError) as error:
             last_error = error
             if attempt < 3:
@@ -1919,6 +2449,45 @@ def _quote_cache_json(quote: DailyQuote) -> dict[str, Any]:
         "sourcePrecision": str(quote.source_precision),
         "sourceUrl": quote.source_url,
     }
+
+
+def _as_daily_market_response(payload: object) -> DailyMarketResponse:
+    if isinstance(payload, DailyMarketResponse):
+        return payload
+    if isinstance(payload, tuple) and all(isinstance(quote, DailyQuote) for quote in payload):
+        return DailyMarketResponse(payload, ())
+    if isinstance(payload, list) and all(isinstance(quote, DailyQuote) for quote in payload):
+        return DailyMarketResponse(tuple(payload), ())
+    raise SnapshotValidationError("官方日行情回應格式無效。")
+
+
+def _daily_response_from_cache(payload: object) -> DailyMarketResponse:
+    if isinstance(payload, list):
+        # 舊版快取只含合法 K 線；最終 v3 完整性驗證仍會拒絕無證據缺日。
+        return DailyMarketResponse(_quotes_from_cache(payload), ())
+    if not isinstance(payload, dict):
+        raise ValueError("快取日行情必須是物件。")
+    quotes = _quotes_from_cache(payload["quotes"])
+    evidence_value = payload["noQuoteEvidence"]
+    if not isinstance(evidence_value, list):
+        raise ValueError("快取未報價證據必須是陣列。")
+    evidence: list[NoQuoteEvidence] = []
+    for value in evidence_value:
+        if not isinstance(value, dict):
+            raise ValueError("快取未報價證據列必須是物件。")
+        market = value["market"]
+        if market not in {"TWSE", "TPEx"} or value["reason"] != "official-no-quote":
+            raise ValueError("快取未報價證據格式無效。")
+        evidence.append(
+            NoQuoteEvidence(
+                market=market,
+                code=value["code"],
+                trading_date=date.fromisoformat(value["date"]),
+                reason=value["reason"],
+                source_url=value["sourceUrl"],
+            )
+        )
+    return DailyMarketResponse(quotes, tuple(evidence))
 
 
 def _quotes_from_cache(payload: object) -> tuple[DailyQuote, ...]:

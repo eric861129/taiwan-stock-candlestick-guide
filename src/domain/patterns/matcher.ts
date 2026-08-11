@@ -2,6 +2,7 @@ import type {
   AnalysisContext,
   AnalysisResult,
   CorporateAction,
+  NoQuoteEvidence,
   OhlcvBar,
   PatternMatchResult,
   RuleEvaluation,
@@ -144,8 +145,39 @@ function isCorporateAction(value: unknown): value is CorporateAction {
     && action.verifiedAt.length > 0;
 }
 
+function isNoQuoteEvidence(value: unknown): value is NoQuoteEvidence {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const evidence = value as Record<string, unknown>;
+  return (evidence.market === 'TWSE' || evidence.market === 'TPEx')
+    && typeof evidence.code === 'string'
+    && /^[0-9]{4,6}$/.test(evidence.code)
+    && isIsoDate(evidence.date)
+    && (evidence.reason === 'official-no-quote' || evidence.reason === 'official-suspension')
+    && typeof evidence.sourceUrl === 'string'
+    && evidence.sourceUrl.startsWith('https://');
+}
+
 function hasValidCorporateActions(snapshot: StockSnapshot): boolean {
   return Array.isArray(snapshot.corporateActions) && snapshot.corporateActions.every(isCorporateAction);
+}
+
+function hasValidNoQuoteEvidence(snapshot: StockSnapshot): boolean {
+  if (!Array.isArray(snapshot.noQuoteEvidence)) {
+    return false;
+  }
+
+  const barDates = new Set(snapshot.bars.map((bar) => bar.date));
+  return snapshot.noQuoteEvidence.every((evidence, index) => {
+    const previous = snapshot.noQuoteEvidence[index - 1];
+    return isNoQuoteEvidence(evidence)
+      && evidence.market === snapshot.market
+      && evidence.code === snapshot.code
+      && !barDates.has(evidence.date)
+      && (previous === undefined || (isNoQuoteEvidence(previous) && previous.date < evidence.date));
+  });
 }
 
 function hasValidSnapshotMetadata(snapshot: StockSnapshot): boolean {
@@ -185,13 +217,22 @@ function hasValidSnapshotShape(snapshot: StockSnapshot): boolean {
     && typeof snapshot.priceMode === 'string'
     && snapshot.priceMode.trim().length > 0
     && Array.isArray(snapshot.bars)
-    && snapshot.bars.length > 0
+    && Array.isArray(snapshot.noQuoteEvidence)
+    && snapshot.bars.length + snapshot.noQuoteEvidence.length > 0
     && Array.isArray(snapshot.corporateActions)
     && hasValidSnapshotMetadata(snapshot)
     && hasValidDates(snapshot)
     && hasValidOhlcvRelationships(snapshot)
     && hasValidCorporateActions(snapshot)
+    && hasValidNoQuoteEvidence(snapshot)
   );
+}
+
+function completedLegalBars(snapshot: StockSnapshot): readonly OhlcvBar[] {
+  const latestNoQuoteDate = snapshot.noQuoteEvidence.at(-1)?.date;
+  return snapshot.bars.filter((bar) => (
+    bar.completed !== false && (latestNoQuoteDate === undefined || bar.date > latestNoQuoteDate)
+  ));
 }
 
 function resolveAnalysisBarLimit(options: AnalyzePatternsOptions): number | undefined {
@@ -209,6 +250,7 @@ function analysisWarnings(
   cutoffDate: string,
   freshness: AnalysisContext['freshness'],
   actions: readonly CorporateAction[],
+  noQuoteEvidence: readonly NoQuoteEvidence[],
 ): string[] {
   const warnings: string[] = [];
 
@@ -223,6 +265,12 @@ function analysisWarnings(
   }
   if (actions.some((action) => action.affectsPriceContinuity)) {
     warnings.push('分析窗內有影響價格連續性的公司行動；候選窗交疊時，相關規則不參與計分。');
+  }
+  if (noQuoteEvidence.some((evidence) => evidence.reason === 'official-no-quote')) {
+    warnings.push('官方曾明示交易日未報價；型態比對只使用該日之後連續的合法日 K。');
+  }
+  if (noQuoteEvidence.some((evidence) => evidence.reason === 'official-suspension')) {
+    warnings.push('交易所公告停止買賣；型態比對不跨越停牌區間。');
   }
 
   return warnings;
@@ -260,7 +308,7 @@ function buildContext(
     affectedRuleIds: suppressedRules,
     suppressedRules,
     corporateActions: actions,
-    warnings: analysisWarnings(snapshot.cutoffDate ?? analyzedTo, freshness, actions),
+    warnings: analysisWarnings(snapshot.cutoffDate ?? analyzedTo, freshness, actions, snapshot.noQuoteEvidence),
   };
 }
 
@@ -413,8 +461,7 @@ export function evaluateAllMvpCardsForTesting(
     return [];
   }
 
-  const analysisBars = snapshot.bars
-    .filter((bar) => bar.completed !== false)
+  const analysisBars = completedLegalBars(snapshot)
     .slice(-analysisBarLimit);
   if (analysisBars.length === 0) {
     return [];
@@ -461,17 +508,24 @@ export function analyzePatterns(
   if (analysisBarLimit === undefined) {
     return unavailable('schema-error', '分析窗大小必須是正整數。');
   }
-  const completedBars = snapshot.bars.filter((bar) => bar.completed !== false);
+  const completedBars = completedLegalBars(snapshot);
   if (completedBars.length === 0) {
-    const analyzedFrom = snapshot.bars[0]?.date;
-    const analyzedTo = snapshot.bars.at(-1)?.date;
+    const observedDates = [
+      ...snapshot.bars.map((bar) => bar.date),
+      ...snapshot.noQuoteEvidence.map((evidence) => evidence.date),
+    ].sort();
+    const analyzedFrom = observedDates[0];
+    const analyzedTo = observedDates.at(-1);
     if (!analyzedFrom || !analyzedTo) {
       return unavailable('schema-error', '快照沒有可分析的日 K 資料。');
     }
 
     const actions = snapshot.corporateActions.filter((action) => action.date >= analyzedFrom && action.date <= analyzedTo);
     const mvpCardIds = PATTERN_CARDS.filter((card) => card.matchSupport === 'mvp').map((card) => card.id);
-    const reasonCodes = ['no-completed-bars'];
+    const reasonCodes = unique([
+      ...snapshot.noQuoteEvidence.map((evidence) => evidence.reason),
+      'no-completed-bars',
+    ]);
     const context = buildContext(
       snapshot,
       options,

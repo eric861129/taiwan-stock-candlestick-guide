@@ -22,7 +22,7 @@ import StockAnalyzer from './StockAnalyzer.vue';
 
 const manifestFixture = {
   schemaVersion: 1,
-  snapshotVersion: 2,
+  snapshotVersion: 3,
   sourceCommit: 'a'.repeat(40),
   snapshotHash: 'b'.repeat(64),
   generatedAt: '2026-08-11T18:00:00+08:00',
@@ -55,6 +55,7 @@ const manifestFixture = {
     firstDate: '2026-02-25',
     lastDate: '2026-08-11',
     barCount: 120,
+    noQuoteCount: 0,
     listingDate: '1994-09-05',
     availableSessions: 120,
     shortHistoryReason: null,
@@ -69,6 +70,7 @@ const manifestFixture = {
     firstDate: '2026-02-25',
     lastDate: '2026-08-11',
     barCount: 120,
+    noQuoteCount: 0,
     listingDate: '2003-06-25',
     availableSessions: 120,
     shortHistoryReason: null,
@@ -92,6 +94,7 @@ const snapshotFixture = {
     date: '2026-08-11', open: 1000, high: 1015, low: 995, close: 1010,
     volumeShares: 21_345_678, sourcePrecision: 0.01, comparisonUnit: 5,
   }],
+  noQuoteEvidence: [],
   corporateActions: [],
   sourceUrls: ['https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
 };
@@ -176,6 +179,65 @@ describe('StockAnalyzer', () => {
 
     expect(wrapper.text()).toContain('此證券不是第一版支援的普通股。');
     expect(wrapper.text()).toContain('請輸入上市或上櫃普通股代碼');
+  });
+
+  it('keeps an official no-quote-only snapshot analyzable without inventing a chart candle', async () => {
+    clientMocks.loadStockSnapshot.mockResolvedValue({
+      ...snapshotFixture,
+      bars: [],
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-11',
+        reason: 'official-no-quote',
+        sourceUrl: 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',
+      }],
+    });
+    matcherMocks.analyzePatterns.mockReturnValue({
+      status: 'insufficient-evidence',
+      reasonCodes: ['official-no-quote', 'no-completed-bars'],
+      context: { ...analysisContext, analyzedBarCount: 0 },
+    });
+    const wrapper = mount(StockAnalyzer);
+    await flushPromises();
+
+    await wrapper.get('input[name="stock-code"]').setValue('2330');
+    await wrapper.get('form[data-stock-search]').trigger('submit');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('股票日 K 最後交易日 無合法日 K');
+    expect(wrapper.text()).toContain('官方未報價證據 2026-08-11');
+    expect(wrapper.findComponent({ name: 'CandlestickChart' }).exists()).toBe(false);
+  });
+
+  it('shows an auditable official suspension reason instead of presenting it as a price candle gap', async () => {
+    const announcementUrl = 'https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB';
+    clientMocks.loadStockSnapshot.mockResolvedValue({
+      ...snapshotFixture,
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-10',
+        reason: 'official-suspension',
+        sourceUrl: announcementUrl,
+      }],
+      sourceUrls: [...snapshotFixture.sourceUrls, announcementUrl],
+    });
+    matcherMocks.analyzePatterns.mockReturnValue({
+      status: 'no-clear-pattern',
+      matches: [],
+      context: analysisContext,
+    });
+    const wrapper = mount(StockAnalyzer);
+    await flushPromises();
+
+    await wrapper.get('input[name="stock-code"]').setValue('2330');
+    await wrapper.get('form[data-stock-search]').trigger('submit');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('官方停牌證據 2026-08-10');
+    expect(wrapper.text()).toContain('交易所公告停止買賣');
+    expect(wrapper.get(`a[href="${announcementUrl}"]`).text()).toBe('查看官方來源');
   });
 
   it('將盤後資料載入失敗呈現為 unavailable 結果，而非股票輸入錯誤', async () => {

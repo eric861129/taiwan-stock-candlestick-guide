@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "intervals": [
+    {
+      "market": "TWSE",
+      "code": "1435",
+      "startDate": "2026-04-29",
+      "endDateExclusive": "2026-06-18",
+      "reason": "因財務報告逾期重編申報而停止買賣。",
+      "sourceUrls": [
+        "https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB",
+        "https://www.twse.com.tw/zh/announcement/announcement/detail.html?06B39790696811F199A2F6A8670AFEDB"
+      ]
+    },
+    {
+      "market": "TWSE",
+      "code": "1459",
+      "startDate": "2026-07-23",
+      "endDateExclusive": "2026-08-03",
+      "reason": "現金減資換發新股。",
+      "sourceUrls": [
+        "https://www.twse.com.tw/zh/announcement/announcement/detail.html?5B55172C75F211F199A2F6A8670AFEDB"
+      ]
+    },
+    {
+      "market": "TWSE",
+      "code": "1589",
+      "startDate": "2026-04-07",
+      "endDateExclusive": null,
+      "reason": "未依法令期限公告申報 114 年度財務報告。",
+      "sourceUrls": [
+        "https://www.twse.com.tw/zh/announcement/announcement/detail.html?FE10540B2DA711F199A2F6A8670AFEDB"
+      ]
+    },
+    {
+      "market": "TWSE",
+      "code": "2380",
+      "startDate": "2026-06-17",
+      "endDateExclusive": "2026-06-29",
+      "reason": "減資彌補虧損換發新股。",
+      "sourceUrls": [
+        "https://www.twse.com.tw/zh/announcement/announcement/detail.html?6E41FEF6558711F199A2F6A8670AFEDB"
+      ]
+    },
+    {
+      "market": "TPEx",
+      "code": "1591",
+      "startDate": "2026-06-11",
+      "endDateExclusive": "2026-07-22",
+      "reason": "停止買賣至恢復交易公告日之前。",
+      "sourceUrls": [
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDA2MzIzMDQ%3D&content_file=MTE1MDA2MzIzMDQuaHRtbA%3D%3D",
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDAwNDgwOTE%3D&content_file=MTE1MDAwNDgwOTEuaHRtbA%3D%3D"
+      ]
+    },
+    {
+      "market": "TPEx",
+      "code": "3086",
+      "startDate": "2026-04-09",
+      "endDateExclusive": "2026-04-20",
+      "reason": "股票面額變更全面換發新股。",
+      "sourceUrls": [
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDAwMTQyMjE%3D&content_file=MTE1MDAwMTQyMjEuaHRtbA%3D%3D"
+      ]
+    },
+    {
+      "market": "TPEx",
+      "code": "3152",
+      "startDate": "2026-06-23",
+      "endDateExclusive": "2026-06-30",
+      "reason": "現金減資換發新股。",
+      "sourceUrls": [
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDAwMzczMTE%3D&content_file=MTE1MDAwMzczMTEuaHRtbA%3D%3D"
+      ]
+    },
+    {
+      "market": "TPEx",
+      "code": "4804",
+      "startDate": "2026-04-14",
+      "endDateExclusive": null,
+      "reason": "停止買賣原因持續逾三年未消滅。",
+      "sourceUrls": [
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDIwMDc3NjE%3D&content_file=MTE1MDIwMDc3NjEuaHRtbA%3D%3D"
+      ]
+    },
+    {
+      "market": "TPEx",
+      "code": "5381",
+      "startDate": "2026-04-01",
+      "endDateExclusive": "2026-04-13",
+      "reason": "更名暨減資彌補虧損換發新股。",
+      "sourceUrls": [
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDAwMTMzMjE%3D&content_file=MTE1MDAwMTMzMjEuaHRtbA%3D%3D"
+      ]
+    },
+    {
+      "market": "TPEx",
+      "code": "5904",
+      "startDate": "2026-07-30",
+      "endDateExclusive": "2026-08-10",
+      "reason": "股票面額變更全面換發新股。",
+      "sourceUrls": [
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDAwNDY1NDE%3D&content_file=MTE1MDAwNDY1NDEuaHRtbA%3D%3D"
+      ]
+    },
+    {
+      "market": "TPEx",
+      "code": "8291",
+      "startDate": "2025-08-20",
+      "endDateExclusive": "2026-02-25",
+      "reason": "停止買賣原因持續逾三年未消滅。",
+      "sourceUrls": [
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE0MDIwMTk4MjE%3D&content_file=MTE0MDIwMTk4MjEuaHRtbA%3D%3D",
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDAwMDczMzE%3D&content_file=MTE1MDAwMDczMzEuaHRtbA%3D%3D"
+      ]
+    },
+    {
+      "market": "TPEx",
+      "code": "8932",
+      "startDate": "2026-02-25",
+      "endDateExclusive": "2026-03-09",
+      "reason": "股票面額變更全面換發新股。",
+      "sourceUrls": [
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDAwMDU1NjE%3D&content_file=MTE1MDAwMDU1NjEuaHRtbA%3D%3D"
+      ]
+    },
+    {
+      "market": "TPEx",
+      "code": "8937",
+      "startDate": "2026-04-01",
+      "endDateExclusive": "2026-04-13",
+      "reason": "停止買賣至恢復交易公告日之前。",
+      "sourceUrls": [
+        "https://dsp.tpex.org.tw/web/announcement/announcement_detail.php?content_number=MTE1MDAwMTM4MzE%3D&content_file=MTE1MDAwMTM4MzEuaHRtbA%3D%3D"
+      ]
+    }
+  ]
+}

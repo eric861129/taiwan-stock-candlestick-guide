@@ -3,10 +3,30 @@ import { marketManifestSchema, stockSnapshotSchema } from './schema';
 
 const manifestFixture = {
   schemaVersion: 1,
-  snapshotVersion: 2,
+  snapshotVersion: 3,
   sourceCommit: 'a'.repeat(40),
   snapshotHash: 'b'.repeat(64),
   generatedAt: '2026-08-11T18:00:00+08:00',
+  calendar: {
+    sourceUrl: 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule',
+    validThrough: '2026-12-31',
+    emergencyClosureEvidence: {
+      schemaVersion: 1,
+      closures: [{
+        date: '2026-07-10',
+        reason: '臺灣證券交易所集中交易市場 115 年 7 月 10 日因天然災害全日休市。',
+        sourceUrls: [
+          'https://eoc.gov.taipei/News/Detail/909',
+          'https://investoredu.twse.com.tw/pages/TWSE_HotNews.aspx?Page=4',
+          'https://www.twse.com.tw/en/clearing/suspended.html',
+        ],
+      }],
+    },
+  },
+  suspensionEvidence: {
+    schemaVersion: 1,
+    intervals: [],
+  },
   markets: {
     TWSE: {
       cutoffDate: '2026-08-11',
@@ -36,6 +56,7 @@ const manifestFixture = {
     firstDate: '2026-02-25',
     lastDate: '2026-08-11',
     barCount: 120,
+    noQuoteCount: 0,
     listingDate: '1994-09-05',
     availableSessions: 120,
     shortHistoryReason: null,
@@ -44,7 +65,7 @@ const manifestFixture = {
 
 const snapshotFixture = {
   schemaVersion: 1,
-  snapshotVersion: 2,
+  snapshotVersion: 3,
   code: '2330',
   name: '台積電',
   market: 'TWSE',
@@ -72,6 +93,7 @@ const snapshotFixture = {
     comparisonUnit: 5,
     priceUnit: 'TWD',
   }],
+  noQuoteEvidence: [],
   corporateActions: [{
     date: '2026-08-11',
     type: 'cash-dividend',
@@ -85,13 +107,46 @@ const snapshotFixture = {
   ],
 };
 
-describe('market snapshot v2 schemas', () => {
+describe('market snapshot v3 schemas', () => {
   it('accepts the versioned manifest and raw stock snapshot fields used by the pipeline', () => {
     expect(marketManifestSchema.safeParse(manifestFixture).success).toBe(true);
     expect(stockSnapshotSchema.safeParse(snapshotFixture).success).toBe(true);
   });
 
-  it('rejects an unsafe manifest path, malformed digest, and non-v2 snapshot', () => {
+  it('accepts a versioned official suspension interval and its auditable stock evidence', () => {
+    const suspensionEvidence = {
+      schemaVersion: 1,
+      intervals: [{
+        market: 'TWSE',
+        code: '2330',
+        startDate: '2026-08-10',
+        endDateExclusive: '2026-08-11',
+        reason: '測試用交易所停止買賣公告。',
+        sourceUrls: ['https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB'],
+      }],
+    };
+    const stock = {
+      ...snapshotFixture,
+      bars: [],
+      availableSessions: 1,
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-10',
+        reason: 'official-suspension',
+        sourceUrl: suspensionEvidence.intervals[0].sourceUrls[0],
+      }],
+      sourceUrls: [
+        ...snapshotFixture.sourceUrls,
+        suspensionEvidence.intervals[0].sourceUrls[0],
+      ],
+    };
+
+    expect(marketManifestSchema.safeParse({ ...manifestFixture, suspensionEvidence }).success).toBe(true);
+    expect(stockSnapshotSchema.safeParse(stock).success).toBe(true);
+  });
+
+  it('rejects an unsafe manifest path, malformed digest, a non-v3 snapshot, and an unexplained gap', () => {
     expect(marketManifestSchema.safeParse({
       ...manifestFixture,
       symbols: [{ ...manifestFixture.symbols[0], dataPath: 'data/stocks/../secret.json' }],
@@ -100,10 +155,16 @@ describe('market snapshot v2 schemas', () => {
       ...manifestFixture,
       symbols: [{ ...manifestFixture.symbols[0], digest: 'not-a-sha256' }],
     }).success).toBe(false);
-    expect(stockSnapshotSchema.safeParse({ ...snapshotFixture, snapshotVersion: 1 }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({ ...snapshotFixture, snapshotVersion: 2 }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({ ...snapshotFixture, noQuoteEvidence: undefined }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({
+      ...snapshotFixture,
+      availableSessions: 2,
+      noQuoteEvidence: [],
+    }).success).toBe(false);
   });
 
-  it('matches the v2 calendar contract for unknown expected cutoffs and retained trading sessions', () => {
+  it('matches the v3 calendar contract for unknown expected cutoffs and retained trading sessions', () => {
     const unknownMarket = {
       ...manifestFixture.markets.TWSE,
       expectedCutoffDate: null,
@@ -154,6 +215,42 @@ describe('market snapshot v2 schemas', () => {
       markets: {
         ...manifestFixture.markets,
         TWSE: { ...manifestFixture.markets.TWSE, tradingSessions: [] },
+      },
+    }).success).toBe(false);
+  });
+
+  it('rejects an emergency closure that is unsourced, duplicated, or retained as a trading session', () => {
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      calendar: {
+        ...manifestFixture.calendar,
+        emergencyClosureEvidence: {
+          schemaVersion: 1,
+          closures: [{
+            ...manifestFixture.calendar.emergencyClosureEvidence.closures[0],
+            sourceUrls: [],
+          }],
+        },
+      },
+    }).success).toBe(false);
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      calendar: {
+        ...manifestFixture.calendar,
+        emergencyClosureEvidence: {
+          schemaVersion: 1,
+          closures: [
+            manifestFixture.calendar.emergencyClosureEvidence.closures[0],
+            manifestFixture.calendar.emergencyClosureEvidence.closures[0],
+          ],
+        },
+      },
+    }).success).toBe(false);
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      markets: {
+        TWSE: { ...manifestFixture.markets.TWSE, tradingSessions: ['2026-07-10', '2026-08-11'] },
+        TPEx: { ...manifestFixture.markets.TPEx, tradingSessions: ['2026-07-10', '2026-08-11'] },
       },
     }).success).toBe(false);
   });

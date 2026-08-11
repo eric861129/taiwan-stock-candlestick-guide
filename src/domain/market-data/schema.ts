@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CorporateAction, Market, OhlcvBar, StockSnapshot } from './types';
+import type { CorporateAction, Market, NoQuoteEvidence, OhlcvBar, StockSnapshot } from './types';
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -93,6 +93,99 @@ const marketCutoffSchema = z.object({
   }
 });
 
+const emergencyMarketClosureSchema = z.object({
+  date: isoDateSchema,
+  reason: z.string().trim().min(1),
+  sourceUrls: z.array(nonEmptyHttpsUrlSchema).min(1),
+}).strict();
+
+const emergencyClosureEvidenceSchema = z.object({
+  schemaVersion: z.literal(1),
+  closures: z.array(emergencyMarketClosureSchema),
+}).strict().superRefine((evidence, context) => {
+  const dates = evidence.closures.map((closure) => closure.date);
+  if (new Set(dates).size !== dates.length || dates.some((date, index) => index > 0 && date <= dates[index - 1]!)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['closures'],
+      message: '緊急市場休市佐證日期必須遞增且不得重複。',
+    });
+  }
+  for (const [index, closure] of evidence.closures.entries()) {
+    if (new Set(closure.sourceUrls).size !== closure.sourceUrls.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['closures', index, 'sourceUrls'],
+        message: '緊急市場休市佐證網址不得重複。',
+      });
+    }
+  }
+});
+
+const calendarEvidenceSchema = z.object({
+  sourceUrl: nonEmptyHttpsUrlSchema,
+  validThrough: isoDateSchema,
+  emergencyClosureEvidence: emergencyClosureEvidenceSchema,
+}).strict().superRefine((calendar, context) => {
+  if (calendar.emergencyClosureEvidence.closures.some((closure) => closure.date > calendar.validThrough)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['emergencyClosureEvidence', 'closures'],
+      message: '緊急市場休市佐證日期不得超出年度日曆範圍。',
+    });
+  }
+});
+
+const suspensionIntervalSchema = z.object({
+  market: marketSchema,
+  code: z.string().regex(/^[0-9]{4,6}$/),
+  startDate: isoDateSchema,
+  endDateExclusive: isoDateSchema.nullable(),
+  reason: z.string().trim().min(1),
+  sourceUrls: z.array(nonEmptyHttpsUrlSchema).min(1),
+}).strict().superRefine((interval, context) => {
+  if (interval.endDateExclusive !== null && interval.endDateExclusive <= interval.startDate) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['endDateExclusive'],
+      message: '停止買賣區間結束日必須晚於起始日，且採排他語意。',
+    });
+  }
+  if (new Set(interval.sourceUrls).size !== interval.sourceUrls.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceUrls'],
+      message: '停止買賣區間佐證網址不得重複。',
+    });
+  }
+});
+
+const suspensionEvidenceSchema = z.object({
+  schemaVersion: z.literal(1),
+  intervals: z.array(suspensionIntervalSchema),
+}).strict().superRefine((evidence, context) => {
+  const priorBySymbol = new Map<string, z.infer<typeof suspensionIntervalSchema>>();
+  const ordered = evidence.intervals
+    .map((interval, index) => ({ interval, index }))
+    .sort((left, right) => (
+      left.interval.market.localeCompare(right.interval.market)
+      || left.interval.code.localeCompare(right.interval.code)
+      || left.interval.startDate.localeCompare(right.interval.startDate)
+    ));
+  for (const { interval, index } of ordered) {
+    const key = `${interval.market}/${interval.code}`;
+    const prior = priorBySymbol.get(key);
+    if (prior !== undefined && (prior.endDateExclusive === null || interval.startDate < prior.endDateExclusive)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['intervals', index],
+        message: '同一股票的停止買賣區間不可重疊。',
+      });
+    }
+    priorBySymbol.set(key, interval);
+  }
+});
+
 const stockIndexEntrySchema = z.object({
   code: z.string().regex(/^[0-9]{4,6}$/),
   name: z.string().trim().min(1),
@@ -101,9 +194,10 @@ const stockIndexEntrySchema = z.object({
   dataPath: z.string().regex(DATA_PATH_PATTERN),
   digest: z.string().regex(SHA256_PATTERN),
   size: z.number().int().positive(),
-  firstDate: isoDateSchema,
-  lastDate: isoDateSchema,
-  barCount: z.number().int().positive().max(120),
+  firstDate: isoDateSchema.nullable(),
+  lastDate: isoDateSchema.nullable(),
+  barCount: z.number().int().nonnegative().max(120),
+  noQuoteCount: z.number().int().nonnegative().max(120),
   listingDate: isoDateSchema,
   availableSessions: z.number().int().positive().max(120),
   shortHistoryReason: z.enum(['listing-history']).nullable(),
@@ -116,13 +210,18 @@ const stockIndexEntrySchema = z.object({
       message: '股票資料路徑必須與股票代碼相符。',
     });
   }
-  if (entry.firstDate > entry.lastDate || entry.availableSessions < entry.barCount) {
+  if (
+    (entry.firstDate === null) !== (entry.lastDate === null)
+    || (entry.barCount === 0) !== (entry.firstDate === null)
+    || (entry.firstDate !== null && entry.lastDate !== null && entry.firstDate > entry.lastDate)
+    || entry.availableSessions !== entry.barCount + entry.noQuoteCount
+  ) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: '股票索引日期或可用交易日數不符合資料契約。',
     });
   }
-  if ((entry.barCount < 120) !== (entry.shortHistoryReason === 'listing-history')) {
+  if ((entry.availableSessions < 120) !== (entry.shortHistoryReason === 'listing-history')) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['shortHistoryReason'],
@@ -131,13 +230,15 @@ const stockIndexEntrySchema = z.object({
   }
 });
 
-/** 瀏覽器可載入的市場快照 v2 索引。 */
+/** 瀏覽器可載入的市場快照 v3 索引，含版本化停復牌公告區間。 */
 export const marketManifestSchema = z.object({
   schemaVersion: z.literal(1),
-  snapshotVersion: z.literal(2),
+  snapshotVersion: z.literal(3),
   sourceCommit: z.string().trim().min(1).max(128),
   snapshotHash: z.string().regex(SHA256_PATTERN),
   generatedAt: z.string().datetime({ offset: true }),
+  calendar: calendarEvidenceSchema,
+  suspensionEvidence: suspensionEvidenceSchema,
   markets: z.object({
     TWSE: marketCutoffSchema,
     TPEx: marketCutoffSchema,
@@ -154,6 +255,38 @@ export const marketManifestSchema = z.object({
       });
     }
     seenCodes.add(entry.code);
+  }
+  const emergencyClosureDates = new Set(
+    manifest.calendar.emergencyClosureEvidence.closures.map((closure) => closure.date),
+  );
+  const knownSymbols = new Set(manifest.symbols.map((entry) => `${entry.market}/${entry.code}`));
+  for (const [index, interval] of manifest.suspensionEvidence.intervals.entries()) {
+    if (!knownSymbols.has(`${interval.market}/${interval.code}`)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['suspensionEvidence', 'intervals', index],
+        message: '停止買賣區間必須對應 manifest 中的支援普通股。',
+      });
+    }
+  }
+  for (const [market, cutoff] of Object.entries(manifest.markets)) {
+    if (
+      cutoff.calendarSourceUrl !== manifest.calendar.sourceUrl
+      || cutoff.calendarValidThrough !== manifest.calendar.validThrough
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['markets', market],
+        message: '市場交易日視窗必須使用 manifest 年度日曆。',
+      });
+    }
+    if (cutoff.tradingSessions.some((session) => emergencyClosureDates.has(session))) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['markets', market, 'tradingSessions'],
+        message: '市場交易日視窗不可包含緊急市場休市日。',
+      });
+    }
   }
 });
 
@@ -186,10 +319,18 @@ const corporateActionSchema = z.object({
   verifiedAt: isoDateSchema,
 }).strict();
 
-/** 單一普通股原始盤後日 K 快照 v2。 */
+const noQuoteEvidenceSchema = z.object({
+  market: marketSchema,
+  code: z.string().regex(/^[0-9]{4,6}$/),
+  date: isoDateSchema,
+  reason: z.enum(['official-no-quote', 'official-suspension']),
+  sourceUrl: nonEmptyHttpsUrlSchema,
+}).strict();
+
+/** 單一普通股原始盤後日 K 快照 v3。 */
 export const stockSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
-  snapshotVersion: z.literal(2),
+  snapshotVersion: z.literal(3),
   code: z.string().regex(/^[0-9]{4,6}$/),
   name: z.string().trim().min(1),
   market: marketSchema,
@@ -205,18 +346,19 @@ export const stockSnapshotSchema = z.object({
     effectiveFrom: isoDateSchema,
     sourceUrl: nonEmptyHttpsUrlSchema,
   }).strict(),
-  bars: z.array(ohlcvBarSchema).min(1).max(120),
+  bars: z.array(ohlcvBarSchema).max(120),
+  noQuoteEvidence: z.array(noQuoteEvidenceSchema).max(120),
   corporateActions: z.array(corporateActionSchema),
   sourceUrls: z.array(nonEmptyHttpsUrlSchema).min(1),
 }).strict().superRefine((snapshot, context) => {
-  if (snapshot.availableSessions < snapshot.bars.length) {
+  if (snapshot.availableSessions !== snapshot.bars.length + snapshot.noQuoteEvidence.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['availableSessions'],
       message: '可用交易日數不可少於日 K 筆數。',
     });
   }
-  if ((snapshot.bars.length < 120) !== (snapshot.shortHistoryReason === 'listing-history')) {
+  if ((snapshot.availableSessions < 120) !== (snapshot.shortHistoryReason === 'listing-history')) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['shortHistoryReason'],
@@ -228,6 +370,32 @@ export const stockSnapshotSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['bars'],
       message: '日 K 日期必須遞增且不可重複。',
+    });
+  }
+  if (snapshot.noQuoteEvidence.some((evidence, index) => (
+    evidence.market !== snapshot.market
+    || evidence.code !== snapshot.code
+    || evidence.sourceUrl.length === 0
+    || index > 0 && evidence.date <= snapshot.noQuoteEvidence[index - 1]!.date
+  ))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['noQuoteEvidence'],
+      message: '未報價證據必須屬於同一股票、日期遞增且不可重複。',
+    });
+  }
+  const barDates = new Set(snapshot.bars.map((bar) => bar.date));
+  if (snapshot.noQuoteEvidence.some((evidence) => barDates.has(evidence.date))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['noQuoteEvidence'],
+      message: '未報價證據不可與合法日 K 共用交易日。',
+    });
+  }
+  if (snapshot.bars.length === 0 && snapshot.noQuoteEvidence.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '快照至少需要一根合法日 K 或一筆官方未報價證據。',
     });
   }
 });
@@ -252,6 +420,7 @@ export function toStockSnapshot(value: z.infer<typeof stockSnapshotSchema>): Sto
     currency: value.currency,
     comparisonUnitPolicy: value.comparisonUnitPolicy,
     bars: value.bars as readonly OhlcvBar[],
+    noQuoteEvidence: value.noQuoteEvidence as readonly NoQuoteEvidence[],
     corporateActions: value.corporateActions as readonly CorporateAction[],
     sourceUrls: value.sourceUrls,
   };

@@ -29,6 +29,7 @@ const chartSnapshot = {
     sourcePrecision: 0.01,
     comparisonUnit: 0.5,
   })),
+  noQuoteEvidence: [],
   corporateActions: [{
     date: chartDate(60),
     type: 'cash-dividend' as const,

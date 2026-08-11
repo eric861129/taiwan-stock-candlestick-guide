@@ -154,18 +154,71 @@ function assertStockMatchesIndex(
   entry: MarketDataManifest['symbols'][number],
   snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
 ): void {
-  const firstDate = snapshot.bars[0]?.date;
-  const lastDate = snapshot.bars.at(-1)?.date;
+  const firstDate = snapshot.bars[0]?.date ?? null;
+  const lastDate = snapshot.bars.at(-1)?.date ?? null;
   if (
     firstDate !== entry.firstDate
     || lastDate !== entry.lastDate
     || snapshot.bars.length !== entry.barCount
+    || snapshot.noQuoteEvidence.length !== entry.noQuoteCount
     || snapshot.listingDate !== entry.listingDate
     || snapshot.availableSessions !== entry.availableSessions
-    || snapshot.availableSessions !== snapshot.bars.length
+    || snapshot.availableSessions !== snapshot.bars.length + snapshot.noQuoteEvidence.length
     || snapshot.shortHistoryReason !== entry.shortHistoryReason
   ) {
     throw new MarketDataError('schema-error', '股票資料與清冊的日期、筆數或歷史可用性欄位不一致。');
+  }
+}
+
+function intervalIncludesDate(
+  interval: MarketDataManifest['suspensionEvidence']['intervals'][number],
+  tradingDate: string,
+): boolean {
+  return tradingDate >= interval.startDate
+    && (interval.endDateExclusive === null || tradingDate < interval.endDateExclusive);
+}
+
+function assertStockMatchesSuspensionEvidence(
+  manifest: MarketDataManifest,
+  snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
+): void {
+  const intervals = manifest.suspensionEvidence.intervals.filter((interval) => (
+    interval.market === snapshot.market && interval.code === snapshot.code
+  ));
+  const barDates = new Set(snapshot.bars.map((bar) => bar.date));
+  const evidenceByDate = new Map(snapshot.noQuoteEvidence.map((evidence) => [evidence.date, evidence]));
+
+  for (const evidence of snapshot.noQuoteEvidence) {
+    const matching = intervals.filter((interval) => intervalIncludesDate(interval, evidence.date));
+    if (!snapshot.sourceUrls.includes(evidence.sourceUrl)) {
+      throw new MarketDataError('schema-error', '未報價或停牌證據缺少股票快照中的官方來源。');
+    }
+    if (evidence.reason === 'official-suspension') {
+      if (matching.length !== 1 || !matching[0]!.sourceUrls.includes(evidence.sourceUrl)) {
+        throw new MarketDataError('schema-error', '股票停牌證據與 manifest 官方公告區間不一致。');
+      }
+    } else if (matching.length > 0) {
+      throw new MarketDataError('schema-error', '公告停止買賣日不可標示為一般未報價。');
+    }
+  }
+
+  for (const tradingDate of manifest.markets[snapshot.market].tradingSessions) {
+    if (tradingDate < snapshot.listingDate) {
+      continue;
+    }
+    const matching = intervals.filter((interval) => intervalIncludesDate(interval, tradingDate));
+    if (matching.length === 0) {
+      continue;
+    }
+    const evidence = evidenceByDate.get(tradingDate);
+    if (
+      matching.length !== 1
+      || barDates.has(tradingDate)
+      || evidence?.reason !== 'official-suspension'
+      || !matching[0]!.sourceUrls.includes(evidence.sourceUrl)
+    ) {
+      throw new MarketDataError('schema-error', '官方停止買賣區間沒有完整對應的合法 K 線或停牌證據。');
+    }
   }
 }
 
@@ -247,6 +300,7 @@ export async function loadStockSnapshot(
     throw new MarketDataError('schema-error', '股票資料與清冊索引不一致，已停止型態比對。');
   }
   assertStockMatchesIndex(entry, parsed.data);
+  assertStockMatchesSuspensionEvidence(manifest, parsed.data);
   return toStockSnapshot(parsed.data);
 }
 

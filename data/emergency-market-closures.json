@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "closures": [
+    {
+      "date": "2026-07-10",
+      "reason": "臺灣證券交易所集中交易市場 115 年 7 月 10 日因天然災害全日休市。",
+      "sourceUrls": [
+        "https://investoredu.twse.com.tw/pages/TWSE_HotNews.aspx?Page=4",
+        "https://eoc.gov.taipei/News/Detail/909",
+        "https://www.twse.com.tw/en/clearing/suspended.html"
+      ]
+    }
+  ]
+}

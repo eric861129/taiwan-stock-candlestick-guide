@@ -29,6 +29,18 @@ export interface CorporateAction {
   verifiedAt: string;
 }
 
+/** 官方未報價或交易所公告停止買賣時的可稽核證據種類。 */
+export type NoQuoteReason = 'official-no-quote' | 'official-suspension';
+
+/** 官方交易日回應明示缺少完整 OHLC，或公告停止買賣時的可稽核證據。 */
+export interface NoQuoteEvidence {
+  market: Market;
+  code: string;
+  date: string;
+  reason: NoQuoteReason;
+  sourceUrl: string;
+}
+
 /** 單一支援普通股的版本化盤後快照。 */
 export interface StockSnapshot {
   schemaVersion: number;
@@ -44,6 +56,7 @@ export interface StockSnapshot {
     sourceUrl: string;
   };
   bars: readonly OhlcvBar[];
+  noQuoteEvidence: readonly NoQuoteEvidence[];
   corporateActions: readonly CorporateAction[];
   sourceUrls: readonly string[];
   snapshotHash?: string;

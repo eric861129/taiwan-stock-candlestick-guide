@@ -18,7 +18,7 @@ import StockAnalyzer from './StockAnalyzer.vue';
 
 const manifest = {
   schemaVersion: 1,
-  snapshotVersion: 2,
+  snapshotVersion: 3,
   sourceCommit: 'a'.repeat(40),
   snapshotHash: 'b'.repeat(64),
   generatedAt: '2026-08-11T18:00:00+08:00',
@@ -45,12 +45,14 @@ const manifest = {
       code: '2330', name: '台積電', market: 'TWSE', securityType: 'common-stock',
       dataPath: 'data/stocks/2330.fixture.json', digest: 'c'.repeat(64), size: 100,
       firstDate: '2026-08-11', lastDate: '2026-08-11', barCount: 1,
+      noQuoteCount: 0,
       listingDate: '1994-09-05', availableSessions: 1, shortHistoryReason: 'listing-history',
     },
     {
       code: '0050', name: '測試基金', market: 'TWSE', securityType: 'common-stock',
       dataPath: 'data/stocks/0050.fixture.json', digest: 'd'.repeat(64), size: 100,
       firstDate: '2026-08-11', lastDate: '2026-08-11', barCount: 1,
+      noQuoteCount: 0,
       listingDate: '2003-06-25', availableSessions: 1, shortHistoryReason: 'listing-history',
     },
   ],
@@ -74,6 +76,7 @@ function snapshot(code: string, name: string) {
       date: '2026-08-11', open: 100, high: 105, low: 95, close: 102,
       volumeShares: 1000, sourcePrecision: 0.01, comparisonUnit: 0.5,
     }],
+    noQuoteEvidence: [],
     corporateActions: [],
     sourceUrls: ['https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
   };
