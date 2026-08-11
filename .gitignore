@@ -4,3 +4,8 @@
 .playwright-cli/
 __pycache__/
 *.py[cod]
+node_modules/
+dist/
+coverage/
+.vitepress/cache/
+.vitepress/dist/
