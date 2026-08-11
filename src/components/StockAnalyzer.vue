@@ -20,6 +20,10 @@ const errorMessage = ref('');
 const marketCutoffDate = ref<string | null>(null);
 const marketExpectedCutoffDate = ref<string | null>(null);
 const stockDataLastDate = computed(() => snapshot.value?.bars.at(-1)?.date ?? null);
+const marketSnapshotMetadata = computed(() => ({
+  marketSnapshotCutoffDate: marketCutoffDate.value,
+  officialExpectedCutoffDate: marketExpectedCutoffDate.value,
+}));
 
 let latestRequestId = 0;
 
@@ -196,7 +200,7 @@ onMounted(() => {
       >
         <h3>已選擇：{{ snapshot.code }} {{ snapshot.name }}</h3>
         <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，原始盤後日 K，股票日 K 最後交易日 {{ stockDataLastDate }}。</p>
-        <p>市場資料截止日 {{ marketCutoffDate ?? '目前無法載入市場截止日' }}；官方預期截止日 {{ marketExpectedCutoffDate ?? '目前無法由交易日曆確認' }}。</p>
+        <p>市場快照截止日 {{ marketCutoffDate ?? '無法判定' }}；官方預期截止日 {{ marketExpectedCutoffDate ?? '無法判定' }}。</p>
         <button
           type="button"
           @click="resetQuery"
@@ -211,6 +215,7 @@ onMounted(() => {
       v-if="result"
       :result="result"
       :snapshot="snapshot"
+      :market-snapshot-metadata="marketSnapshotMetadata"
     />
   </section>
 </template>

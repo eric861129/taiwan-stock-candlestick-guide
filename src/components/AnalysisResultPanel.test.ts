@@ -44,8 +44,34 @@ const snapshot: StockSnapshot = {
   sourceUrls: ['https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
 };
 
-function render(result: AnalysisResult) {
-  return mount(AnalysisResultPanel, { props: { result, snapshot } });
+interface MarketSnapshotMetadata {
+  marketSnapshotCutoffDate: string | null;
+  officialExpectedCutoffDate: string | null;
+}
+
+const marketSnapshotMetadata: MarketSnapshotMetadata = {
+  marketSnapshotCutoffDate: '2026-08-10',
+  officialExpectedCutoffDate: '2026-08-11',
+};
+
+function render(
+  result: AnalysisResult,
+  metadata: MarketSnapshotMetadata = marketSnapshotMetadata,
+) {
+  return mount(AnalysisResultPanel, {
+    props: {
+      result,
+      snapshot,
+      marketSnapshotMetadata: metadata,
+    },
+  });
+}
+
+function factValues(wrapper: ReturnType<typeof render>): Record<string, string> {
+  return Object.fromEntries(wrapper.findAll('.analysis-result-panel__facts > div').map((fact) => [
+    fact.get('dt').text(),
+    fact.get('dd').text(),
+  ]));
 }
 
 describe('AnalysisResultPanel guided rendering', () => {
@@ -76,6 +102,32 @@ describe('AnalysisResultPanel guided rendering', () => {
     expect(wrapper.text()).toContain('本次已檢查的條件');
     expect(wrapper.text()).toContain('17 張可評估的教學卡');
     expect(wrapper.text()).toContain('下一步');
+  });
+
+  it('keeps the stock, market snapshot, and expected cutoff dates distinct', () => {
+    const wrapper = render({
+      status: 'no-clear-pattern',
+      context: { ...context, cutoffDate: '2026-08-08' },
+      matches: [],
+    });
+
+    expect(factValues(wrapper)).toMatchObject({
+      '本檔日 K 資料截止日': '2026-08-08',
+      '市場快照截止日': '2026-08-10',
+      '官方預期截止日': '2026-08-11',
+    });
+  });
+
+  it('labels unavailable market dates as unable to determine', () => {
+    const wrapper = render(
+      { status: 'no-clear-pattern', context, matches: [] },
+      { marketSnapshotCutoffDate: null, officialExpectedCutoffDate: null },
+    );
+
+    expect(factValues(wrapper)).toMatchObject({
+      '市場快照截止日': '無法判定',
+      '官方預期截止日': '無法判定',
+    });
   });
 
   it('maps insufficient-evidence reason codes to natural Chinese without leaking the code', () => {

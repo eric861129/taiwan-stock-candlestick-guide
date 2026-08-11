@@ -11,9 +11,16 @@ import type {
   UnavailableReason,
 } from '../domain/market-data/types';
 
+/** 保留市場快照與官方預期日期，避免與單一股票的日 K 資料截止日混用。 */
+interface MarketSnapshotMetadata {
+  marketSnapshotCutoffDate: string | null;
+  officialExpectedCutoffDate: string | null;
+}
+
 const props = defineProps<{
   result: AnalysisResult;
   snapshot: StockSnapshot | null;
+  marketSnapshotMetadata: MarketSnapshotMetadata;
 }>();
 
 const context = computed<AnalysisContext | undefined>(() => props.result.context);
@@ -145,8 +152,16 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
 
       <dl class="analysis-result-panel__facts">
         <div>
-          <dt>市場資料截止日</dt>
+          <dt>本檔日 K 資料截止日</dt>
           <dd>{{ context.cutoffDate }}</dd>
+        </div>
+        <div>
+          <dt>市場快照截止日</dt>
+          <dd>{{ marketSnapshotMetadata.marketSnapshotCutoffDate ?? '無法判定' }}</dd>
+        </div>
+        <div>
+          <dt>官方預期截止日</dt>
+          <dd>{{ marketSnapshotMetadata.officialExpectedCutoffDate ?? '無法判定' }}</dd>
         </div>
         <div>
           <dt>時間週期</dt>
