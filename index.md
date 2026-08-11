@@ -42,3 +42,7 @@ hero:
 
   <p class="home-note"><strong>提醒：</strong>內容為教育用途，非投資建議；下單前請依官方規則與自身風險承受度查核。</p>
 </section>
+
+<LearningProgressProvider>
+  <LearningHome compact />
+</LearningProgressProvider>
