@@ -260,6 +260,58 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 max_pages=10,
             )
 
+    def test_terminal_page_with_more_artifacts_than_total_count_fails_closed(self) -> None:
+        """終頁超出 API 宣告總數時，不得將過量資料視為完整清單。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        response = {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "id": 810,
+                    "name": "candidate-market-snapshot-810",
+                    "expired": False,
+                    "workflow_run": {"id": 1_810},
+                },
+                {
+                    "id": 811,
+                    "name": "candidate-market-snapshot-811",
+                    "expired": False,
+                    "workflow_run": {"id": 1_811},
+                },
+            ],
+        }
+
+        with self.assertRaisesRegex(GitHubArtifactQueryError, "完整清單"):
+            find_latest_successful_market_snapshot(
+                lambda url: (response, {}),
+                lambda run_id: {"conclusion": "success"},
+                first_page,
+                max_pages=10,
+            )
+
+    def test_terminal_page_with_fewer_artifacts_than_total_count_fails_closed(self) -> None:
+        """終頁少於 API 宣告總數時，既有 fail-closed 行為必須保留。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        response = {
+            "total_count": 2,
+            "artifacts": [
+                {
+                    "id": 812,
+                    "name": "candidate-market-snapshot-812",
+                    "expired": False,
+                    "workflow_run": {"id": 1_812},
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(GitHubArtifactQueryError, "完整清單"):
+            find_latest_successful_market_snapshot(
+                lambda url: (response, {}),
+                lambda run_id: {"conclusion": "success"},
+                first_page,
+                max_pages=10,
+            )
+
 
 class GitHubWorkflowContractTests(unittest.TestCase):
     """防止 CI、快照與 Pages 發布流程在重構時失去原子性。"""

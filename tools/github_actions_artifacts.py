@@ -83,8 +83,8 @@ def find_latest_successful_market_snapshot(
 
         following_page_url = _next_page_url(headers)
         if following_page_url is None:
-            if declared_total_count is not None and scanned_artifact_count < declared_total_count:
-                raise GitHubArtifactQueryError("artifact API 缺少下一頁 Link，拒絕使用不完整清單。")
+            if declared_total_count is not None and scanned_artifact_count != declared_total_count:
+                raise GitHubArtifactQueryError("artifact API 清單總數不一致，拒絕使用不完整清單。")
             return latest_snapshot
         _validate_page_url(first_page_url, following_page_url)
         next_page_url = following_page_url
