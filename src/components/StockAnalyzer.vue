@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { loadManifest, loadStockSnapshot } from '../domain/market-data/client';
-import { computeFreshness } from '../domain/market-data/freshness';
+import { computeFreshness, mostConservativeFreshness } from '../domain/market-data/freshness';
 import type { MarketDataManifest, MarketDataSymbol } from '../domain/market-data/schema';
 import type { AnalysisResult, StockSnapshot, UnavailableReason } from '../domain/market-data/types';
 import { analyzePatterns } from '../domain/patterns/matcher';
@@ -136,10 +136,13 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
     if (!stockCutoffDate) {
       throw new Error('股票快照沒有可稽核的日 K 或官方未報價證據。');
     }
-    const freshness = computeFreshness({
-      tradingSessions: marketCutoff.tradingSessions,
-      validThrough: marketCutoff.calendarValidThrough,
-    }, stockCutoffDate);
+    const freshness = mostConservativeFreshness(
+      marketCutoff.freshness,
+      computeFreshness({
+        tradingSessions: marketCutoff.tradingSessions,
+        validThrough: marketCutoff.calendarValidThrough,
+      }, stockCutoffDate),
+    );
     const scopedSnapshot: StockSnapshot = {
       ...loaded,
       cutoffDate: stockCutoffDate,

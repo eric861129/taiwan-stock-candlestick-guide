@@ -14,10 +14,11 @@ const manifestFixture = {
       schemaVersion: 1,
       closures: [{
         date: '2026-07-10',
+        markets: ['TWSE', 'TPEx'],
         reason: '臺灣證券交易所集中交易市場 115 年 7 月 10 日因天然災害全日休市。',
         sourceUrls: [
           'https://eoc.gov.taipei/News/Detail/909',
-          'https://investoredu.twse.com.tw/pages/TWSE_HotNews.aspx?Page=4',
+          'https://www.tpex.org.tw/storage/eb_data/11205/11200591671.html',
           'https://www.twse.com.tw/en/clearing/suspended.html',
         ],
       }],
@@ -164,6 +165,70 @@ describe('market snapshot v3 schemas', () => {
     }).success).toBe(false);
   });
 
+  it('fails closed for hostile official URLs, weekend sessions, and duplicate observations', () => {
+    const hostileCalendarUrl = 'https://www.twse.com.tw@evil.example/holiday';
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      calendar: { ...manifestFixture.calendar, sourceUrl: hostileCalendarUrl },
+      markets: {
+        TWSE: { ...manifestFixture.markets.TWSE, calendarSourceUrl: hostileCalendarUrl },
+        TPEx: { ...manifestFixture.markets.TPEx, calendarSourceUrl: hostileCalendarUrl },
+      },
+    }).success).toBe(false);
+    const nonStandardPortUrl = 'https://openapi.twse.com.tw:444/v1/holidaySchedule/holidaySchedule';
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      calendar: { ...manifestFixture.calendar, sourceUrl: nonStandardPortUrl },
+      markets: {
+        TWSE: { ...manifestFixture.markets.TWSE, calendarSourceUrl: nonStandardPortUrl },
+        TPEx: { ...manifestFixture.markets.TPEx, calendarSourceUrl: nonStandardPortUrl },
+      },
+    }).success).toBe(false);
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      markets: {
+        TWSE: { ...manifestFixture.markets.TWSE, tradingSessions: ['2026-08-08', '2026-08-11'] },
+        TPEx: { ...manifestFixture.markets.TPEx, tradingSessions: ['2026-08-10', '2026-08-11'] },
+      },
+    }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({
+      ...snapshotFixture,
+      availableSessions: 2,
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-08',
+        reason: 'official-no-quote',
+        sourceUrl: snapshotFixture.sourceUrls[0],
+      }],
+    }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({
+      ...snapshotFixture,
+      market: 'TPEx',
+      corporateActions: [],
+      sourceUrls: ['https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'],
+      availableSessions: 2,
+      noQuoteEvidence: [{
+        market: 'TPEx',
+        code: '2330',
+        date: '2026-08-10',
+        reason: 'official-no-quote',
+        sourceUrl: snapshotFixture.sourceUrls[0],
+      }],
+    }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({
+      ...snapshotFixture,
+      availableSessions: 2,
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: snapshotFixture.bars[0].date,
+        reason: 'official-no-quote',
+        sourceUrl: snapshotFixture.sourceUrls[0],
+      }],
+    }).success).toBe(false);
+  });
+
   it('matches the v3 calendar contract for unknown expected cutoffs and retained trading sessions', () => {
     const unknownMarket = {
       ...manifestFixture.markets.TWSE,
@@ -229,6 +294,19 @@ describe('market snapshot v3 schemas', () => {
           closures: [{
             ...manifestFixture.calendar.emergencyClosureEvidence.closures[0],
             sourceUrls: [],
+          }],
+        },
+      },
+    }).success).toBe(false);
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      calendar: {
+        ...manifestFixture.calendar,
+        emergencyClosureEvidence: {
+          schemaVersion: 1,
+          closures: [{
+            ...manifestFixture.calendar.emergencyClosureEvidence.closures[0],
+            sourceUrls: ['https://www.twse.com.tw/en/clearing/suspended.html'],
           }],
         },
       },

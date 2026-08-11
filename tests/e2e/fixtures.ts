@@ -8,7 +8,8 @@ export const SITE_BASE = '/taiwan-stock-candlestick-guide/';
 export const PROGRESS_STORAGE_KEY = 'tw-candlestick-guide:progress:v1';
 
 const fixtureSourceCommit = 'fixture';
-const officialFixtureSource = 'https://example.test/official-market-source';
+const twseOfficialFixtureSource = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL';
+const tpexOfficialFixtureSource = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes';
 
 type BrowserOhlcvBar = OhlcvBar & { readonly priceUnit: 'TWD' };
 
@@ -41,6 +42,12 @@ export interface BrowserMarketFixture {
   readonly manifestBody: string;
   readonly stockBody: string;
   readonly stockPath: string;
+}
+
+export interface BrowserMarketFixtureOptions {
+  readonly expectedCutoffDate?: string | null;
+  readonly freshness?: 'fresh' | 'one-session-behind' | 'stale' | 'unknown';
+  readonly calendarValidThrough?: string;
 }
 
 export async function goToRoute(page: Page, route = ''): Promise<void> {
@@ -99,46 +106,67 @@ export function makeBrowserStockFixture(
     market?: 'TWSE' | 'TPEx';
     securityType?: 'common-stock' | 'etf';
     corporateActions?: readonly CorporateAction[];
+    noQuoteEvidence?: readonly NoQuoteEvidence[];
+    listingDate?: string;
   } = {},
 ): BrowserStockFixture {
   const serializedBars: readonly BrowserOhlcvBar[] = bars.map((bar) => ({
     ...bar,
     priceUnit: 'TWD',
   }));
-  const firstDate = serializedBars[0]?.date ?? '2026-08-10';
-  const shortHistoryReason = serializedBars.length < 120 ? 'listing-history' : null;
+  const market = options.market ?? 'TWSE';
+  const noQuoteEvidence = options.noQuoteEvidence ?? [];
+  const observedDates = [...serializedBars, ...noQuoteEvidence]
+    .map((observation) => observation.date)
+    .sort();
+  if (observedDates.length === 0) {
+    throw new Error('瀏覽器測試股票必須至少包含一筆 K 線或官方無報價證據。');
+  }
+  const listingDate = options.listingDate ?? observedDates[0]!;
+  const availableSessions = serializedBars.length + noQuoteEvidence.length;
+  const shortHistoryReason = availableSessions < 120 ? 'listing-history' : null;
+  const marketSource = market === 'TWSE' ? twseOfficialFixtureSource : tpexOfficialFixtureSource;
   return {
     schemaVersion: 1,
     snapshotVersion: 3,
     code: options.code ?? '2330',
     name: options.name ?? '測試普通股',
-    market: options.market ?? 'TWSE',
+    market,
     securityType: options.securityType ?? 'common-stock',
     priceMode: 'raw',
     currency: 'TWD',
     priceUnit: 'TWD',
-    listingDate: firstDate,
-    availableSessions: serializedBars.length,
+    listingDate,
+    availableSessions,
     shortHistoryReason,
     comparisonUnitPolicy: {
       version: 1,
-      effectiveFrom: firstDate,
-      sourceUrl: officialFixtureSource,
+      effectiveFrom: listingDate,
+      sourceUrl: twseOfficialFixtureSource,
     },
     bars: serializedBars,
-    noQuoteEvidence: [],
+    noQuoteEvidence,
     corporateActions: options.corporateActions ?? [],
-    sourceUrls: [officialFixtureSource],
+    sourceUrls: [...new Set([marketSource, ...noQuoteEvidence.map((evidence) => evidence.sourceUrl)])],
   };
 }
 
 export function createBrowserMarketFixture(
   stock: BrowserStockFixture,
-  sessions: readonly string[] = ['2026-08-07', '2026-08-10', '2026-08-11'],
+  sessions?: readonly string[],
+  options: BrowserMarketFixtureOptions = {},
 ): BrowserMarketFixture {
   const stockPath = `data/stocks/${stock.code}.e2e.json`;
   const stockBody = canonicalJson(stock);
-  const marketCutoffDate = sessions.at(-1) ?? '2026-08-11';
+  const effectiveSessions = sessions ?? [...new Set([
+    ...stock.bars.map((bar) => bar.date),
+    ...stock.noQuoteEvidence.map((evidence) => evidence.date),
+  ])].sort();
+  if (effectiveSessions.length === 0) {
+    throw new Error('瀏覽器測試 manifest 必須至少包含一個交易日。');
+  }
+  const marketCutoffDate = effectiveSessions.at(-1)!;
+  const calendarValidThrough = options.calendarValidThrough ?? marketCutoffDate;
   const stockEntry = {
     code: stock.code,
     name: stock.name,
@@ -147,8 +175,8 @@ export function createBrowserMarketFixture(
     dataPath: stockPath,
     digest: sha256(stockBody),
     size: Buffer.byteLength(stockBody, 'utf8'),
-    firstDate: stock.bars[0]?.date ?? stock.listingDate,
-    lastDate: stock.bars.at(-1)?.date ?? stock.listingDate,
+    firstDate: stock.bars[0]?.date ?? null,
+    lastDate: stock.bars.at(-1)?.date ?? null,
     barCount: stock.bars.length,
     noQuoteCount: stock.noQuoteEvidence.length,
     listingDate: stock.listingDate,
@@ -157,11 +185,11 @@ export function createBrowserMarketFixture(
   };
   const market = {
     cutoffDate: marketCutoffDate,
-    expectedCutoffDate: marketCutoffDate,
-    freshness: 'fresh',
-    calendarSourceUrl: officialFixtureSource,
-    calendarValidThrough: marketCutoffDate,
-    tradingSessions: [...sessions],
+    expectedCutoffDate: options.expectedCutoffDate ?? marketCutoffDate,
+    freshness: options.freshness ?? 'fresh',
+    calendarSourceUrl: twseOfficialFixtureSource,
+    calendarValidThrough,
+    tradingSessions: [...effectiveSessions],
   };
   const manifestWithoutHash = {
     schemaVersion: 1,
@@ -169,8 +197,8 @@ export function createBrowserMarketFixture(
     sourceCommit: fixtureSourceCommit,
     generatedAt: '2026-08-11T18:00:00+08:00',
     calendar: {
-      sourceUrl: officialFixtureSource,
-      validThrough: marketCutoffDate,
+      sourceUrl: twseOfficialFixtureSource,
+      validThrough: calendarValidThrough,
       emergencyClosureEvidence: {
         schemaVersion: 1,
         closures: [],

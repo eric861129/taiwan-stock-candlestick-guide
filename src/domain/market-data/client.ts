@@ -178,6 +178,38 @@ function intervalIncludesDate(
     && (interval.endDateExclusive === null || tradingDate < interval.endDateExclusive);
 }
 
+function assertStockMatchesMarketSessions(
+  manifest: MarketDataManifest,
+  snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
+): void {
+  const tradingSessions = manifest.markets[snapshot.market].tradingSessions;
+  const tradingSessionSet = new Set(tradingSessions);
+  const observations = [
+    ...snapshot.bars.map((bar) => bar.date),
+    ...snapshot.noQuoteEvidence.map((evidence) => evidence.date),
+  ];
+  const observationCounts = new Map<string, number>();
+  for (const observationDate of observations) {
+    observationCounts.set(observationDate, (observationCounts.get(observationDate) ?? 0) + 1);
+  }
+  if (
+    [...observationCounts.values()].some((count) => count !== 1)
+    || [...observationCounts.keys()].some((tradingDate) => (
+      tradingDate < snapshot.listingDate || !tradingSessionSet.has(tradingDate)
+    ))
+  ) {
+    throw new MarketDataError('schema-error', '股票觀測資料必須各自對應上市後的一個 manifest 交易日。');
+  }
+
+  const expectedSessions = tradingSessions.filter((tradingDate) => tradingDate >= snapshot.listingDate);
+  if (
+    expectedSessions.length !== observationCounts.size
+    || expectedSessions.some((tradingDate) => !observationCounts.has(tradingDate))
+  ) {
+    throw new MarketDataError('schema-error', '上市後的每個 manifest 交易日必須恰有一筆 K 線或官方無報價證據。');
+  }
+}
+
 function assertStockMatchesSuspensionEvidence(
   manifest: MarketDataManifest,
   snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
@@ -300,6 +332,7 @@ export async function loadStockSnapshot(
     throw new MarketDataError('schema-error', '股票資料與清冊索引不一致，已停止型態比對。');
   }
   assertStockMatchesIndex(entry, parsed.data);
+  assertStockMatchesMarketSessions(manifest, parsed.data);
   assertStockMatchesSuspensionEvidence(manifest, parsed.data);
   return toStockSnapshot(parsed.data);
 }

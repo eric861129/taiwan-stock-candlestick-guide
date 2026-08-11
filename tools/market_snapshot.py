@@ -1571,9 +1571,10 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
     ):
         raise SnapshotValidationError("manifest 年度日曆與市場交易日視窗不一致。")
     if manifest.calendar is not None:
-        closure_dates = {closure.trading_date.isoformat() for closure in manifest.calendar.emergency_closures}
-        if any(closure_dates & set(cutoff.trading_sessions) for cutoff in manifest.markets.values()):
-            raise SnapshotValidationError("manifest 交易日視窗不可包含緊急市場休市日。")
+        for closure in manifest.calendar.emergency_closures:
+            for market in closure.markets:
+                if closure.trading_date.isoformat() in manifest.markets[market].trading_sessions:
+                    raise SnapshotValidationError("manifest 交易日視窗不可包含緊急市場休市日。")
     if any((interval.market, interval.code) not in {(entry.market, entry.code) for entry in manifest.symbols} for interval in manifest.suspension_intervals):
         raise SnapshotValidationError("manifest 停止買賣區間包含不存在的普通股。")
     _validate_market_cutoffs(manifest.markets)
@@ -1743,6 +1744,7 @@ def _calendar_evidence_json(evidence: CalendarEvidence) -> dict[str, Any]:
             "closures": [
                 {
                     "date": closure.trading_date.isoformat(),
+                    "markets": list(closure.markets),
                     "reason": closure.reason,
                     "sourceUrls": list(closure.source_urls),
                 }

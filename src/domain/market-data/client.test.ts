@@ -104,9 +104,14 @@ async function manifestFixture(
 ): Promise<MarketDataManifest> {
   const firstBar = stockPayload.bars[0];
   const lastBar = stockPayload.bars.at(-1);
-  if (!firstBar || !lastBar) {
-    throw new Error('測試股票快照必須至少有一根日 K。');
+  const observedSessions = [...stockPayload.bars, ...stockPayload.noQuoteEvidence]
+    .map((observation) => observation.date)
+    .sort();
+  if (observedSessions.length === 0) {
+    throw new Error('測試股票快照必須至少有一筆 K 線或無報價證據。');
   }
+  const tradingSessions = [...new Set(observedSessions)];
+  const cutoffDate = tradingSessions.at(-1)!;
 
   const manifestWithoutHash = {
     schemaVersion: 1,
@@ -127,20 +132,20 @@ async function manifestFixture(
     },
     markets: {
       TWSE: {
-        cutoffDate: '2026-08-11',
-        expectedCutoffDate: '2026-08-11',
+        cutoffDate,
+        expectedCutoffDate: cutoffDate,
         freshness: 'fresh',
         calendarSourceUrl: 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule',
         calendarValidThrough: '2026-12-31',
-        tradingSessions: ['2026-08-10', '2026-08-11'],
+        tradingSessions,
       },
       TPEx: {
-        cutoffDate: '2026-08-11',
-        expectedCutoffDate: '2026-08-11',
+        cutoffDate,
+        expectedCutoffDate: cutoffDate,
         freshness: 'fresh',
         calendarSourceUrl: 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule',
         calendarValidThrough: '2026-12-31',
-        tradingSessions: ['2026-08-10', '2026-08-11'],
+        tradingSessions,
       },
     },
     symbols: [{
@@ -151,8 +156,8 @@ async function manifestFixture(
       dataPath: `data/stocks/${stockPayload.code}.fixture.json`,
       digest: await sha256Hex(stockBytes),
       size: stockBytes.byteLength,
-      firstDate: firstBar.date,
-      lastDate: lastBar.date,
+      firstDate: firstBar?.date ?? null,
+      lastDate: lastBar?.date ?? null,
       barCount: stockPayload.bars.length,
       noQuoteCount: stockPayload.noQuoteEvidence.length,
       listingDate: stockPayload.listingDate,
@@ -169,13 +174,21 @@ async function manifestFixture(
 }
 
 function fullHistoryStockFixture(): StockPayload {
+  const tradingDates: string[] = [];
+  for (let day = 1; tradingDates.length < 120; day += 1) {
+    const date = new Date(Date.UTC(2026, 0, day));
+    if (date.getUTCDay() !== 0 && date.getUTCDay() !== 6) {
+      tradingDates.push(date.toISOString().slice(0, 10));
+    }
+  }
+
   return {
     ...stockSnapshotFixture,
     availableSessions: 120,
     shortHistoryReason: null,
-    bars: Array.from({ length: 120 }, (_value, index) => ({
+    bars: tradingDates.map((date) => ({
       ...stockSnapshotFixture.bars[0],
-      date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+      date,
     })),
   };
 }
@@ -241,6 +254,107 @@ describe('browser snapshot client', () => {
       },
     });
     await expect(loadStockSnapshot(mismatchedManifest, '2330', async () => bytesResponse(stockBytes))).rejects.toMatchObject({
+      reason: 'schema-error',
+    });
+  });
+
+  it('allows pre-listing market sessions and a newer official no-quote cutoff when each covered session is evidenced', async () => {
+    const newlyListedStock = {
+      ...stockSnapshotFixture,
+      listingDate: '2026-08-11',
+    };
+    const newlyListedBytes = utf8Bytes(JSON.stringify(newlyListedStock));
+    const newlyListedManifest = await manifestFixture(newlyListedStock, newlyListedBytes);
+    const manifestWithPreListingSession = marketManifestSchema.parse({
+      ...newlyListedManifest,
+      markets: {
+        ...newlyListedManifest.markets,
+        TWSE: {
+          ...newlyListedManifest.markets.TWSE,
+          tradingSessions: ['2026-08-10', '2026-08-11'],
+        },
+      },
+    });
+    await expect(loadStockSnapshot(manifestWithPreListingSession, '2330', async () => bytesResponse(newlyListedBytes))).resolves.toMatchObject({
+      bars: [{ date: '2026-08-11' }],
+    });
+
+    const noQuoteOnlyStock = {
+      ...stockSnapshotFixture,
+      bars: [],
+      availableSessions: 1,
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-10',
+        reason: 'official-no-quote',
+        sourceUrl: stockSnapshotFixture.sourceUrls[0],
+      }],
+    };
+    const noQuoteBytes = utf8Bytes(JSON.stringify(noQuoteOnlyStock));
+    const noQuoteManifest = await manifestFixture(noQuoteOnlyStock, noQuoteBytes);
+    await expect(loadStockSnapshot(noQuoteManifest, '2330', async () => bytesResponse(noQuoteBytes))).resolves.toMatchObject({
+      noQuoteEvidence: [{ date: '2026-08-10', reason: 'official-no-quote' }],
+    });
+  });
+
+  it('rejects a missing session, a non-session bar, and official no-quote evidence outside the manifest calendar', async () => {
+    const stockBytes = utf8Bytes(JSON.stringify(stockSnapshotFixture));
+    const baseManifest = await manifestFixture(stockSnapshotFixture, stockBytes);
+    const missingSessionManifest = marketManifestSchema.parse({
+      ...baseManifest,
+      markets: {
+        ...baseManifest.markets,
+        TWSE: {
+          ...baseManifest.markets.TWSE,
+          tradingSessions: ['2026-08-10', '2026-08-11'],
+        },
+      },
+    });
+    await expect(loadStockSnapshot(missingSessionManifest, '2330', async () => bytesResponse(stockBytes))).rejects.toMatchObject({
+      reason: 'schema-error',
+    });
+
+    const weekendStock = {
+      ...stockSnapshotFixture,
+      bars: [{ ...stockSnapshotFixture.bars[0], date: '2026-08-09' }],
+    };
+    const weekendBytes = utf8Bytes(JSON.stringify(weekendStock));
+    const weekendManifest = await manifestFixture(stockSnapshotFixture, weekendBytes, {
+      firstDate: '2026-08-09',
+      lastDate: '2026-08-09',
+    });
+    await expect(loadStockSnapshot(weekendManifest, '2330', async () => bytesResponse(weekendBytes))).rejects.toMatchObject({
+      reason: 'schema-error',
+    });
+
+    const noQuoteOnlyStock = {
+      ...stockSnapshotFixture,
+      bars: [],
+      availableSessions: 1,
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-10',
+        reason: 'official-no-quote',
+        sourceUrl: stockSnapshotFixture.sourceUrls[0],
+      }],
+    };
+    const noQuoteBytes = utf8Bytes(JSON.stringify(noQuoteOnlyStock));
+    const noQuoteManifest = await manifestFixture(noQuoteOnlyStock, noQuoteBytes);
+    const noQuoteOutsideCalendar = marketManifestSchema.parse({
+      ...noQuoteManifest,
+      markets: {
+        ...noQuoteManifest.markets,
+        TWSE: {
+          ...noQuoteManifest.markets.TWSE,
+          cutoffDate: '2026-08-11',
+          expectedCutoffDate: '2026-08-11',
+          tradingSessions: ['2026-08-11'],
+        },
+      },
+    });
+    await expect(loadStockSnapshot(noQuoteOutsideCalendar, '2330', async () => bytesResponse(noQuoteBytes))).rejects.toMatchObject({
       reason: 'schema-error',
     });
   });

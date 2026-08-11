@@ -6,14 +6,20 @@ const clientMocks = vi.hoisted(() => ({
   loadStockSnapshot: vi.fn(),
 }));
 const matcherMocks = vi.hoisted(() => ({ analyzePatterns: vi.fn() }));
-const freshnessMocks = vi.hoisted(() => ({ computeFreshness: vi.fn() }));
+const freshnessMocks = vi.hoisted(() => ({
+  computeFreshness: vi.fn(),
+  mostConservativeFreshness: vi.fn((_manifestFreshness: string, computedFreshness: string) => computedFreshness),
+}));
 
 vi.mock('../domain/market-data/client', () => ({
   loadManifest: clientMocks.loadManifest,
   loadStockSnapshot: clientMocks.loadStockSnapshot,
   normalizeStockCode: (value: unknown) => (typeof value === 'string' ? value.trim() : null),
 }));
-vi.mock('../domain/market-data/freshness', () => ({ computeFreshness: freshnessMocks.computeFreshness }));
+vi.mock('../domain/market-data/freshness', () => ({
+  computeFreshness: freshnessMocks.computeFreshness,
+  mostConservativeFreshness: freshnessMocks.mostConservativeFreshness,
+}));
 vi.mock('../domain/patterns/matcher', () => ({ analyzePatterns: matcherMocks.analyzePatterns }));
 
 import StockAnalyzer from './StockAnalyzer.vue';

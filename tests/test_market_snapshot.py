@@ -237,10 +237,11 @@ class SnapshotBuildTests(unittest.TestCase):
                 "closures": [
                     {
                         "date": "2026-07-10",
+                        "markets": ["TWSE", "TPEx"],
                         "reason": "臺灣證券交易所集中交易市場 115 年 7 月 10 日因天然災害全日休市。",
                         "sourceUrls": [
-                            "https://investoredu.twse.com.tw/pages/TWSE_HotNews.aspx?Page=4",
                             "https://eoc.gov.taipei/News/Detail/909",
+                            "https://www.tpex.org.tw/storage/eb_data/11205/11200591671.html",
                             "https://www.twse.com.tw/en/clearing/suspended.html",
                         ],
                     }
@@ -270,10 +271,11 @@ class SnapshotBuildTests(unittest.TestCase):
             "closures": [
                 {
                     "date": "2026-07-10",
+                    "markets": ["TWSE", "TPEx"],
                     "reason": "臺灣證券交易所集中交易市場 115 年 7 月 10 日因天然災害全日休市。",
                     "sourceUrls": [
                         "https://eoc.gov.taipei/News/Detail/909",
-                        "https://investoredu.twse.com.tw/pages/TWSE_HotNews.aspx?Page=4",
+                        "https://www.tpex.org.tw/storage/eb_data/11205/11200591671.html",
                         "https://www.twse.com.tw/en/clearing/suspended.html",
                     ],
                 }

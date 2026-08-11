@@ -10,6 +10,23 @@ const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TAIPEI_TIME_ZONE = 'Asia/Taipei';
 const CUTOFF_MINUTES = 17 * 60 + 30;
 
+/** 以資料快照的已驗證新鮮度與瀏覽器重算結果，保留較保守的狀態。 */
+export function mostConservativeFreshness(
+  manifestFreshness: Freshness,
+  computedFreshness: Freshness,
+): Freshness {
+  if (manifestFreshness === 'stale' || computedFreshness === 'stale') {
+    return 'stale';
+  }
+  if (manifestFreshness === 'unknown' || computedFreshness === 'unknown') {
+    return 'unknown';
+  }
+  if (manifestFreshness === 'one-session-behind' || computedFreshness === 'one-session-behind') {
+    return 'one-session-behind';
+  }
+  return 'fresh';
+}
+
 function isIsoDate(value: string): boolean {
   if (!ISO_DATE_PATTERN.test(value)) {
     return false;

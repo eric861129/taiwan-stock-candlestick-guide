@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { OhlcvBar } from '../../src/domain/market-data/types';
 import { MVP_CASES } from '../../src/domain/patterns/test-cases';
 import {
   createBrowserMarketFixture,
@@ -12,11 +13,31 @@ import {
 } from './fixtures';
 
 function neutralBars(targetDate = '2026-08-10') {
-  const prior = Array.from({ length: 20 }, (_, index) => {
+  const prior = weekdayDates('2026-07-01', 20).map((tradingDate, index) => {
     const body = index + 1;
-    return makeBar(`2026-07-${String(index + 1).padStart(2, '0')}`, 100, 100 + body + 1, 100, 100 + body);
+    return makeBar(tradingDate, 100, 100 + body + 1, 100, 100 + body);
   });
   return [...prior, makeBar(targetDate, 95, 115, 95, 105)];
+}
+
+function weekdayDates(startDate: string, count: number): string[] {
+  const dates: string[] = [];
+  const cursor = new Date(`${startDate}T00:00:00.000Z`);
+  while (dates.length < count) {
+    if (cursor.getUTCDay() !== 0 && cursor.getUTCDay() !== 6) {
+      dates.push(cursor.toISOString().slice(0, 10));
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+function withWeekdayDates(bars: readonly OhlcvBar[]): OhlcvBar[] {
+  const dates = weekdayDates('2026-06-01', bars.length);
+  return bars.map((bar, index) => ({
+    ...bar,
+    date: dates[index]!,
+  }));
 }
 
 function freezeTaipeiClock(page: import('@playwright/test').Page): Promise<void> {
@@ -99,9 +120,41 @@ test.describe('股票型態比對', () => {
     await expect(page.locator('.analysis-result-panel__candidate')).toHaveCount(0);
   });
 
+  test('只有官方無報價證據的股票保留交易日完整性，並顯示證據不足', async ({ page }) => {
+    const noQuoteSource = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL';
+    const stock = makeBrowserStockFixture([], {
+      noQuoteEvidence: [{
+        market: 'TWSE',
+        code: '2330',
+        date: '2026-08-10',
+        reason: 'official-no-quote',
+        sourceUrl: noQuoteSource,
+      }],
+    });
+    const fixture = createBrowserMarketFixture(stock);
+    const entry = (fixture.manifest.symbols as Array<Record<string, unknown>>)[0]!;
+    expect(stock.availableSessions).toBe(1);
+    expect(entry).toMatchObject({
+      barCount: 0,
+      firstDate: null,
+      lastDate: null,
+      noQuoteCount: 1,
+      availableSessions: 1,
+    });
+    await routeBrowserMarketFixture(page, fixture);
+    await goToRoute(page, 'analyzer');
+    await waitForAnalyzerReady(page);
+
+    await searchStock(page, '2330');
+    await expect(page.getByRole('heading', { name: /證據不足/ })).toBeVisible();
+    await expect(page.getByText(/沒有可用的已完成日 K/)).toBeVisible();
+    await expect(page.getByText(/官方曾明示交易日未報價/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: '暫時無法分析' })).toHaveCount(0);
+  });
+
   test('未受公司行動抑制的穿透形正向 fixture 會指定候選且 Top 3 至少一張', async ({ page }) => {
     const piercing = piercingPositiveCase();
-    const stock = makeBrowserStockFixture(piercing.snapshot.bars);
+    const stock = makeBrowserStockFixture(withWeekdayDates(piercing.snapshot.bars));
     const sessions = [...new Set(stock.bars.map((bar) => bar.date))].sort();
     await routeBrowserMarketFixture(page, createBrowserMarketFixture(stock, sessions));
     await goToRoute(page, 'analyzer');
@@ -155,7 +208,11 @@ test.describe('股票型態比對', () => {
   test('兩個以上交易日落後時以截止日表述，不稱為目前型態', async ({ page }) => {
     await freezeTaipeiClock(page);
     const stock = makeBrowserStockFixture(neutralBars('2026-08-07'));
-    await routeBrowserMarketFixture(page, createBrowserMarketFixture(stock));
+    await routeBrowserMarketFixture(page, createBrowserMarketFixture(stock, undefined, {
+      expectedCutoffDate: '2026-08-11',
+      freshness: 'stale',
+      calendarValidThrough: '2026-08-11',
+    }));
     await goToRoute(page, 'analyzer');
     await waitForAnalyzerReady(page);
 
@@ -167,16 +224,17 @@ test.describe('股票型態比對', () => {
 
   test('公司行動會標示並抑制價格連續性型態規則', async ({ page }) => {
     const piercing = piercingPositiveCase();
-    const targetDate = piercing.snapshot.bars.at(-1)?.date;
+    const bars = withWeekdayDates(piercing.snapshot.bars);
+    const targetDate = bars.at(-1)?.date;
     if (!targetDate) {
       throw new Error('穿透形案例缺少目標日 K。');
     }
-    const stock = makeBrowserStockFixture(piercing.snapshot.bars, {
+    const stock = makeBrowserStockFixture(bars, {
       corporateActions: [{
         date: targetDate,
         type: 'cash-dividend',
         affectsPriceContinuity: true,
-        sourceUrl: 'https://example.test/corporate-actions',
+        sourceUrl: 'https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL',
         verifiedAt: '2026-08-11',
       }],
     });

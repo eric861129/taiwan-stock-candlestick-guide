@@ -14,11 +14,49 @@ function isCalendarDate(value: string): boolean {
   return Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
+function isWeekday(value: string): boolean {
+  const weekday = new Date(`${value}T00:00:00.000Z`).getUTCDay();
+  return weekday !== 0 && weekday !== 6;
+}
+
+const OFFICIAL_HOSTS_BY_MARKET = {
+  TWSE: new Set(['openapi.twse.com.tw', 'www.twse.com.tw']),
+  TPEx: new Set(['www.tpex.org.tw', 'dsp.tpex.org.tw']),
+} as const;
+const OFFICIAL_MARKET_HOSTS = new Set([
+  ...OFFICIAL_HOSTS_BY_MARKET.TWSE,
+  ...OFFICIAL_HOSTS_BY_MARKET.TPEx,
+]);
+const EMERGENCY_CLOSURE_EVIDENCE_HOSTS = new Set([
+  ...OFFICIAL_MARKET_HOSTS,
+  'eoc.gov.taipei',
+  'investoredu.twse.com.tw',
+]);
+
+function isApprovedOfficialHttpsUrl(value: string, allowedHosts: ReadonlySet<string>): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:'
+      && url.username === ''
+      && url.password === ''
+      && url.port === ''
+      && allowedHosts.has(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function officialHttpsUrlSchema(allowedHosts: ReadonlySet<string>) {
+  return z.string().trim().min(1).refine(
+    (value) => isApprovedOfficialHttpsUrl(value, allowedHosts),
+    '必須是受信任官方來源的 HTTPS 網址',
+  );
+}
+
 const isoDateSchema = z.string().refine(isCalendarDate, '必須是 YYYY-MM-DD 日期');
-const nonEmptyHttpsUrlSchema = z.string().url().refine(
-  (value) => value.startsWith('https://'),
-  '必須是 HTTPS 網址',
-);
+const nonEmptyHttpsUrlSchema = officialHttpsUrlSchema(OFFICIAL_MARKET_HOSTS);
+const twseOfficialHttpsUrlSchema = officialHttpsUrlSchema(OFFICIAL_HOSTS_BY_MARKET.TWSE);
+const emergencyClosureSourceUrlSchema = officialHttpsUrlSchema(EMERGENCY_CLOSURE_EVIDENCE_HOSTS);
 const marketSchema = z.enum(['TWSE', 'TPEx']);
 const freshnessSchema = z.enum(['fresh', 'one-session-behind', 'stale', 'unknown']);
 const securityTypeSchema = z.enum([
@@ -34,7 +72,7 @@ const marketCutoffSchema = z.object({
   cutoffDate: isoDateSchema,
   expectedCutoffDate: isoDateSchema.nullable(),
   freshness: freshnessSchema,
-  calendarSourceUrl: nonEmptyHttpsUrlSchema,
+  calendarSourceUrl: twseOfficialHttpsUrlSchema,
   calendarValidThrough: isoDateSchema,
   tradingSessions: z.array(isoDateSchema).min(1),
 }).strict().superRefine((cutoff, context) => {
@@ -45,6 +83,13 @@ const marketCutoffSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['tradingSessions'],
       message: '交易日必須遞增且不可重複。',
+    });
+  }
+  if (sessions.some((session) => !isWeekday(session))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['tradingSessions'],
+      message: '交易日不可包含週末日期。',
     });
   }
   if (lastSession !== undefined && cutoff.cutoffDate !== lastSession) {
@@ -95,9 +140,29 @@ const marketCutoffSchema = z.object({
 
 const emergencyMarketClosureSchema = z.object({
   date: isoDateSchema,
+  markets: z.array(marketSchema).min(1),
   reason: z.string().trim().min(1),
-  sourceUrls: z.array(nonEmptyHttpsUrlSchema).min(1),
-}).strict();
+  sourceUrls: z.array(emergencyClosureSourceUrlSchema).min(1),
+}).strict().superRefine((closure, context) => {
+  if (new Set(closure.markets).size !== closure.markets.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['markets'],
+      message: '緊急休市市場不可重複。',
+    });
+  }
+  for (const market of closure.markets) {
+    if (!closure.sourceUrls.some((sourceUrl) => (
+      isApprovedOfficialHttpsUrl(sourceUrl, OFFICIAL_HOSTS_BY_MARKET[market])
+    ))) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sourceUrls'],
+        message: `${market} 緊急休市必須具備該市場的官方規則來源。`,
+      });
+    }
+  }
+});
 
 const emergencyClosureEvidenceSchema = z.object({
   schemaVersion: z.literal(1),
@@ -123,7 +188,7 @@ const emergencyClosureEvidenceSchema = z.object({
 });
 
 const calendarEvidenceSchema = z.object({
-  sourceUrl: nonEmptyHttpsUrlSchema,
+  sourceUrl: twseOfficialHttpsUrlSchema,
   validThrough: isoDateSchema,
   emergencyClosureEvidence: emergencyClosureEvidenceSchema,
 }).strict().superRefine((calendar, context) => {
@@ -156,6 +221,15 @@ const suspensionIntervalSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['sourceUrls'],
       message: '停止買賣區間佐證網址不得重複。',
+    });
+  }
+  if (!interval.sourceUrls.every((sourceUrl) => (
+    isApprovedOfficialHttpsUrl(sourceUrl, OFFICIAL_HOSTS_BY_MARKET[interval.market])
+  ))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceUrls'],
+      message: '停止買賣公告來源必須屬於對應市場的官方網域。',
     });
   }
 });
@@ -256,9 +330,15 @@ export const marketManifestSchema = z.object({
     }
     seenCodes.add(entry.code);
   }
-  const emergencyClosureDates = new Set(
-    manifest.calendar.emergencyClosureEvidence.closures.map((closure) => closure.date),
-  );
+  const emergencyClosureDatesByMarket = new Map<Market, Set<string>>([
+    ['TWSE', new Set()],
+    ['TPEx', new Set()],
+  ]);
+  for (const closure of manifest.calendar.emergencyClosureEvidence.closures) {
+    for (const market of closure.markets) {
+      emergencyClosureDatesByMarket.get(market)!.add(closure.date);
+    }
+  }
   const knownSymbols = new Set(manifest.symbols.map((entry) => `${entry.market}/${entry.code}`));
   for (const [index, interval] of manifest.suspensionEvidence.intervals.entries()) {
     if (!knownSymbols.has(`${interval.market}/${interval.code}`)) {
@@ -280,7 +360,7 @@ export const marketManifestSchema = z.object({
         message: '市場交易日視窗必須使用 manifest 年度日曆。',
       });
     }
-    if (cutoff.tradingSessions.some((session) => emergencyClosureDates.has(session))) {
+    if (cutoff.tradingSessions.some((session) => emergencyClosureDatesByMarket.get(market as Market)!.has(session))) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['markets', market, 'tradingSessions'],
@@ -344,7 +424,7 @@ export const stockSnapshotSchema = z.object({
   comparisonUnitPolicy: z.object({
     version: z.number().int().positive(),
     effectiveFrom: isoDateSchema,
-    sourceUrl: nonEmptyHttpsUrlSchema,
+    sourceUrl: twseOfficialHttpsUrlSchema,
   }).strict(),
   bars: z.array(ohlcvBarSchema).max(120),
   noQuoteEvidence: z.array(noQuoteEvidenceSchema).max(120),
@@ -376,12 +456,23 @@ export const stockSnapshotSchema = z.object({
     evidence.market !== snapshot.market
     || evidence.code !== snapshot.code
     || evidence.sourceUrl.length === 0
+    || !isWeekday(evidence.date)
+    || !isApprovedOfficialHttpsUrl(evidence.sourceUrl, OFFICIAL_HOSTS_BY_MARKET[snapshot.market])
     || index > 0 && evidence.date <= snapshot.noQuoteEvidence[index - 1]!.date
   ))) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['noQuoteEvidence'],
       message: '未報價證據必須屬於同一股票、日期遞增且不可重複。',
+    });
+  }
+  if (snapshot.corporateActions.some((action) => (
+    !isApprovedOfficialHttpsUrl(action.sourceUrl, OFFICIAL_HOSTS_BY_MARKET[snapshot.market])
+  ))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['corporateActions'],
+      message: '公司行動來源必須屬於對應市場的官方網域。',
     });
   }
   const barDates = new Set(snapshot.bars.map((bar) => bar.date));

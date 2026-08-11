@@ -38,10 +38,14 @@ _EMERGENCY_CLOSURE_OFFICIAL_HOSTS = frozenset(
     {
         "investoredu.twse.com.tw",
         "www.twse.com.tw",
+        "www.tpex.org.tw",
         "eoc.gov.taipei",
     }
 )
-_EMERGENCY_CLOSURE_TWSE_HOSTS = frozenset({"investoredu.twse.com.tw", "www.twse.com.tw"})
+_EMERGENCY_CLOSURE_RULE_HOSTS: dict[Market, frozenset[str]] = {
+    "TWSE": frozenset({"www.twse.com.tw"}),
+    "TPEx": frozenset({"www.tpex.org.tw"}),
+}
 _SUSPENSION_OFFICIAL_HOSTS: dict[Market, frozenset[str]] = {
     "TWSE": frozenset({"www.twse.com.tw"}),
     "TPEx": frozenset({"dsp.tpex.org.tw"}),
@@ -143,6 +147,7 @@ class EmergencyMarketClosure:
     """年度休市日曆之外，經官方來源佐證的全市場緊急休市日。"""
 
     trading_date: date
+    markets: tuple[Market, ...]
     reason: str
     source_urls: tuple[str, ...]
 
@@ -295,12 +300,23 @@ def parse_emergency_market_closure_evidence(payload: object) -> tuple[EmergencyM
         if not isinstance(value, dict):
             raise ValueError("緊急市場休市佐證列必須是 JSON 物件。")
         closure_date = _parse_official_date(_required_text(value, "date"))
+        markets_value = value.get("markets")
         reason = _required_text(value, "reason").strip()
         source_urls_value = value.get("sourceUrls")
         if not reason:
             raise ValueError("緊急市場休市佐證原因不可空白。")
         if closure_date.weekday() >= 5:
             raise ValueError("緊急市場休市日期必須是平日。")
+        if (
+            not isinstance(markets_value, list)
+            or not markets_value
+            or any(market not in {"TWSE", "TPEx"} for market in markets_value)
+            or len(set(markets_value)) != len(markets_value)
+        ):
+            raise ValueError("緊急市場休市佐證必須明確列出且不得重複 TWSE 或 TPEx 市場。")
+        markets: tuple[Market, ...] = tuple(
+            market for market in ("TWSE", "TPEx") if market in markets_value
+        )
         if not isinstance(source_urls_value, list) or not source_urls_value:
             raise ValueError("緊急市場休市佐證至少需要一個官方來源。")
         if any(not isinstance(source_url, str) for source_url in source_urls_value):
@@ -308,14 +324,19 @@ def parse_emergency_market_closure_evidence(payload: object) -> tuple[EmergencyM
         source_urls = tuple(sorted({_validate_emergency_closure_source_url(source_url) for source_url in source_urls_value}))
         if len(source_urls) != len(source_urls_value):
             raise ValueError("緊急市場休市佐證網址不可重複。")
-        if not any(urlparse(source_url).hostname in _EMERGENCY_CLOSURE_TWSE_HOSTS for source_url in source_urls):
-            raise ValueError("緊急市場休市佐證必須包含 TWSE 官方來源。")
+        for market in markets:
+            if not any(
+                urlparse(source_url).hostname in _EMERGENCY_CLOSURE_RULE_HOSTS[market]
+                for source_url in source_urls
+            ):
+                raise ValueError(f"緊急市場休市佐證必須包含 {market} 官方規則來源。")
         if closure_date in seen_dates:
             raise ValueError("緊急市場休市佐證日期不可重複。")
         seen_dates.add(closure_date)
         closures.append(
             EmergencyMarketClosure(
                 trading_date=closure_date,
+                markets=markets,
                 reason=reason,
                 source_urls=source_urls,
             )

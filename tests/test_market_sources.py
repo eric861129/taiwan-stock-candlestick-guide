@@ -288,10 +288,11 @@ class OfficialCalendarTests(unittest.TestCase):
                 "closures": [
                     {
                         "date": "2026-07-10",
+                        "markets": ["TWSE", "TPEx"],
                         "reason": "臺灣證券交易所集中交易市場 115 年 7 月 10 日休市一天。",
                         "sourceUrls": [
-                            "https://investoredu.twse.com.tw/pages/TWSE_HotNews.aspx?Page=4",
                             "https://eoc.gov.taipei/News/Detail/909",
+                            "https://www.tpex.org.tw/storage/eb_data/11205/11200591671.html",
                             "https://www.twse.com.tw/en/clearing/suspended.html",
                         ],
                     }
@@ -306,17 +307,19 @@ class OfficialCalendarTests(unittest.TestCase):
         self.assertIn(date(2026, 7, 10), effective_calendar.holiday_dates)
         self.assertEqual(date(2026, 7, 9), expected_cutoff_date(effective_calendar, after_close))
         self.assertEqual("臺灣證券交易所集中交易市場 115 年 7 月 10 日休市一天。", closures[0].reason)
+        self.assertEqual(("TWSE", "TPEx"), closures[0].markets)
 
-    def test_emergency_market_closure_evidence_requires_a_twse_official_source(self) -> None:
-        with self.assertRaisesRegex(ValueError, "TWSE"):
+    def test_emergency_market_closure_evidence_requires_an_official_rule_for_every_excluded_market(self) -> None:
+        with self.assertRaisesRegex(ValueError, "TPEx"):
             parse_emergency_market_closure_evidence(
                 {
                     "schemaVersion": EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION,
                     "closures": [
                         {
                             "date": "2026-07-10",
-                            "reason": "僅有地方政府來源不構成交易市場休市證據。",
-                            "sourceUrls": ["https://eoc.gov.taipei/News/Detail/909"],
+                            "markets": ["TWSE", "TPEx"],
+                            "reason": "缺少 TPEx 官方規則時不可宣告兩市場休市。",
+                            "sourceUrls": ["https://www.twse.com.tw/en/clearing/suspended.html"],
                         }
                     ],
                 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeFreshness } from './freshness';
+import { computeFreshness, mostConservativeFreshness } from './freshness';
 
 const calendarFixture = {
   tradingSessions: ['2026-08-05', '2026-08-06', '2026-08-07', '2026-08-10', '2026-08-11'],
@@ -18,5 +18,12 @@ describe('market data freshness', () => {
 
   it('returns unknown when the Taiwan market calendar does not cover today', () => {
     expect(computeFreshness({ ...calendarFixture, validThrough: '2026-08-07' }, '2026-08-07', new Date('2026-08-10T18:00:00+08:00'))).toBe('unknown');
+  });
+
+  it('does not let a locally recomputed fresh result weaken signed stale market evidence', () => {
+    expect(mostConservativeFreshness('stale', 'fresh')).toBe('stale');
+    expect(mostConservativeFreshness('fresh', 'one-session-behind')).toBe('one-session-behind');
+    expect(mostConservativeFreshness('unknown', 'stale')).toBe('stale');
+    expect(mostConservativeFreshness('fresh', 'unknown')).toBe('unknown');
   });
 });
