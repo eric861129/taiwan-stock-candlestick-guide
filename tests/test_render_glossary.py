@@ -37,6 +37,21 @@ EXPECTED_TERMS_AND_AVOIDS = (
     ("賺賠比", "只看單筆最大獲利"),
     ("期望值", "保證獲利、用少量案例推論長期結果"),
     ("多時間週期判讀", "同時查看大量週期直到找到想要的答案"),
+    ("學習路徑", "只列章節的目錄、沒有先後關係的自由瀏覽"),
+    ("型態卡（Pattern Card）", "必漲圖、必跌圖、明牌卡"),
+    ("型態相似度分析", "股價預測、走勢預言、買賣訊號"),
+    ("型態候選", "唯一答案、買進訊號、賣出訊號"),
+    ("規則符合度", "上漲機率、勝率、AI 信心"),
+    ("無明顯型態", "分析失敗、硬選最像的一張"),
+    ("分析區間", "只看最後一根 K 線、未標明範圍的近期走勢"),
+    ("公司行動干擾", "技術性跳空、突破缺口"),
+    ("型態規則", "憑感覺辨識、黑箱答案"),
+    ("型態規則族", "為每張卡複製一份近似規則、讓教學說明與比對程式各自定義"),
+    ("可比對型態卡", "宣稱所有教學概念都能只靠日 K 資料可靠辨識"),
+    ("證據不足", "把資料不足當成無明顯型態、為了產生答案而降低必要條件"),
+    ("市場資料快照", "即時行情、未經驗證的 API 回應"),
+    ("資料截止日", "今天資料、最新資料，但沒有標示實際日期"),
+    ("資料新鮮度", "只用檔案產生時間判斷行情是否最新"),
     ("歷史案例", "用已知結果倒推完美理由"),
     ("證據等級", "把經驗法則包裝成市場定律"),
     ("觀察", "在事實描述中混入看多、看空或原因推測"),
@@ -53,7 +68,7 @@ class ParseContextTests(unittest.TestCase):
     def test_current_context_has_all_canonical_entries_in_order_and_each_renders_once(self):
         entries = parse_context(CONTEXT_PATH)
 
-        self.assertEqual(32, len(entries))
+        self.assertEqual(len(EXPECTED_TERMS_AND_AVOIDS), len(entries))
         self.assertEqual(
             EXPECTED_TERMS_AND_AVOIDS,
             tuple((entry.term, entry.avoid) for entry in entries),
