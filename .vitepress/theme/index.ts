@@ -6,6 +6,7 @@ import LearningMap from '../../src/components/LearningMap.vue';
 import LearningProgressProvider from '../../src/components/LearningProgressProvider.vue';
 import PatternCatalog from '../../src/components/PatternCatalog.vue';
 import StageQuiz from '../../src/components/StageQuiz.vue';
+import StockAnalyzer from '../../src/components/StockAnalyzer.vue';
 import './styles.css';
 
 const theme: Theme = {
@@ -29,6 +30,7 @@ const theme: Theme = {
     app.component('LearningProgressProvider', LearningProgressProvider);
     app.component('PatternCatalog', PatternCatalog);
     app.component('StageQuiz', StageQuiz);
+    app.component('StockAnalyzer', StockAnalyzer);
   },
 };
 
