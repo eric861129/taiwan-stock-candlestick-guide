@@ -58,6 +58,7 @@ const nonEmptyHttpsUrlSchema = officialHttpsUrlSchema(OFFICIAL_MARKET_HOSTS);
 const twseOfficialHttpsUrlSchema = officialHttpsUrlSchema(OFFICIAL_HOSTS_BY_MARKET.TWSE);
 const emergencyClosureSourceUrlSchema = officialHttpsUrlSchema(EMERGENCY_CLOSURE_EVIDENCE_HOSTS);
 const marketSchema = z.enum(['TWSE', 'TPEx']);
+const MARKET_WIDE_EMERGENCY_CLOSURE_MARKETS = new Set<Market>(['TWSE', 'TPEx']);
 const freshnessSchema = z.enum(['fresh', 'one-session-behind', 'stale', 'unknown']);
 const securityTypeSchema = z.enum([
   'common-stock',
@@ -140,15 +141,20 @@ const marketCutoffSchema = z.object({
 
 const emergencyMarketClosureSchema = z.object({
   date: isoDateSchema,
-  markets: z.array(marketSchema).min(1),
+  markets: z.array(marketSchema),
   reason: z.string().trim().min(1),
   sourceUrls: z.array(emergencyClosureSourceUrlSchema).min(1),
 }).strict().superRefine((closure, context) => {
-  if (new Set(closure.markets).size !== closure.markets.length) {
+  const declaredMarkets = new Set(closure.markets);
+  if (
+    closure.markets.length !== MARKET_WIDE_EMERGENCY_CLOSURE_MARKETS.size
+    || declaredMarkets.size !== MARKET_WIDE_EMERGENCY_CLOSURE_MARKETS.size
+    || [...MARKET_WIDE_EMERGENCY_CLOSURE_MARKETS].some((market) => !declaredMarkets.has(market))
+  ) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['markets'],
-      message: '緊急休市市場不可重複。',
+      message: '緊急休市目前只支援 TWSE 與 TPEx 同日全市場休市，markets 必須各含一次。',
     });
   }
   for (const market of closure.markets) {

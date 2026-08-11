@@ -332,4 +332,27 @@ describe('market snapshot v3 schemas', () => {
       },
     }).success).toBe(false);
   });
+
+  it('requires emergency closures to declare TWSE and TPEx exactly once', () => {
+    for (const markets of [
+      ['TWSE'],
+      ['TPEx'],
+      ['TWSE', 'TWSE'],
+      ['TWSE', 'TPEx', 'OTHER'],
+    ]) {
+      expect(marketManifestSchema.safeParse({
+        ...manifestFixture,
+        calendar: {
+          ...manifestFixture.calendar,
+          emergencyClosureEvidence: {
+            schemaVersion: 1,
+            closures: [{
+              ...manifestFixture.calendar.emergencyClosureEvidence.closures[0],
+              markets,
+            }],
+          },
+        },
+      }).success).toBe(false);
+    }
+  });
 });

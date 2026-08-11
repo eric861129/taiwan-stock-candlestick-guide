@@ -309,6 +309,37 @@ class OfficialCalendarTests(unittest.TestCase):
         self.assertEqual("臺灣證券交易所集中交易市場 115 年 7 月 10 日休市一天。", closures[0].reason)
         self.assertEqual(("TWSE", "TPEx"), closures[0].markets)
 
+    def test_emergency_market_closure_evidence_requires_both_markets_once(self) -> None:
+        invalid_market_declarations = (
+            (["TWSE"], ["https://www.twse.com.tw/en/clearing/suspended.html"]),
+            (["TPEx"], ["https://www.tpex.org.tw/storage/eb_data/11205/11200591671.html"]),
+            (["TWSE", "TWSE"], ["https://www.twse.com.tw/en/clearing/suspended.html"]),
+            (
+                ["TWSE", "TPEx", "OTHER"],
+                [
+                    "https://www.tpex.org.tw/storage/eb_data/11205/11200591671.html",
+                    "https://www.twse.com.tw/en/clearing/suspended.html",
+                ],
+            ),
+        )
+
+        for markets, source_urls in invalid_market_declarations:
+            with self.subTest(markets=markets):
+                with self.assertRaisesRegex(ValueError, "同日全市場休市"):
+                    parse_emergency_market_closure_evidence(
+                        {
+                            "schemaVersion": EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+                            "closures": [
+                                {
+                                    "date": "2026-07-10",
+                                    "markets": markets,
+                                    "reason": "共享交易日曆僅可排除兩市場同日全市場休市。",
+                                    "sourceUrls": source_urls,
+                                }
+                            ],
+                        }
+                    )
+
     def test_emergency_market_closure_evidence_requires_an_official_rule_for_every_excluded_market(self) -> None:
         with self.assertRaisesRegex(ValueError, "TPEx"):
             parse_emergency_market_closure_evidence(

@@ -46,6 +46,7 @@ _EMERGENCY_CLOSURE_RULE_HOSTS: dict[Market, frozenset[str]] = {
     "TWSE": frozenset({"www.twse.com.tw"}),
     "TPEx": frozenset({"www.tpex.org.tw"}),
 }
+_MARKET_WIDE_EMERGENCY_CLOSURE_MARKETS: tuple[Market, ...] = ("TWSE", "TPEx")
 _SUSPENSION_OFFICIAL_HOSTS: dict[Market, frozenset[str]] = {
     "TWSE": frozenset({"www.twse.com.tw"}),
     "TPEx": frozenset({"dsp.tpex.org.tw"}),
@@ -286,7 +287,7 @@ def load_emergency_market_closure_evidence(path: Path) -> tuple[EmergencyMarketC
 
 
 def parse_emergency_market_closure_evidence(payload: object) -> tuple[EmergencyMarketClosure, ...]:
-    """驗證緊急休市日期、原因及官方佐證網址，保留可重現的年度日曆例外。"""
+    """驗證 TWSE 與 TPEx 同日全市場緊急休市的官方佐證。"""
 
     if not isinstance(payload, dict) or payload.get("schemaVersion") != EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION:
         raise ValueError("緊急市場休市佐證 schemaVersion 必須是 1。")
@@ -309,14 +310,14 @@ def parse_emergency_market_closure_evidence(payload: object) -> tuple[EmergencyM
             raise ValueError("緊急市場休市日期必須是平日。")
         if (
             not isinstance(markets_value, list)
-            or not markets_value
-            or any(market not in {"TWSE", "TPEx"} for market in markets_value)
-            or len(set(markets_value)) != len(markets_value)
+            or len(markets_value) != len(_MARKET_WIDE_EMERGENCY_CLOSURE_MARKETS)
+            or any(not isinstance(market, str) for market in markets_value)
+            or set(markets_value) != set(_MARKET_WIDE_EMERGENCY_CLOSURE_MARKETS)
         ):
-            raise ValueError("緊急市場休市佐證必須明確列出且不得重複 TWSE 或 TPEx 市場。")
-        markets: tuple[Market, ...] = tuple(
-            market for market in ("TWSE", "TPEx") if market in markets_value
-        )
+            raise ValueError(
+                "緊急市場休市佐證目前只支援 TWSE 與 TPEx 同日全市場休市，markets 必須各含一次。"
+            )
+        markets = _MARKET_WIDE_EMERGENCY_CLOSURE_MARKETS
         if not isinstance(source_urls_value, list) or not source_urls_value:
             raise ValueError("緊急市場休市佐證至少需要一個官方來源。")
         if any(not isinstance(source_url, str) for source_url in source_urls_value):
@@ -348,7 +349,7 @@ def apply_emergency_market_closures(
     calendar: TradingCalendar,
     closures: tuple[EmergencyMarketClosure, ...],
 ) -> TradingCalendar:
-    """把經驗證的臨時休市日加入年度日曆，並保留原始官方來源鏈。"""
+    """把經驗證的兩市場同日全市場休市日加入共用年度日曆。"""
 
     coverage_start = date(min(day.year for day in calendar.holiday_dates), 1, 1)
     for closure in closures:
