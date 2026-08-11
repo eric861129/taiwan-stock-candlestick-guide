@@ -32,13 +32,14 @@ const securityTypeSchema = z.enum([
 
 const marketCutoffSchema = z.object({
   cutoffDate: isoDateSchema,
-  expectedCutoffDate: isoDateSchema,
+  expectedCutoffDate: isoDateSchema.nullable(),
   freshness: freshnessSchema,
   calendarSourceUrl: nonEmptyHttpsUrlSchema,
   calendarValidThrough: isoDateSchema,
   tradingSessions: z.array(isoDateSchema).min(1),
 }).strict().superRefine((cutoff, context) => {
   const sessions = cutoff.tradingSessions;
+  const lastSession = sessions.at(-1);
   if (new Set(sessions).size !== sessions.length || sessions.some((session, index) => index > 0 && session <= sessions[index - 1]!)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -46,10 +47,48 @@ const marketCutoffSchema = z.object({
       message: '交易日必須遞增且不可重複。',
     });
   }
+  if (lastSession !== undefined && cutoff.cutoffDate !== lastSession) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['cutoffDate'],
+      message: '市場截止日必須等於交易日清單最後一日。',
+    });
+  }
+  if (lastSession !== undefined && cutoff.calendarValidThrough < lastSession) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['calendarValidThrough'],
+      message: '交易日曆有效日不可早於快照截止日。',
+    });
+  }
+  if (cutoff.expectedCutoffDate === null) {
+    if (cutoff.freshness !== 'unknown') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['freshness'],
+        message: '沒有預期截止日只能標示為未知新鮮度。',
+      });
+    }
+    return;
+  }
   if (cutoff.calendarValidThrough < cutoff.expectedCutoffDate || cutoff.cutoffDate > cutoff.expectedCutoffDate) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: '市場截止日或行事曆有效日不符合資料契約。',
+    });
+  }
+  if (cutoff.cutoffDate === cutoff.expectedCutoffDate && cutoff.freshness !== 'fresh') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['freshness'],
+      message: '截止日等於預期交易日必須標示為新鮮。',
+    });
+  }
+  if (cutoff.cutoffDate < cutoff.expectedCutoffDate && cutoff.freshness === 'fresh') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['freshness'],
+      message: '截止日落後預期交易日不可標示為新鮮。',
     });
   }
 });

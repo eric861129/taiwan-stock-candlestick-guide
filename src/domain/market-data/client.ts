@@ -7,14 +7,14 @@ import {
   type MarketDataManifest,
 } from './schema';
 
-/** 可在測試或瀏覽器中提供的最小 fetch 回應介面。 */
+/** 僅允許以同站台相對路徑讀取靜態快照的 fetch 介面。 */
 export interface FetchResponse {
   ok: boolean;
   status: number;
-  text(): Promise<string>;
+  arrayBuffer(): Promise<ArrayBuffer>;
 }
 
-/** 僅允許以同站台相對路徑讀取靜態快照的 fetch 介面。 */
+/** 供 UI 注入測試或瀏覽器 fetch 的最小介面。 */
 export type FetchLike = (input: string) => Promise<FetchResponse>;
 
 /** 供 UI 顯示的資料載入失敗；reason 與 matcher 的 unavailable 契約保持一致。 */
@@ -33,7 +33,7 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 function defaultFetch(input: string): Promise<FetchResponse> {
   if (typeof globalThis.fetch !== 'function') {
-    return Promise.reject(new MarketDataError('load-error', '此瀏覽器無法載入盤後資料。'));
+    return Promise.reject(new MarketDataError('load-error', '此環境無法使用瀏覽器資料載入功能。'));
   }
   return globalThis.fetch(input);
 }
@@ -41,7 +41,7 @@ function defaultFetch(input: string): Promise<FetchResponse> {
 function safeBasePath(base: string): string {
   const normalized = base.trim();
   if (!/^\/(?:[A-Za-z0-9._~-]+\/)*$/.test(normalized)) {
-    throw new MarketDataError('schema-error', '資料載入設定不是同站台路徑，已停止查詢。');
+    throw new MarketDataError('schema-error', '網站基底路徑不是安全的同源相對路徑。');
   }
   return normalized;
 }
@@ -49,7 +49,7 @@ function safeBasePath(base: string): string {
 function sameOriginDataPath(base: string, relativePath: string): string {
   const safeBase = safeBasePath(base);
   if (!/^data\/(?:manifest\.json|stocks\/[A-Za-z0-9._-]+\.json)$/.test(relativePath)) {
-    throw new MarketDataError('schema-error', '資料索引指定了不安全的檔案路徑。');
+    throw new MarketDataError('schema-error', '僅允許讀取已發布的快照資料檔。');
   }
   return `${safeBase}${relativePath}`;
 }
@@ -59,11 +59,11 @@ function messageFor(reason: UnavailableReason): string {
     case 'not-found':
       return '找不到這個股票代碼。請確認代碼後重新查詢。';
     case 'unsupported-security':
-      return '此證券不是第一版支援的上市或上櫃普通股。';
+      return '此證券不是第一版支援的普通股。';
     case 'load-error':
       return '無法載入盤後資料。請稍後重新查詢。';
     default:
-      return '資料格式或完整性驗證失敗，沒有執行型態比對。';
+      return '資料格式或完整性驗證失敗，已停止型態比對。';
   }
 }
 
@@ -85,15 +85,19 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-async function sha256Hex(value: string): Promise<string> {
+function utf8Bytes(value: string): Uint8Array {
+  return new TextEncoder().encode(value);
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
   if (!globalThis.crypto?.subtle) {
     throw new MarketDataError('schema-error', '此瀏覽器無法驗證資料完整性，已停止型態比對。');
   }
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', Uint8Array.from(bytes));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function readJson(fetcher: FetchLike, path: string): Promise<{ value: unknown; text: string }> {
+async function readResponseBytes(fetcher: FetchLike, path: string): Promise<Uint8Array> {
   let response: FetchResponse;
   try {
     response = await fetcher(path);
@@ -103,16 +107,26 @@ async function readJson(fetcher: FetchLike, path: string): Promise<{ value: unkn
   if (!response.ok) {
     throw new MarketDataError('load-error', `無法載入盤後資料（HTTP ${response.status}）。請稍後重新查詢。`);
   }
-  let text: string;
+
   try {
-    text = await response.text();
+    return new Uint8Array(await response.arrayBuffer());
   } catch (error) {
     throw asMarketDataError(error, 'load-error');
   }
+}
+
+function parseUtf8Json(bytes: Uint8Array): unknown {
+  let text: string;
   try {
-    return { value: JSON.parse(text) as unknown, text };
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
-    throw new MarketDataError('schema-error', '資料不是有效的 UTF-8 JSON，沒有執行型態比對。');
+    throw new MarketDataError('schema-error', '資料不是有效的 UTF-8 JSON，已停止型態比對。');
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new MarketDataError('schema-error', '資料不是有效的 UTF-8 JSON，已停止型態比對。');
   }
 }
 
@@ -122,21 +136,40 @@ async function assertManifestHash(value: unknown, expectedHash: string): Promise
   }
   const withoutHash = { ...(value as Record<string, unknown>) };
   delete withoutHash.snapshotHash;
-  const calculated = await sha256Hex(`${canonicalJson(withoutHash)}\n`);
+  const calculated = await sha256Hex(utf8Bytes(`${canonicalJson(withoutHash)}\n`));
   if (calculated !== expectedHash) {
-    throw new MarketDataError('schema-error', '市場索引完整性驗證失敗，沒有執行型態比對。');
+    throw new MarketDataError('schema-error', '快照清冊雜湊不符，已停止型態比對。');
   }
 }
 
 function safeStockPath(entry: MarketDataManifest['symbols'][number]): string {
   const matches = DATA_PATH_PATTERN.exec(entry.dataPath);
   if (!matches || matches[1] !== entry.code || !SHA256_PATTERN.test(entry.digest)) {
-    throw new MarketDataError('schema-error', '資料索引指定了不安全的股票檔案，已停止查詢。');
+    throw new MarketDataError('schema-error', '股票資料路徑或雜湊索引不安全，已停止型態比對。');
   }
   return entry.dataPath;
 }
 
-/** 將全形數字與前後空白正規化；非股票代碼格式回傳 null。 */
+function assertStockMatchesIndex(
+  entry: MarketDataManifest['symbols'][number],
+  snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
+): void {
+  const firstDate = snapshot.bars[0]?.date;
+  const lastDate = snapshot.bars.at(-1)?.date;
+  if (
+    firstDate !== entry.firstDate
+    || lastDate !== entry.lastDate
+    || snapshot.bars.length !== entry.barCount
+    || snapshot.listingDate !== entry.listingDate
+    || snapshot.availableSessions !== entry.availableSessions
+    || snapshot.availableSessions !== snapshot.bars.length
+    || snapshot.shortHistoryReason !== entry.shortHistoryReason
+  ) {
+    throw new MarketDataError('schema-error', '股票資料與清冊的日期、筆數或歷史可用性欄位不一致。');
+  }
+}
+
+/** 將全形數字與空白正規化後，只接受 4 至 6 碼股票代碼。 */
 export function normalizeStockCode(input: unknown): string | null {
   if (typeof input !== 'string') {
     return null;
@@ -148,12 +181,13 @@ export function normalizeStockCode(input: unknown): string | null {
   return /^[0-9]{4,6}$/.test(normalized) ? normalized : null;
 }
 
-/** 載入並驗證固定 GitHub Pages base 下的市場索引，不接受任意 URL。 */
+/** 讀取 manifest 前先收斂到 GitHub Pages base 下的同源安全 URL。 */
 export async function loadManifest(
   base: string = SITE_BASE,
   fetcher: FetchLike = defaultFetch,
 ): Promise<MarketDataManifest> {
-  const { value } = await readJson(fetcher, sameOriginDataPath(base, 'data/manifest.json'));
+  const bytes = await readResponseBytes(fetcher, sameOriginDataPath(base, 'data/manifest.json'));
+  const value = parseUtf8Json(bytes);
   const parsed = marketManifestSchema.safeParse(value);
   if (!parsed.success) {
     throw new MarketDataError('schema-error', messageFor('schema-error'));
@@ -163,8 +197,8 @@ export async function loadManifest(
 }
 
 /**
- * 只從 manifest 的完全相符普通股索引讀取一個內容雜湊快照。
- * 使用者輸入永遠不會被拼接成 URL，也不會直接請求 TWSE 或 TPEx。
+ * 只從 manifest 已列出的安全資料路徑讀取一檔股票快照。
+ * 不會依使用者輸入直接組合外部 URL，也不會直接呼叫 TWSE 或 TPEx。
  */
 export async function loadStockSnapshot(
   manifest: MarketDataManifest,
@@ -174,7 +208,7 @@ export async function loadStockSnapshot(
 ): Promise<StockSnapshot> {
   const code = normalizeStockCode(input);
   if (!code) {
-    throw new MarketDataError('not-found', '請輸入支援股票清冊中的 4 至 6 位普通股代碼。');
+    throw new MarketDataError('not-found', '輸入的股票代碼格式不正確，請輸入 4 至 6 碼數字代碼。');
   }
   const entry = manifest.symbols.find((symbol) => symbol.code === code);
   if (!entry) {
@@ -185,20 +219,21 @@ export async function loadStockSnapshot(
   }
 
   const path = sameOriginDataPath(base, safeStockPath(entry));
-  const { value, text } = await readJson(fetcher, path);
+  const bytes = await readResponseBytes(fetcher, path);
   let actualDigest: string;
   try {
-    actualDigest = await sha256Hex(text);
+    actualDigest = await sha256Hex(bytes);
   } catch (error) {
     throw asMarketDataError(error, 'schema-error');
   }
   if (actualDigest !== entry.digest) {
-    throw new MarketDataError('schema-error', '股票資料完整性驗證失敗，沒有執行型態比對。');
+    throw new MarketDataError('schema-error', '股票資料雜湊不符，已停止型態比對。');
   }
-  if (new TextEncoder().encode(text).byteLength !== entry.size) {
-    throw new MarketDataError('schema-error', '股票資料大小驗證失敗，沒有執行型態比對。');
+  if (bytes.byteLength !== entry.size) {
+    throw new MarketDataError('schema-error', '股票資料大小不符，已停止型態比對。');
   }
 
+  const value = parseUtf8Json(bytes);
   const parsed = stockSnapshotSchema.safeParse(value);
   if (!parsed.success) {
     throw new MarketDataError('schema-error', messageFor('schema-error'));
@@ -209,12 +244,13 @@ export async function loadStockSnapshot(
     || parsed.data.name !== entry.name
     || parsed.data.securityType !== entry.securityType
   ) {
-    throw new MarketDataError('schema-error', '股票索引與資料內容不一致，沒有執行型態比對。');
+    throw new MarketDataError('schema-error', '股票資料與清冊索引不一致，已停止型態比對。');
   }
+  assertStockMatchesIndex(entry, parsed.data);
   return toStockSnapshot(parsed.data);
 }
 
-/** 將 manifest 的市場截止資料轉換為 matcher 可使用的新鮮度型別。 */
+/** 取用 manifest 已由發布端標示的新鮮度，供不需重新計算時顯示。 */
 export function manifestFreshness(manifest: MarketDataManifest, market: MarketDataManifest['symbols'][number]['market']): Freshness {
   return manifest.markets[market].freshness;
 }

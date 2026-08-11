@@ -34,7 +34,7 @@ const chartSnapshot = {
     type: 'cash-dividend' as const,
     affectsPriceContinuity: true,
     sourceUrl: 'https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL',
-    verifiedAt: '2026-06-61',
+    verifiedAt: '2026-06-30',
   }],
   sourceUrls: ['https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
 };

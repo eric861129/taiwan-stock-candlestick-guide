@@ -102,4 +102,59 @@ describe('market snapshot v2 schemas', () => {
     }).success).toBe(false);
     expect(stockSnapshotSchema.safeParse({ ...snapshotFixture, snapshotVersion: 1 }).success).toBe(false);
   });
+
+  it('matches the v2 calendar contract for unknown expected cutoffs and retained trading sessions', () => {
+    const unknownMarket = {
+      ...manifestFixture.markets.TWSE,
+      expectedCutoffDate: null,
+      freshness: 'unknown',
+    };
+    const unknownManifest = {
+      ...manifestFixture,
+      markets: {
+        TWSE: unknownMarket,
+        TPEx: { ...unknownMarket },
+      },
+    };
+
+    expect(marketManifestSchema.safeParse(unknownManifest).success).toBe(true);
+    expect(marketManifestSchema.safeParse({
+      ...unknownManifest,
+      markets: {
+        ...unknownManifest.markets,
+        TWSE: { ...unknownMarket, freshness: 'fresh' },
+      },
+    }).success).toBe(false);
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      markets: {
+        ...manifestFixture.markets,
+        TWSE: { ...manifestFixture.markets.TWSE, cutoffDate: '2026-08-10' },
+      },
+    }).success).toBe(false);
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      markets: {
+        ...manifestFixture.markets,
+        TWSE: { ...manifestFixture.markets.TWSE, freshness: 'one-session-behind' },
+      },
+    }).success).toBe(false);
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      markets: {
+        ...manifestFixture.markets,
+        TWSE: {
+          ...unknownMarket,
+          calendarValidThrough: '2026-08-10',
+        },
+      },
+    }).success).toBe(false);
+    expect(marketManifestSchema.safeParse({
+      ...manifestFixture,
+      markets: {
+        ...manifestFixture.markets,
+        TWSE: { ...manifestFixture.markets.TWSE, tradingSessions: [] },
+      },
+    }).success).toBe(false);
+  });
 });

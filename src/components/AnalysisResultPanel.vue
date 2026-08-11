@@ -8,6 +8,7 @@ import type {
   PatternMatchResult,
   RuleEvaluation,
   StockSnapshot,
+  UnavailableReason,
 } from '../domain/market-data/types';
 
 const props = defineProps<{
@@ -15,13 +16,11 @@ const props = defineProps<{
   snapshot: StockSnapshot | null;
 }>();
 
-const context = computed<AnalysisContext | undefined>(() => (
-  props.result.status === 'unavailable' ? props.result.context : props.result.context
-));
+const context = computed<AnalysisContext | undefined>(() => props.result.context);
 
 const statusHeading = computed(() => {
   switch (props.result.status) {
-    case 'matched': return '型態候選';
+    case 'matched': return '候選型態';
     case 'no-clear-pattern': return '無明顯型態';
     case 'insufficient-evidence': return '證據不足';
     default: return '暫時無法分析';
@@ -30,18 +29,54 @@ const statusHeading = computed(() => {
 
 const nextAction = computed(() => {
   switch (props.result.status) {
-    case 'matched': return '逐條核對符合、未符合與失效條件，再回到對應課程複習。';
-    case 'no-clear-pattern': return '沒有候選也是正常結果；請回到圖表核對背景、位置與資料限制。';
-    case 'insufficient-evidence': return '請先確認缺少的資料或受公司行動影響的條件，不要用猜測補齊。';
-    default: return '請重新查詢；若問題持續，等待下一次已驗證的盤後快照。';
+    case 'matched': return '下一步：逐條核對候選卡的符合、未符合與失效條件，再回到對應課程複習。';
+    case 'no-clear-pattern': return '下一步：回到圖表核對背景、位置與資料限制；沒有候選也是可解釋的結果。';
+    case 'insufficient-evidence': return '下一步：請於資料完整後重新查詢，並先確認資料截止日與公司行動提示。';
+    default: return unavailableDescription(props.result.reason);
   }
 });
+
+const reasonCodeLabels: Record<string, string> = {
+  'no-completed-bars': '沒有可用的已完成日 K，無法建立比對視窗。',
+  'insufficient-evidence': '可用資料不足以可靠評估所有必要條件。',
+  'prior-body-window-unavailable': '前段實體比較窗不足，無法可靠比較相對大小。',
+  'comparison-unit-unavailable': '價格比較單位不足，無法用既定容忍範圍比對。',
+  'range-unavailable': '目標日 K 的價格區間無法計算，不能安全判讀幾何條件。',
+  'single-candle-data-unavailable': '單根 K 的必要價格資料不足，不能安全判讀形狀。',
+  'incomplete-bar': '候選窗含未完成日 K，因此本次不參與計分。',
+  'price-continuity-action-intersects-window': '公司行動影響候選窗的價格連續性，因此本次不參與計分。',
+  'optional-context-unavailable': '部分背景資訊不足，該補充條件未納入判讀。',
+  'missing-target-bar': '目標日 K 不完整，無法建立候選條件。',
+};
+
+function reasonDescription(reasonCode: string): string {
+  return reasonCodeLabels[reasonCode] ?? '部分必要資料或規則條件無法確認，因此本次不以猜測補足。';
+}
+
+function unavailableDescription(reason: UnavailableReason): string {
+  switch (reason) {
+    case 'not-found':
+      return '找不到這個股票代碼。下一步：請確認代碼後重新查詢。';
+    case 'unsupported-security':
+      return '此證券尚未納入第一版普通股比對範圍。下一步：請改選支援的普通股。';
+    case 'load-error':
+      return '盤後資料暫時無法載入。下一步：請稍後重新查詢。';
+    case 'schema-error':
+      return '資料完整性驗證失敗，已停止型態比對。下一步：請稍後重新載入，若持續發生請回報資料版本。';
+  }
+}
+
+function fallbackDescription(result: AnalysisResult): string {
+  return result.status === 'unavailable'
+    ? unavailableDescription(result.reason)
+    : '分析結果缺少必要資料，請重新查詢。';
+}
 
 function freshnessLabel(value: AnalysisContext['freshness']): string {
   const labels: Record<AnalysisContext['freshness'], string> = {
     fresh: '資料截止日符合目前預期交易日',
-    'one-session-behind': '落後一個交易日，仍可比對但請留意截止日',
-    stale: '落後兩個以上交易日，僅供回顧截止日當時的資料',
+    'one-session-behind': '落後一個交易日，請留意非最新盤後資料',
+    stale: '落後兩個以上交易日，請以截止日為準解讀',
     unknown: '交易日曆不足，無法確認資料是否新鮮',
   };
   return labels[value];
@@ -49,18 +84,18 @@ function freshnessLabel(value: AnalysisContext['freshness']): string {
 
 function resultTitle(value: AnalysisContext): string {
   return value.freshness === 'stale'
-    ? `截至 ${value.cutoffDate} 的型態`
+    ? `截至 ${value.cutoffDate} 的型態相似度分析`
     : `${value.cutoffDate} 的型態相似度分析`;
 }
 
 function ruleStateLabel(evaluation: RuleEvaluation): string {
   if (evaluation.group === 'invalidating' && evaluation.state === 'met') {
-    return '失效條件已觸發';
+    return '失效條件成立';
   }
   const labels: Record<RuleEvaluation['state'], string> = {
     met: '符合',
-    'not-met': '不符合',
-    unavailable: '暫時無法評估',
+    'not-met': '未符合',
+    unavailable: '目前無法評估',
   };
   return labels[evaluation.state];
 }
@@ -69,7 +104,7 @@ function ruleGroupLabel(evaluation: RuleEvaluation): string {
   const labels: Record<RuleEvaluation['group'], string> = {
     required: '必要條件',
     context: '背景條件',
-    supporting: '輔助條件',
+    supporting: '補充條件',
     invalidating: '失效條件',
   };
   return labels[evaluation.group];
@@ -110,7 +145,7 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
 
       <dl class="analysis-result-panel__facts">
         <div>
-          <dt>資料截止日</dt>
+          <dt>市場資料截止日</dt>
           <dd>{{ context.cutoffDate }}</dd>
         </div>
         <div>
@@ -149,7 +184,7 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
                 >官方盤後資料來源</a>
               </li>
             </ul>
-            <span v-else>快照來源暫時不可用。</span>
+            <span v-else>資料來源暫時無法提供。</span>
           </dd>
         </div>
       </dl>
@@ -183,7 +218,7 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
             v-for="action in context.corporateActions"
             :key="`${action.date}-${action.type}`"
           >
-            {{ action.date }}：{{ actionLabel(action.type) }}；{{ action.affectsPriceContinuity ? '受價格連續性影響的規則已停用。' : '不影響價格連續性規則。' }}
+            {{ action.date }}：{{ actionLabel(action.type) }}；{{ action.affectsPriceContinuity ? '影響候選窗的價格連續性，這次不納入該窗比對。' : '不影響候選窗的價格連續性。' }}
             <a
               :href="action.sourceUrl"
               target="_blank"
@@ -208,7 +243,7 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
         aria-labelledby="analysis-candidate-title"
       >
         <h3 id="analysis-candidate-title">
-          候選（最多三張）
+          候選型態（最多三張）
         </h3>
         <article
           v-for="match in result.matches"
@@ -248,14 +283,34 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
       </section>
 
       <section
+        v-else-if="result.status === 'no-clear-pattern'"
+        aria-labelledby="analysis-no-clear-title"
+      >
+        <h3 id="analysis-no-clear-title">
+          本次已檢查的條件
+        </h3>
+        <p>已依可用日 K 評估 {{ context.evaluatedCardCount }} 張可評估的教學卡；本次沒有候選同時達到必要條件與規則門檻。</p>
+        <p>下一步：可回到上方圖表核對背景、位置與資料限制，再閱讀對應課程。</p>
+      </section>
+
+      <section
         v-else-if="result.status === 'insufficient-evidence'"
         aria-labelledby="analysis-evidence-title"
       >
         <h3 id="analysis-evidence-title">
-          缺少的證據
+          本次無法完成的條件
         </h3>
-        <p>原因：{{ result.reasonCodes.join('、') || '未提供可評估的必要資料' }}。</p>
+        <ul class="analysis-result-panel__reason-list">
+          <li
+            v-for="reasonCode in result.reasonCodes"
+            :key="reasonCode"
+          >
+            {{ reasonDescription(reasonCode) }}
+          </li>
+        </ul>
+        <p>下一步：請於資料完整後重新查詢，並先確認資料截止日與公司行動提示。</p>
       </section>
+
       <section
         v-else-if="result.status === 'unavailable'"
         aria-labelledby="analysis-error-title"
@@ -264,7 +319,7 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
           系統訊息
         </h3>
         <p role="alert">
-          {{ result.message }}
+          {{ unavailableDescription(result.reason) }}
         </p>
       </section>
     </template>
@@ -273,7 +328,7 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
         暫時無法分析
       </h2>
       <p role="alert">
-        {{ result.status === 'unavailable' ? result.message : '分析結果缺少必要資料。' }}
+        {{ fallbackDescription(result) }}
       </p>
     </template>
   </section>
@@ -317,7 +372,8 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
 }
 
 .analysis-result-panel__sources,
-.analysis-result-panel__rules {
+.analysis-result-panel__rules,
+.analysis-result-panel__reason-list {
   margin: 0;
   padding-left: 1.2rem;
 }

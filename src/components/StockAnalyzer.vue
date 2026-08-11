@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { loadManifest, loadStockSnapshot } from '../domain/market-data/client';
 import { computeFreshness } from '../domain/market-data/freshness';
 import type { MarketDataManifest, MarketDataSymbol } from '../domain/market-data/schema';
@@ -17,6 +17,20 @@ const result = ref<AnalysisResult | null>(null);
 const loadState = ref<LoadState>('loading-manifest');
 const statusMessage = ref('正在載入支援股票清冊；此頁不會直接呼叫交易所。');
 const errorMessage = ref('');
+const marketCutoffDate = ref<string | null>(null);
+const marketExpectedCutoffDate = ref<string | null>(null);
+const stockDataLastDate = computed(() => snapshot.value?.bars.at(-1)?.date ?? null);
+
+let latestRequestId = 0;
+
+function beginRequest(): number {
+  latestRequestId += 1;
+  return latestRequestId;
+}
+
+function isCurrentRequest(requestId: number): boolean {
+  return requestId === latestRequestId;
+}
 
 function messageFromError(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
@@ -28,18 +42,30 @@ function messageFromError(error: unknown): string {
       return message;
     }
   }
-  return '無法完成查詢。請稍後重新查詢。';
+  return '資料載入失敗，請稍後重新查詢。';
 }
 
 async function prepareManifest(): Promise<void> {
+  const requestId = beginRequest();
   loadState.value = 'loading-manifest';
+  snapshot.value = null;
+  result.value = null;
+  marketCutoffDate.value = null;
+  marketExpectedCutoffDate.value = null;
   statusMessage.value = '正在載入支援股票清冊；此頁不會直接呼叫交易所。';
   errorMessage.value = '';
   try {
-    manifest.value = await loadManifest();
+    const loadedManifest = await loadManifest();
+    if (!isCurrentRequest(requestId)) {
+      return;
+    }
+    manifest.value = loadedManifest;
     loadState.value = 'ready';
-    statusMessage.value = `清冊已載入，可輸入 ${manifest.value.symbols.length} 檔支援的上市或上櫃普通股代碼。`;
+    statusMessage.value = `清冊已載入，可輸入 ${loadedManifest.symbols.length} 檔支援的上市或上櫃普通股代碼。`;
   } catch (error) {
+    if (!isCurrentRequest(requestId)) {
+      return;
+    }
     manifest.value = null;
     loadState.value = 'error';
     statusMessage.value = '';
@@ -48,37 +74,53 @@ async function prepareManifest(): Promise<void> {
 }
 
 async function selectStock(symbol: MarketDataSymbol): Promise<void> {
-  if (!manifest.value) {
+  const activeManifest = manifest.value;
+  if (!activeManifest) {
     errorMessage.value = '支援股票清冊尚未載入，請先重新載入。';
     return;
   }
 
+  const requestId = beginRequest();
   loadState.value = 'loading-stock';
   errorMessage.value = '';
   result.value = null;
   snapshot.value = null;
+  marketCutoffDate.value = null;
+  marketExpectedCutoffDate.value = null;
   statusMessage.value = `已確認 ${symbol.code} ${symbol.name}，正在載入單一股票的盤後資料。`;
   try {
-    const loaded = await loadStockSnapshot(manifest.value, symbol.code);
-    const marketCutoff = manifest.value.markets[loaded.market];
+    const loaded = await loadStockSnapshot(activeManifest, symbol.code);
+    if (!isCurrentRequest(requestId)) {
+      return;
+    }
+    const marketCutoff = activeManifest.markets[loaded.market];
+    const stockCutoffDate = loaded.bars.at(-1)?.date;
+    if (!stockCutoffDate) {
+      throw new Error('股票快照沒有可用的日 K 資料。');
+    }
     const freshness = computeFreshness({
       tradingSessions: marketCutoff.tradingSessions,
       validThrough: marketCutoff.calendarValidThrough,
-    }, marketCutoff.cutoffDate);
+    }, stockCutoffDate);
     const scopedSnapshot: StockSnapshot = {
       ...loaded,
-      cutoffDate: marketCutoff.cutoffDate,
+      cutoffDate: stockCutoffDate,
       freshness,
-      snapshotHash: manifest.value.snapshotHash,
+      snapshotHash: activeManifest.snapshotHash,
     };
     snapshot.value = scopedSnapshot;
+    marketCutoffDate.value = marketCutoff.cutoffDate;
+    marketExpectedCutoffDate.value = marketCutoff.expectedCutoffDate;
     result.value = analyzePatterns(scopedSnapshot, {
       freshness,
-      snapshotHash: manifest.value.snapshotHash,
+      snapshotHash: activeManifest.snapshotHash,
     });
     loadState.value = 'ready';
     statusMessage.value = `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的原始盤後日 K，可查看圖表與規則比對。`;
   } catch (error) {
+    if (!isCurrentRequest(requestId)) {
+      return;
+    }
     loadState.value = 'ready';
     statusMessage.value = '';
     errorMessage.value = messageFromError(error);
@@ -86,11 +128,17 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
 }
 
 function resetQuery(): void {
+  beginRequest();
   snapshot.value = null;
   result.value = null;
+  marketCutoffDate.value = null;
+  marketExpectedCutoffDate.value = null;
   errorMessage.value = '';
+  if (manifest.value) {
+    loadState.value = 'ready';
+  }
   statusMessage.value = manifest.value
-    ? '可輸入另一個支援的上市或上櫃普通股代碼。'
+    ? '可輸入另一個支援的普通股代碼重新查詢。'
     : '請先載入支援股票清冊。';
 }
 
@@ -131,7 +179,7 @@ onMounted(() => {
       role="alert"
     >
       {{ errorMessage }}
-      <span>請輸入上市或上櫃普通股代碼，或稍後重新查詢。</span>
+      <span>請輸入上市或上櫃普通股代碼，並確認代碼後重新查詢。</span>
     </p>
     <button
       v-if="loadState === 'error'"
@@ -147,7 +195,8 @@ onMounted(() => {
         aria-label="已選擇的股票"
       >
         <h3>已選擇：{{ snapshot.code }} {{ snapshot.name }}</h3>
-        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，原始盤後日 K，資料截止日 {{ snapshot.cutoffDate }}。</p>
+        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，原始盤後日 K，股票日 K 最後交易日 {{ stockDataLastDate }}。</p>
+        <p>市場資料截止日 {{ marketCutoffDate ?? '目前無法載入市場截止日' }}；官方預期截止日 {{ marketExpectedCutoffDate ?? '目前無法由交易日曆確認' }}。</p>
         <button
           type="button"
           @click="resetQuery"
