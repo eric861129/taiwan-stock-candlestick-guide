@@ -68,6 +68,7 @@ class SupportedSymbol:
     code: str
     name: str
     security_type: Literal["common-stock"]
+    listing_date: date
     source_url: str
 
 
@@ -534,6 +535,7 @@ def parse_supported_symbols(
         code_field="公司代號",
         preferred_name_field="公司簡稱",
         fallback_name_field="公司名稱",
+        listing_date_field="上市日期",
         source_url="https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
     )
     tpex = _parse_company_rows(
@@ -542,6 +544,7 @@ def parse_supported_symbols(
         code_field="SecuritiesCompanyCode",
         preferred_name_field="CompanyAbbreviation",
         fallback_name_field="CompanyName",
+        listing_date_field="DateOfListing",
         source_url="https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
     )
     market_order = {"TWSE": 0, "TPEx": 1}
@@ -651,6 +654,7 @@ def _parse_company_rows(
     code_field: str,
     preferred_name_field: str,
     fallback_name_field: str,
+    listing_date_field: str,
     source_url: str,
 ) -> tuple[SupportedSymbol, ...]:
     if not isinstance(payload, list):
@@ -668,6 +672,7 @@ def _parse_company_rows(
             name = fallback_name.strip()
         if not code or not name:
             raise ValueError("官方公司基本資料缺少證券代碼或名稱。")
+        listing_date = _parse_official_date(_required_text(row, listing_date_field))
         if code in seen_codes:
             raise ValueError(f"官方公司基本資料有重複代碼：{market} {code}。")
         seen_codes.add(code)
@@ -677,6 +682,7 @@ def _parse_company_rows(
                 code=code,
                 name=name,
                 security_type="common-stock",
+                listing_date=listing_date,
                 source_url=source_url,
             )
         )

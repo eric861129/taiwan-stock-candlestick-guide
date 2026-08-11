@@ -80,6 +80,10 @@ class OfficialCompanyMasterTests(unittest.TestCase):
             (("TWSE", "2330", "台積電"), ("TPEx", "6488", "環球晶")),
             tuple((symbol.market, symbol.code, symbol.name) for symbol in symbols),
         )
+        self.assertEqual(
+            (date(1994, 9, 5), date(2015, 10, 28)),
+            tuple(symbol.listing_date for symbol in symbols),
+        )
         self.assertTrue(all(symbol.security_type == "common-stock" for symbol in symbols))
 
 

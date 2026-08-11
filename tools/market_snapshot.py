@@ -45,7 +45,9 @@ from market_sources import (
 
 
 SCHEMA_VERSION = 1
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = 2
+LEGACY_SNAPSHOT_VERSION = 1
+SUPPORTED_SNAPSHOT_VERSIONS = frozenset({LEGACY_SNAPSHOT_VERSION, SNAPSHOT_VERSION})
 RETENTION_SESSIONS = 120
 PRICE_UNIT = "TWD"
 COMPARISON_UNIT_POLICY_URL = "https://www.twse.com.tw/zh/trading/trading-rule.html"
@@ -103,6 +105,9 @@ class StockIndexEntry:
     first_date: str
     last_date: str
     bar_count: int
+    listing_date: str | None = None
+    available_sessions: int = 0
+    short_history_reason: Literal["listing-history"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,10 +145,10 @@ def build_snapshot(
     """驗證完整候選資料後，以暫存同層目錄建立可原子切換的快照。"""
     _validate_build_input(sessions)
     previous_manifest = _load_previous_manifest(previous)
-    stock_documents, market_cutoffs = _build_stock_documents(sessions, previous)
+    _validate_current_daily_coverage(previous_manifest, sessions, sessions.retired_symbols)
+    stock_documents, market_cutoffs = _build_stock_documents(sessions, previous, previous_manifest)
     entries, stock_payloads = _index_stock_documents(stock_documents)
     _validate_transition(previous_manifest, entries, sessions.retired_symbols)
-    _validate_current_daily_coverage(previous_manifest, sessions, sessions.retired_symbols)
     _validate_market_cutoffs(market_cutoffs)
 
     generated_at = _iso_datetime(sessions.generated_at)
@@ -194,6 +199,8 @@ def _validate_build_input(build: SnapshotBuildInput) -> None:
             raise SnapshotValidationError(f"支援索引有重複股票：{symbol.market} {symbol.code}。")
         if symbol.security_type != "common-stock":
             raise SnapshotValidationError("支援索引只能包含普通股。")
+        if not isinstance(symbol.listing_date, date):
+            raise SnapshotValidationError("支援索引的官方上市日期無效。")
         symbol_keys.add(key)
     if not build.sessions:
         raise SnapshotValidationError("沒有任何官方交易日行情可建立快照。")
@@ -202,8 +209,10 @@ def _validate_build_input(build: SnapshotBuildInput) -> None:
 def _build_stock_documents(
     build: SnapshotBuildInput,
     previous: Path | SnapshotManifest | None,
+    previous_manifest: SnapshotManifest | None,
 ) -> tuple[dict[tuple[Market, str], dict[str, Any]], dict[str, MarketCutoff]]:
     symbols = {(symbol.market, symbol.code): symbol for symbol in build.symbols}
+    available_sessions_by_market = _available_market_sessions(build, previous_manifest)
     bars_by_symbol, previous_sources_by_symbol = _load_previous_bars(previous)
     sources_by_symbol: dict[tuple[Market, str], set[str]] = {
         key: {symbol.source_url} for key, symbol in symbols.items()
@@ -242,6 +251,11 @@ def _build_stock_documents(
             continue
         _validate_bars(symbol, bars)
         retained_bars = bars[-RETENTION_SESSIONS:]
+        available_sessions, short_history_reason = _validate_history_availability(
+            symbol,
+            retained_bars,
+            available_sessions_by_market[symbol.market],
+        )
         actions = _actions_for_stock(build.corporate_actions, symbol, retained_bars)
         sources = set(sources_by_symbol[key])
         sources.update(action.source_url for action in actions)
@@ -255,6 +269,9 @@ def _build_stock_documents(
             "priceMode": "raw",
             "currency": PRICE_UNIT,
             "priceUnit": PRICE_UNIT,
+            "listingDate": symbol.listing_date.isoformat(),
+            "availableSessions": available_sessions,
+            "shortHistoryReason": short_history_reason,
             "comparisonUnitPolicy": {
                 "version": 1,
                 "effectiveFrom": "2026-08-11",
@@ -265,7 +282,50 @@ def _build_stock_documents(
             "sourceUrls": sorted(sources),
         }
 
-    return documents, _market_cutoffs(documents, build.calendar, build.generated_at)
+    return documents, _market_cutoffs(
+        documents,
+        build.calendar,
+        build.generated_at,
+        available_sessions_by_market,
+    )
+
+
+def _available_market_sessions(
+    build: SnapshotBuildInput,
+    previous: SnapshotManifest | None,
+) -> dict[Market, tuple[date, ...]]:
+    """合併前一成功快照與本次官方日行情，保留最近 120 個市場交易日。"""
+    result: dict[Market, set[date]] = {"TWSE": set(), "TPEx": set()}
+    if previous is not None:
+        for market, cutoff in previous.markets.items():
+            result[market].update(date.fromisoformat(session) for session in cutoff.trading_sessions)
+    for session in build.sessions:
+        if session.market not in result:
+            raise SnapshotValidationError("交易日行情的市場標記無效。")
+        quote_dates = {quote.trading_date for quote in session.quotes}
+        if len(quote_dates) != 1:
+            raise SnapshotValidationError(f"{session.market} 官方交易日行情日期不一致。")
+        result[session.market].update(quote_dates)
+    return {
+        market: tuple(sorted(session_dates)[-RETENTION_SESSIONS:])
+        for market, session_dates in result.items()
+    }
+
+
+def _validate_history_availability(
+    symbol: SupportedSymbol,
+    bars: Sequence[_NormalizedBar],
+    market_sessions: Sequence[date],
+) -> tuple[int, Literal["listing-history"] | None]:
+    """短歷史只能是官方上市日期造成的連續後綴，不能掩蓋中間行情缺口。"""
+    eligible_sessions = tuple(session for session in market_sessions if session >= symbol.listing_date)
+    actual_sessions = tuple(bar.trading_date for bar in bars)
+    if not eligible_sessions or actual_sessions != eligible_sessions:
+        raise SnapshotValidationError(f"{symbol.market} {symbol.code} 的歷史交易日有不合理缺口。")
+    short_history_reason: Literal["listing-history"] | None = None
+    if len(market_sessions) == RETENTION_SESSIONS and len(eligible_sessions) < RETENTION_SESSIONS:
+        short_history_reason = "listing-history"
+    return len(eligible_sessions), short_history_reason
 
 
 def _normalize_quote(quote: DailyQuote) -> _NormalizedBar:
@@ -326,6 +386,7 @@ def _market_cutoffs(
     documents: Mapping[tuple[Market, str], dict[str, Any]],
     calendar: TradingCalendar,
     generated_at: datetime,
+    available_sessions_by_market: Mapping[Market, Sequence[date]],
 ) -> dict[str, MarketCutoff]:
     expected = expected_cutoff_date(calendar, generated_at)
     result: dict[str, MarketCutoff] = {}
@@ -343,21 +404,16 @@ def _market_cutoffs(
             raise SnapshotValidationError(f"{market} 支援普通股的資料截止日不一致。")
         cutoff_text = next(iter(dates))
         cutoff = date.fromisoformat(cutoff_text)
+        available_sessions = available_sessions_by_market[market]
+        if not available_sessions or cutoff != available_sessions[-1]:
+            raise SnapshotValidationError(f"{market} 可用交易日與資料截止日不一致。")
         result[market] = MarketCutoff(
             cutoff_date=cutoff_text,
             expected_cutoff_date=expected.isoformat() if expected else None,
             freshness=compute_freshness(calendar, cutoff, generated_at),
             calendar_source_url=calendar.source_url,
             calendar_valid_through=calendar.valid_through.isoformat(),
-            trading_sessions=tuple(
-                sorted(
-                    {
-                        bar["date"]
-                        for document in market_documents
-                        for bar in document["bars"]
-                    }
-                )
-            ),
+            trading_sessions=tuple(session.isoformat() for session in available_sessions),
         )
     return result
 
@@ -408,6 +464,9 @@ def _index_stock_documents(
             first_date=bars[0]["date"],
             last_date=bars[-1]["date"],
             bar_count=len(bars),
+            listing_date=document["listingDate"],
+            available_sessions=document["availableSessions"],
+            short_history_reason=document["shortHistoryReason"],
         )
         entries.append(entry)
         payloads[path] = payload
@@ -457,6 +516,10 @@ def _validate_current_daily_coverage(
     if previous is None or not previous.symbols:
         return
     previous_keys = {(entry.market, entry.code) for entry in previous.symbols}
+    current_supported_keys = {(symbol.market, symbol.code) for symbol in build.symbols}
+    coverage_keys = previous_keys & current_supported_keys
+    if not coverage_keys:
+        return
     retired_keys = {(market, code) for market, code, _ in retired_symbols}
     latest_session_date = max(
         quote.trading_date
@@ -467,9 +530,9 @@ def _validate_current_daily_coverage(
         (quote.market, quote.code)
         for session in build.sessions
         for quote in session.quotes
-        if quote.trading_date == latest_session_date and (quote.market, quote.code) in previous_keys
+        if quote.trading_date == latest_session_date and (quote.market, quote.code) in coverage_keys
     }
-    coverage = Decimal(len((current_quote_keys | retired_keys) & previous_keys)) / Decimal(len(previous_keys))
+    coverage = Decimal(len((current_quote_keys | retired_keys) & coverage_keys)) / Decimal(len(coverage_keys))
     if coverage < Decimal("0.98"):
         raise SnapshotValidationError(
             f"當日官方普通股日行情覆蓋率 {coverage:.2%} 低於 98% 發布門檻。"
@@ -574,11 +637,14 @@ def _write_bytes(path: Path, payload: bytes) -> None:
 
 
 def _write_deterministic_tar(root: Path) -> None:
+    # 封存檔中的 SHA256SUMS 只涵蓋 payload；外層 SHA256SUMS 會在封存檔
+    # 完成後重寫，避免將 snapshot.tar.gz 自身納入造成遞迴校驗。
+    _write_sha256sums(root, include_archive=False)
     archive = root / "snapshot.tar.gz"
     candidates = sorted(
         path
         for path in root.rglob("*")
-        if path.is_file() and path.name not in {"snapshot.tar.gz", "SHA256SUMS"}
+        if path.is_file() and path.name != "snapshot.tar.gz"
     )
     with archive.open("wb") as raw:
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
@@ -591,12 +657,19 @@ def _write_deterministic_tar(root: Path) -> None:
                     info.uname = ""
                     info.gname = ""
                     info.mtime = 0
+                    info.mode = 0o644
                     with path.open("rb") as handle:
                         tar.addfile(info, handle)
 
 
-def _write_sha256sums(root: Path) -> None:
-    files = sorted(path for path in root.rglob("*") if path.is_file() and path.name != "SHA256SUMS")
+def _write_sha256sums(root: Path, *, include_archive: bool = True) -> None:
+    files = sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.name != "SHA256SUMS"
+        and (include_archive or path.name != "snapshot.tar.gz")
+    )
     lines = [f"{_digest(path.read_bytes())}  {path.relative_to(root).as_posix()}" for path in files]
     _write_bytes(root / "SHA256SUMS", ("\n".join(lines) + "\n").encode("utf-8"))
 
@@ -604,6 +677,14 @@ def _write_sha256sums(root: Path) -> None:
 def validate_snapshot(snapshot: Path) -> SnapshotManifest:
     """驗證 manifest、個股、provenance、封裝內容與 SHA256SUMS。"""
     snapshot = snapshot.resolve()
+    manifest = _validate_snapshot_payload(snapshot)
+    _validate_sha256sums(snapshot)
+    _validate_archive_contents(snapshot, manifest)
+    return manifest
+
+
+def _validate_snapshot_payload(snapshot: Path) -> SnapshotManifest:
+    """驗證不依賴外層封存檔的資料 payload。"""
     manifest_path = snapshot / "manifest.json"
     if not manifest_path.is_file():
         raise SnapshotValidationError("找不到 manifest.json。")
@@ -613,9 +694,7 @@ def validate_snapshot(snapshot: Path) -> SnapshotManifest:
         raise SnapshotValidationError("manifest.json 不是有效 UTF-8 JSON。") from error
     manifest = _manifest_from_json(document)
     _validate_manifest_files(snapshot, manifest)
-    _validate_sha256sums(snapshot)
     _validate_provenance(snapshot, manifest)
-    _validate_archive_contents(snapshot)
     return manifest
 
 
@@ -636,7 +715,12 @@ def _validate_manifest_files(snapshot: Path, manifest: SnapshotManifest) -> None
             stock = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise SnapshotValidationError(f"股票資料不是有效 UTF-8 JSON：{entry.market} {entry.code}。") from error
-        _validate_stock_document(stock, entry)
+        _validate_stock_document(
+            stock,
+            entry,
+            tuple(date.fromisoformat(session) for session in manifest.markets[entry.market].trading_sessions),
+            manifest.snapshot_version,
+        )
 
 
 def _validate_provenance(snapshot: Path, manifest: SnapshotManifest) -> None:
@@ -651,7 +735,7 @@ def _validate_provenance(snapshot: Path, manifest: SnapshotManifest) -> None:
         if (
             not isinstance(document, dict)
             or document["schemaVersion"] != SCHEMA_VERSION
-            or document["snapshotVersion"] != SNAPSHOT_VERSION
+            or document["snapshotVersion"] != manifest.snapshot_version
             or document["sourceCommit"] != manifest.source_commit
             or document["snapshotHash"] != manifest.snapshot_hash
             or document["generatedAt"] != manifest.generated_at
@@ -679,7 +763,12 @@ def _validate_provenance(snapshot: Path, manifest: SnapshotManifest) -> None:
         raise SnapshotValidationError("provenance.json 與 manifest 不一致。") from error
 
 
-def _validate_stock_document(stock: object, entry: StockIndexEntry) -> None:
+def _validate_stock_document(
+    stock: object,
+    entry: StockIndexEntry,
+    market_sessions: Sequence[date],
+    snapshot_version: int,
+) -> None:
     if not isinstance(stock, dict):
         raise SnapshotValidationError("股票快照必須是 JSON 物件。")
     required = {
@@ -697,11 +786,13 @@ def _validate_stock_document(stock: object, entry: StockIndexEntry) -> None:
         "corporateActions",
         "sourceUrls",
     }
+    if snapshot_version == SNAPSHOT_VERSION:
+        required.update({"listingDate", "availableSessions", "shortHistoryReason"})
     if not required.issubset(stock):
         raise SnapshotValidationError(f"股票快照缺少必要欄位：{entry.market} {entry.code}。")
     if (
         stock["schemaVersion"] != SCHEMA_VERSION
-        or stock["snapshotVersion"] != SNAPSHOT_VERSION
+        or stock["snapshotVersion"] != snapshot_version
         or stock["code"] != entry.code
         or stock["market"] != entry.market
         or stock["securityType"] != "common-stock"
@@ -712,6 +803,25 @@ def _validate_stock_document(stock: object, entry: StockIndexEntry) -> None:
         raise SnapshotValidationError(f"股票快照核心欄位不符：{entry.market} {entry.code}。")
     if not isinstance(stock["name"], str) or not stock["name"].strip():
         raise SnapshotValidationError(f"股票快照名稱無效：{entry.market} {entry.code}。")
+    if snapshot_version == SNAPSHOT_VERSION:
+        if (
+            stock["listingDate"] != entry.listing_date
+            or stock["availableSessions"] != entry.available_sessions
+            or stock["shortHistoryReason"] != entry.short_history_reason
+        ):
+            raise SnapshotValidationError(f"股票快照歷史可用性欄位不一致：{entry.market} {entry.code}。")
+        try:
+            listing_date = date.fromisoformat(stock["listingDate"])
+        except (TypeError, ValueError) as error:
+            raise SnapshotValidationError(f"股票快照上市日期無效：{entry.market} {entry.code}。") from error
+        if (
+            not isinstance(stock["availableSessions"], int)
+            or isinstance(stock["availableSessions"], bool)
+            or stock["availableSessions"] < 1
+            or stock["availableSessions"] > RETENTION_SESSIONS
+            or stock["shortHistoryReason"] not in {None, "listing-history"}
+        ):
+            raise SnapshotValidationError(f"股票快照歷史可用性欄位無效：{entry.market} {entry.code}。")
     policy = stock["comparisonUnitPolicy"]
     if not isinstance(policy, dict):
         raise SnapshotValidationError(f"股票快照比較單位規則無效：{entry.market} {entry.code}。")
@@ -753,6 +863,15 @@ def _validate_stock_document(stock: object, entry: StockIndexEntry) -> None:
         raise SnapshotValidationError("股票快照交易日必須遞增且不得重複。")
     if dates[0].isoformat() != entry.first_date or dates[-1].isoformat() != entry.last_date or len(dates) != entry.bar_count:
         raise SnapshotValidationError("manifest 與股票快照的日期或筆數不一致。")
+    if snapshot_version == SNAPSHOT_VERSION:
+        eligible_sessions = tuple(session for session in market_sessions if session >= listing_date)
+        if tuple(dates) != eligible_sessions or len(dates) != stock["availableSessions"]:
+            raise SnapshotValidationError(f"股票快照歷史交易日有不合理缺口：{entry.market} {entry.code}。")
+        expected_short_history_reason: Literal["listing-history"] | None = None
+        if len(market_sessions) == RETENTION_SESSIONS and len(eligible_sessions) < RETENTION_SESSIONS:
+            expected_short_history_reason = "listing-history"
+        if stock["shortHistoryReason"] != expected_short_history_reason:
+            raise SnapshotValidationError(f"股票快照短歷史原因無效：{entry.market} {entry.code}。")
     actions = stock["corporateActions"]
     if not isinstance(actions, list):
         raise SnapshotValidationError("股票快照公司行動欄位無效。")
@@ -790,28 +909,57 @@ def _stock_source_urls(stock: Mapping[str, Any], entry: StockIndexEntry) -> set[
     return verified
 
 
-def _validate_sha256sums(snapshot: Path) -> None:
+def _validate_sha256sums(snapshot: Path, *, include_archive: bool = True) -> None:
     sums_path = snapshot / "SHA256SUMS"
     if not sums_path.is_file():
         raise SnapshotValidationError("找不到 SHA256SUMS。")
-    lines = sums_path.read_text(encoding="utf-8").splitlines()
     expected_files = sorted(
         path.relative_to(snapshot).as_posix()
         for path in snapshot.rglob("*")
-        if path.is_file() and path.name != "SHA256SUMS"
+        if path.is_file()
+        and path.name != "SHA256SUMS"
+        and (include_archive or path.name != "snapshot.tar.gz")
     )
+    _validate_checksum_lines(
+        sums_path.read_text(encoding="utf-8").splitlines(),
+        expected_files,
+        lambda relative_path: _read_safe_snapshot_file(snapshot, relative_path),
+        "SHA256SUMS",
+    )
+
+
+def _validate_checksum_lines(
+    lines: Sequence[str],
+    expected_files: Sequence[str],
+    read_file: Any,
+    label: str,
+) -> None:
     seen_files: list[str] = []
     for line in lines:
         try:
             digest, relative_path = line.split("  ", 1)
         except ValueError as error:
-            raise SnapshotValidationError("SHA256SUMS 格式無效。") from error
-        path = snapshot / relative_path
-        if not path.is_file() or not path.resolve().is_relative_to(snapshot) or _digest(path.read_bytes()) != digest:
-            raise SnapshotValidationError(f"SHA256SUMS 驗證失敗：{relative_path}。")
+            raise SnapshotValidationError(f"{label} 格式無效。") from error
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise SnapshotValidationError(f"{label} 雜湊格式無效：{relative_path}。")
+        try:
+            payload = read_file(relative_path)
+        except SnapshotValidationError:
+            raise
+        except (OSError, ValueError) as error:
+            raise SnapshotValidationError(f"{label} 驗證失敗：{relative_path}。") from error
+        if _digest(payload) != digest:
+            raise SnapshotValidationError(f"{label} 驗證失敗：{relative_path}。")
         seen_files.append(relative_path)
-    if seen_files != expected_files:
-        raise SnapshotValidationError("SHA256SUMS 未完整列出所有快照檔案。")
+    if seen_files != list(expected_files):
+        raise SnapshotValidationError(f"{label} 未完整列出所有快照檔案。")
+
+
+def _read_safe_snapshot_file(snapshot: Path, relative_path: str) -> bytes:
+    candidate = snapshot / relative_path
+    if not candidate.is_file() or not candidate.resolve().is_relative_to(snapshot):
+        raise SnapshotValidationError(f"SHA256SUMS 指向不安全或不存在的檔案：{relative_path}。")
+    return candidate.read_bytes()
 
 
 def _manifest_from_json(document: object) -> SnapshotManifest:
@@ -822,7 +970,13 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
         symbols_value = document["symbols"]
         if not isinstance(markets_value, dict) or not isinstance(symbols_value, list):
             raise TypeError
-        if document["schemaVersion"] != SCHEMA_VERSION or document["snapshotVersion"] != SNAPSHOT_VERSION:
+        snapshot_version = document["snapshotVersion"]
+        if (
+            document["schemaVersion"] != SCHEMA_VERSION
+            or not isinstance(snapshot_version, int)
+            or isinstance(snapshot_version, bool)
+            or snapshot_version not in SUPPORTED_SNAPSHOT_VERSIONS
+        ):
             raise ValueError
         if not isinstance(document["sourceCommit"], str) or not document["sourceCommit"].strip():
             raise ValueError
@@ -837,6 +991,11 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
         }
         if any(not isinstance(value, dict) for value in symbols_value):
             raise TypeError
+        if snapshot_version == LEGACY_SNAPSHOT_VERSION and any(
+            any(field in value for field in ("listingDate", "availableSessions", "shortHistoryReason"))
+            for value in symbols_value
+        ):
+            raise ValueError
         symbols = tuple(
             StockIndexEntry(
                 code=value["code"],
@@ -849,6 +1008,9 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
                 first_date=value["firstDate"],
                 last_date=value["lastDate"],
                 bar_count=value["barCount"],
+                listing_date=value.get("listingDate") if snapshot_version == SNAPSHOT_VERSION else None,
+                available_sessions=value.get("availableSessions", 0) if snapshot_version == SNAPSHOT_VERSION else 0,
+                short_history_reason=value.get("shortHistoryReason") if snapshot_version == SNAPSHOT_VERSION else None,
             )
             for value in symbols_value
         )
@@ -869,6 +1031,17 @@ def _manifest_from_json(document: object) -> SnapshotManifest:
                 raise ValueError
             date.fromisoformat(entry.first_date)
             date.fromisoformat(entry.last_date)
+            if snapshot_version == SNAPSHOT_VERSION:
+                if (
+                    not isinstance(entry.listing_date, str)
+                    or not isinstance(entry.available_sessions, int)
+                    or isinstance(entry.available_sessions, bool)
+                    or entry.available_sessions < 1
+                    or entry.available_sessions > RETENTION_SESSIONS
+                    or entry.short_history_reason not in {None, "listing-history"}
+                ):
+                    raise ValueError
+                date.fromisoformat(entry.listing_date)
         manifest = SnapshotManifest(
             schema_version=document["schemaVersion"],
             snapshot_version=document["snapshotVersion"],
@@ -1019,6 +1192,9 @@ def _stock_entry_json(entry: StockIndexEntry) -> dict[str, Any]:
         "firstDate": entry.first_date,
         "lastDate": entry.last_date,
         "barCount": entry.bar_count,
+        "listingDate": entry.listing_date,
+        "availableSessions": entry.available_sessions,
+        "shortHistoryReason": entry.short_history_reason,
     }
 
 
@@ -1231,11 +1407,36 @@ def _official_evidence_url(value: object) -> str:
 
 
 def pack_snapshot(snapshot: Path) -> SnapshotManifest:
-    """在已通過驗證的快照上重建可重現封裝與 checksum 清單。"""
+    """在同層 staging 完成驗證後，原子切換可重現封裝與 checksum 清單。"""
+    snapshot = snapshot.resolve()
     manifest = validate_snapshot(snapshot)
-    _write_deterministic_tar(snapshot)
-    _write_sha256sums(snapshot)
+    staging = Path(mkdtemp(prefix=f".{snapshot.name}.pack-", dir=snapshot.parent))
+    stock_paths = tuple(entry.data_path for entry in manifest.symbols)
+    try:
+        _copy_snapshot_payload_for_pack(snapshot, staging, stock_paths)
+        _write_deterministic_tar(staging)
+        _write_sha256sums(staging)
+        validate_snapshot(staging)
+        _replace_output_directory(staging, snapshot)
+    except Exception:
+        try:
+            _remove_known_snapshot_files(staging, stock_paths)
+        except OSError:
+            # staging 無法完整辨識時保留現場，不能使用遞迴刪除掩蓋原始錯誤。
+            pass
+        raise
     return validate_snapshot(snapshot)
+
+
+def _copy_snapshot_payload_for_pack(snapshot: Path, staging: Path, stock_paths: Sequence[str]) -> None:
+    """只複製已由 manifest 識別的 payload，避免在原快照上就地改寫。"""
+    for relative_path in (*stock_paths, "manifest.json", "provenance.json"):
+        source = snapshot / relative_path
+        destination = staging / relative_path
+        if not source.is_file() or not source.resolve().is_relative_to(snapshot):
+            raise SnapshotValidationError(f"快照 payload 路徑不安全或不存在：{relative_path}。")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _write_bytes(destination, source.read_bytes())
 
 
 def bootstrap_snapshot(
@@ -1291,45 +1492,162 @@ def update_snapshot(
     now: datetime | None = None,
 ) -> tuple[SnapshotManifest, bool]:
     """只在兩市場都有一個新官方截止日時追加，既有截止日則不改寫。"""
-    previous_directory = _previous_snapshot_directory(previous)
-    previous_manifest = validate_snapshot(previous_directory)
-    calendar = fetch_trading_calendar()
-    generated_at = now or datetime.now(calendar.timezone)
-    expected = expected_cutoff_date(calendar, generated_at)
-    if expected is None:
-        raise SnapshotValidationError("官方交易日曆未涵蓋目前日期，不能安全更新快照。")
-    expected_text = expected.isoformat()
-    if all(cutoff.cutoff_date == expected_text for cutoff in previous_manifest.markets.values()):
-        return previous_manifest, False
-    if any(cutoff.cutoff_date > expected_text for cutoff in previous_manifest.markets.values()):
-        raise SnapshotValidationError("前一快照截止日比官方預期交易日更新，拒絕覆寫。")
+    previous_directory, is_temporary = _previous_snapshot_directory(previous)
+    previous_manifest: SnapshotManifest | None = None
+    try:
+        previous_manifest = validate_snapshot(previous_directory)
+        calendar = fetch_trading_calendar()
+        generated_at = now or datetime.now(calendar.timezone)
+        expected = expected_cutoff_date(calendar, generated_at)
+        if expected is None:
+            raise SnapshotValidationError("官方交易日曆未涵蓋目前日期，不能安全更新快照。")
+        expected_text = expected.isoformat()
+        if all(cutoff.cutoff_date == expected_text for cutoff in previous_manifest.markets.values()):
+            return previous_manifest, False
+        if any(cutoff.cutoff_date > expected_text for cutoff in previous_manifest.markets.values()):
+            raise SnapshotValidationError("前一快照截止日比官方預期交易日更新，拒絕覆寫。")
 
-    symbols = fetch_supported_symbols()
-    actions = fetch_corporate_actions()
-    override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
-    twse_quotes = _fetch_cached_daily("TWSE", expected, cache_directory, fetch_twse_daily)
-    _throttle_official_requests()
-    tpex_quotes = _fetch_cached_daily("TPEx", expected, cache_directory, fetch_tpex_daily)
-    build_input = SnapshotBuildInput(
-        source_commit=source_commit,
-        generated_at=generated_at,
-        symbols=symbols,
-        sessions=(MarketSession("TWSE", twse_quotes), MarketSession("TPEx", tpex_quotes)),
-        corporate_actions=(*actions, *override_actions),
-        calendar=calendar,
-        retired_symbols=retired_symbols,
-    )
-    return build_snapshot(previous_directory, build_input, output), True
+        previous_cutoff_dates = {date.fromisoformat(cutoff.cutoff_date) for cutoff in previous_manifest.markets.values()}
+        if len(previous_cutoff_dates) != 1:
+            raise SnapshotValidationError("前一快照兩市場截止日不一致，不能安全補齊。")
+        missing_sessions = _trading_sessions_after(calendar, previous_cutoff_dates.pop(), expected)
+        if not missing_sessions:
+            raise SnapshotValidationError("前一快照與官方預期交易日的缺口無法辨識。")
+
+        symbols = fetch_supported_symbols()
+        actions = fetch_corporate_actions()
+        override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
+        if len(missing_sessions) == 1:
+            twse_quotes = _fetch_cached_daily("TWSE", expected, cache_directory, fetch_twse_daily)
+            _throttle_official_requests()
+            tpex_quotes = _fetch_cached_daily("TPEx", expected, cache_directory, fetch_tpex_daily)
+            market_sessions = (MarketSession("TWSE", twse_quotes), MarketSession("TPEx", tpex_quotes))
+        else:
+            market_sessions_list: list[MarketSession] = []
+            for session_date in missing_sessions:
+                market_sessions_list.append(
+                    MarketSession(
+                        "TWSE",
+                        _fetch_cached_daily("TWSE", session_date, cache_directory, fetch_twse_historical_daily),
+                    )
+                )
+                _throttle_official_requests()
+                market_sessions_list.append(
+                    MarketSession(
+                        "TPEx",
+                        _fetch_cached_daily("TPEx", session_date, cache_directory, fetch_tpex_historical_daily),
+                    )
+                )
+                _throttle_official_requests()
+            market_sessions = tuple(market_sessions_list)
+        build_input = SnapshotBuildInput(
+            source_commit=source_commit,
+            generated_at=generated_at,
+            symbols=symbols,
+            sessions=market_sessions,
+            corporate_actions=(*actions, *override_actions),
+            calendar=calendar,
+            retired_symbols=retired_symbols,
+        )
+        return build_snapshot(previous_directory, build_input, output), True
+    finally:
+        if is_temporary and previous_manifest is not None:
+            try:
+                _remove_known_snapshot_files(previous_directory, (entry.data_path for entry in previous_manifest.symbols))
+            except OSError:
+                # 暫存檔案無法完整辨識時保留現場，不能使用遞迴刪除掩蓋問題。
+                pass
 
 
-def _previous_snapshot_directory(previous: Path) -> Path:
+def _trading_sessions_after(
+    calendar: TradingCalendar,
+    previous_cutoff: date,
+    expected_cutoff: date,
+) -> tuple[date, ...]:
+    """列出官方日曆中前次 cutoff 之後、此次 expected 以前的全部交易日。"""
+    if previous_cutoff >= expected_cutoff:
+        return ()
+    if previous_cutoff.year < min(day.year for day in calendar.holiday_dates):
+        raise SnapshotValidationError("官方交易日曆未涵蓋前一快照 cutoff，不能猜測補齊日期。")
+    sessions: list[date] = []
+    candidate = previous_cutoff.fromordinal(previous_cutoff.toordinal() + 1)
+    while candidate <= expected_cutoff:
+        if candidate.weekday() < 5 and candidate not in calendar.holiday_dates:
+            sessions.append(candidate)
+        candidate = candidate.fromordinal(candidate.toordinal() + 1)
+    return tuple(sessions)
+
+
+def _previous_snapshot_directory(previous: Path) -> tuple[Path, bool]:
     if previous.is_dir():
-        return previous
+        return previous, False
     if previous.is_file() and previous.name == "snapshot.tar.gz":
-        candidate = previous.parent
-        _verify_archive_contents(candidate)
-        return candidate
-    raise SnapshotValidationError("前一成功快照必須是目錄，或是同目錄含完整驗證檔的 snapshot.tar.gz。")
+        return _extract_previous_snapshot_archive(previous), True
+    raise SnapshotValidationError("前一成功快照必須是目錄，或是可獨立驗證的 snapshot.tar.gz。")
+
+
+def _extract_previous_snapshot_archive(archive: Path) -> Path:
+    """安全展開獨立 archive，驗證後才作為增量更新基準。"""
+    archive = archive.resolve()
+    temporary = Path(mkdtemp(prefix=f".{archive.stem}.previous-", dir=archive.parent))
+    manifest: SnapshotManifest | None = None
+    try:
+        with gzip.open(archive, "rb") as compressed:
+            with tarfile.open(fileobj=compressed, mode="r:") as tar:
+                names: set[str] = set()
+                for member in tar.getmembers():
+                    relative_path = _safe_archive_member_path(member)
+                    if relative_path in names:
+                        raise SnapshotValidationError("snapshot archive 有重複檔案。")
+                    names.add(relative_path)
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        raise SnapshotValidationError("snapshot archive 檔案無法讀取。")
+                    destination = temporary / Path(relative_path)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    _write_bytes(destination, extracted.read())
+        manifest = _validate_snapshot_payload(temporary)
+        if manifest.snapshot_version == LEGACY_SNAPSHOT_VERSION and not (temporary / "SHA256SUMS").is_file():
+            raise SnapshotValidationError(
+                "舊版 snapshot.tar.gz 未內嵌 SHA256SUMS；請改傳完整 v1 快照目錄，或先以新版 pack 重新封裝。"
+            )
+        _validate_sha256sums(temporary, include_archive=False)
+        _write_bytes(temporary / "snapshot.tar.gz", archive.read_bytes())
+        _write_sha256sums(temporary)
+        validate_snapshot(temporary)
+        return temporary
+    except (OSError, EOFError, tarfile.TarError) as error:
+        raise SnapshotValidationError("snapshot archive 無法解壓或讀取。") from error
+    except Exception:
+        if manifest is not None:
+            try:
+                _remove_known_snapshot_files(temporary, (entry.data_path for entry in manifest.symbols))
+            except OSError:
+                pass
+        else:
+            try:
+                temporary.rmdir()
+            except OSError:
+                pass
+        raise
+
+
+def _safe_archive_member_path(member: tarfile.TarInfo) -> str:
+    """拒絕連結、絕對路徑與跳脫暫存目錄的 archive 成員。"""
+    if not member.isfile() or member.issym() or member.islnk():
+        raise SnapshotValidationError("snapshot archive 含有不安全檔案。")
+    name = member.name
+    path = Path(name)
+    if (
+        not name
+        or "\\" in name
+        or name.startswith("/")
+        or path.is_absolute()
+        or ".." in path.parts
+        or any(part in {"", "."} for part in path.parts)
+    ):
+        raise SnapshotValidationError("snapshot archive 含有不安全檔案。")
+    return Path(*path.parts).as_posix()
 
 
 def _recent_trading_sessions(calendar: TradingCalendar, now: datetime, count: int) -> tuple[date, ...]:
@@ -1438,10 +1756,10 @@ def _quotes_from_cache(payload: object) -> tuple[DailyQuote, ...]:
 
 def _verify_archive_contents(snapshot: Path) -> None:
     """確認 archive 與同層 manifest/data 內容一致，再允許作為增量基準。"""
-    _validate_archive_contents(snapshot)
+    _validate_archive_contents(snapshot, _validate_snapshot_payload(snapshot))
 
 
-def _validate_archive_contents(snapshot: Path) -> None:
+def _validate_archive_contents(snapshot: Path, manifest: SnapshotManifest) -> None:
     """archive 必須完整封裝同層已驗證的資料，不只比對壓縮檔本身的雜湊。"""
     archive = snapshot / "snapshot.tar.gz"
     if not archive.is_file():
@@ -1466,6 +1784,21 @@ def _validate_archive_contents(snapshot: Path) -> None:
                     actual_files[member.name] = extracted.read()
     except (OSError, EOFError, tarfile.TarError) as error:
         raise SnapshotValidationError("snapshot archive 無法解壓或讀取。") from error
+    internal_sums = actual_files.pop("SHA256SUMS", None)
+    if internal_sums is None:
+        if manifest.snapshot_version != LEGACY_SNAPSHOT_VERSION:
+            raise SnapshotValidationError("snapshot archive 缺少內嵌 SHA256SUMS。")
+    else:
+        try:
+            internal_lines = internal_sums.decode("utf-8").splitlines()
+        except UnicodeDecodeError as error:
+            raise SnapshotValidationError("snapshot archive 內嵌 SHA256SUMS 不是 UTF-8。") from error
+        _validate_checksum_lines(
+            internal_lines,
+            sorted(actual_files),
+            lambda relative_path: actual_files[relative_path],
+            "snapshot archive 內嵌 SHA256SUMS",
+        )
     if actual_files != expected_files:
         raise SnapshotValidationError("snapshot archive 與同層資料不一致。")
 
