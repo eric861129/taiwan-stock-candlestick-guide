@@ -57,7 +57,7 @@ export default defineConfig({
     ['meta', { name: 'color-scheme', content: 'light' }],
   ],
   themeConfig: {
-    logo: '/assets/figures/ch01-concept.svg',
+    logo: '/logo.svg',
     nav: [...MAIN_NAV],
     search: { provider: 'local' },
     outline: { level: [2, 3] },
