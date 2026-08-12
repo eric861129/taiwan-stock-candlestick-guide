@@ -406,6 +406,19 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("python tools/market_snapshot.py bootstrap", text)
         self.assertIn("python tools/market_snapshot.py update", text)
         self.assertIn("python tools/market_snapshot.py validate", text)
+        self.assertIn(
+            'cp "$VERIFIED_SNAPSHOT/manifest.json" public/data/manifest.json',
+            text,
+        )
+        self.assertIn(
+            'cp "$VERIFIED_SNAPSHOT/provenance.json" public/data/provenance.json',
+            text,
+        )
+        self.assertIn('expected = files(snapshot_root / "data")', text)
+        self.assertIn(
+            'expected[name] = (snapshot_root / name).read_bytes()',
+            text,
+        )
         self.assertIn("should_deploy", text)
         self.assertIn("needs.build-pages.result == 'success'", text)
         self.assertEqual(1, text.count("actions/upload-pages-artifact@"))
@@ -485,7 +498,7 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertRegex(text, r"git ls-remote[^\n]*refs/heads/main")
         self.assertIn("同一日期", text)
 
-    def test_readme_documents_local_gates_and_manual_rollback_without_claiming_a_live_release(self) -> None:
+    def test_readme_documents_local_gates_public_site_and_manual_rollback(self) -> None:
         """若公開說明遺漏驗證或 rollback，維護者容易跳過原子發布流程。"""
         text = (ROOT / "README.md").read_text(encoding="utf-8")
 
@@ -493,7 +506,8 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("python -m unittest discover -s tests", text)
         self.assertIn("GitHub Pages", text)
         self.assertIn("rollback_artifact_id", text)
-        self.assertIn("尚未宣告公開部署完成", text)
+        self.assertIn("https://huangchiyu.com/taiwan-stock-candlestick-guide/", text)
+        self.assertIn("原子化 GitHub Pages 部署", text)
 
 
 if __name__ == "__main__":

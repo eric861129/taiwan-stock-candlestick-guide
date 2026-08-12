@@ -57,7 +57,7 @@
 
 ## 互動網站、資料範圍與限制
 
-預定的 GitHub Pages 網址是 <https://eric861129.github.io/taiwan-stock-candlestick-guide/>。目前尚未宣告公開部署完成；只有 Pages workflow 成功、公開網址回應與核心互動皆完成驗證後，才可稱為已發布版本。
+公開網站入口是 <https://huangchiyu.com/taiwan-stock-candlestick-guide/>。GitHub Pages 預設網址 <https://eric861129.github.io/taiwan-stock-candlestick-guide/> 會依帳號設定重新導向這個自訂網域；發布健康狀態以最新的「原子化 GitHub Pages 部署」workflow 為準。
 
 互動分析器只支援 TWSE／TPEx 的普通股；ETF、ETN、權證、興櫃與其他證券會被拒絕。發布快照保留兩市場最近 120 個官方交易日，型態比對最多使用最後 60 根「連續且合法」的已完成日 K。官方列出未報價，或交易所公告停止買賣時，系統會保留 `official-no-quote`／`official-suspension` 證據，不補造 OHLC，也不跨越該日或停牌區間建立型態視窗；全市場緊急休市則由版本化日曆佐證排除。
 

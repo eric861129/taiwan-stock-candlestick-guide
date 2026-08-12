@@ -520,6 +520,8 @@ jobs:
           fi
           mkdir -p public/data
           cp -a "$VERIFIED_SNAPSHOT/data/." public/data/
+          cp "$VERIFIED_SNAPSHOT/manifest.json" public/data/manifest.json
+          cp "$VERIFIED_SNAPSHOT/provenance.json" public/data/provenance.json
 
       - name: Configure GitHub Pages
         id: pages
@@ -542,7 +544,7 @@ jobs:
           from pathlib import Path
           import sys
 
-          snapshot_data = Path(sys.argv[1]) / "data"
+          snapshot_root = Path(sys.argv[1])
           rendered_data = Path(sys.argv[2]) / "data"
           if not rendered_data.is_dir():
               raise SystemExit("Pages build 缺少已驗證市場資料。")
@@ -554,7 +556,11 @@ jobs:
                   if path.is_file()
               }
 
-          if files(snapshot_data) != files(rendered_data):
+          expected = files(snapshot_root / "data")
+          for name in ("manifest.json", "provenance.json"):
+              expected[name] = (snapshot_root / name).read_bytes()
+
+          if expected != files(rendered_data):
               raise SystemExit("Pages build 的市場資料不是已驗證 snapshot 的精確副本。")
           PY
 

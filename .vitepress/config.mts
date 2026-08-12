@@ -53,6 +53,7 @@ export default defineConfig({
     'tools/**/fixtures/**',
   ],
   head: [
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: `${SITE_BASE}logo.svg` }],
     ['meta', { name: 'theme-color', content: '#fff8ef' }],
     ['meta', { name: 'color-scheme', content: 'light' }],
   ],
