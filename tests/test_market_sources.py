@@ -511,6 +511,51 @@ class OfficialFetchBoundaryTests(unittest.TestCase):
 
 
 class OfficialCalendarTests(unittest.TestCase):
+    def test_calendar_does_not_treat_trading_day_markers_as_market_holidays(self) -> None:
+        """官方行事曆也列出春節前後交易日，不能因端點名稱而一律當成休市。"""
+
+        calendar = parse_holiday_calendar(
+            [
+                {
+                    "Date": "1150211",
+                    "Name": "農曆春節前最後交易日",
+                    "Description": "農曆春節前最後交易。",
+                    "Weekday": "三",
+                },
+                {
+                    "Date": "1150212",
+                    "Name": "市場無交易，僅辦理結算交割作業",
+                    "Description": "",
+                    "Weekday": "四",
+                },
+                {
+                    "Date": "1150223",
+                    "Name": "農曆春節後開始交易日",
+                    "Description": "農曆春節後開始交易。",
+                    "Weekday": "一",
+                },
+            ]
+        )
+
+        self.assertNotIn(date(2026, 2, 11), calendar.holiday_dates)
+        self.assertIn(date(2026, 2, 12), calendar.holiday_dates)
+        self.assertNotIn(date(2026, 2, 23), calendar.holiday_dates)
+
+    def test_calendar_rejects_a_payload_with_only_trading_day_markers(self) -> None:
+        """只有開始／最後交易日不足以證明全年休市範圍，必須 fail closed。"""
+
+        with self.assertRaisesRegex(ValueError, "不可缺少休市日"):
+            parse_holiday_calendar(
+                [
+                    {
+                        "Date": "1150102",
+                        "Name": "國曆新年開始交易日",
+                        "Description": "國曆新年開始交易。",
+                        "Weekday": "五",
+                    }
+                ]
+            )
+
     def test_calendar_derives_expected_cutoff_and_freshness_in_taipei_time(self) -> None:
         """若 17:30 前把當日當作已完成資料，或漏算休市日，新鮮度必須失敗。"""
         calendar = parse_holiday_calendar(load_fixture("holiday-calendar.json"))

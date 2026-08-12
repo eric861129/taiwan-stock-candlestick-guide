@@ -332,16 +332,27 @@ def parse_holiday_calendar(payload: object) -> TradingCalendar:
         if not isinstance(row, dict):
             raise ValueError("官方開休市日曆每一列必須是 JSON 物件。")
         holiday = _parse_official_date(_required_text(row, "Date"))
-        holidays.add(holiday)
-        years.add(holiday.year)
-    if not years:
-        raise ValueError("官方開休市日曆不可為空。")
+        name = _required_text(row, "Name").strip()
+        description = _required_text(row, "Description").strip()
+        if not _is_explicit_trading_day_marker(name, description):
+            holidays.add(holiday)
+            years.add(holiday.year)
+    if not holidays or not years:
+        raise ValueError("官方開休市日曆不可缺少休市日。")
     valid_year = max(years)
     return TradingCalendar(
         holiday_dates=tuple(sorted(holidays)),
         source_url=HOLIDAY_CALENDAR_URL,
         valid_through=date(valid_year, 12, 31),
         timezone=timezone(timedelta(hours=8), name="Asia/Taipei"),
+    )
+
+
+def _is_explicit_trading_day_marker(name: str, description: str) -> bool:
+    """排除官方休市清單中用來標示春節前後實際交易日的說明列。"""
+
+    return ("開始交易日" in name and "開始交易" in description) or (
+        "最後交易日" in name and "最後交易" in description
     )
 
 
