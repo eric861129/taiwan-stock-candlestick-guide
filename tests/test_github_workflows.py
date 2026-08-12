@@ -421,6 +421,14 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("git rev-parse HEAD", published_section)
         self.assertIn("actions/setup-python@", published_section)
         self.assertIn('python-version: "3.13"', published_section)
+        self.assertIn(
+            "SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}",
+            published_section,
+        )
+        self.assertNotIn(
+            "SOURCE_SHA: ${{ needs.source-snapshot.outputs.source_sha }}",
+            published_section,
+        )
         self.assert_pinned_actions(
             text,
             "actions/checkout",

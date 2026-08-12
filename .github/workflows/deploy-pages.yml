@@ -625,7 +625,7 @@ jobs:
       - id: restore-deployed
         name: Verify snapshot before retaining it for rollback
         env:
-          SOURCE_SHA: ${{ needs.source-snapshot.outputs.source_sha }}
+          SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
