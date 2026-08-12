@@ -18,7 +18,7 @@ import StockAnalyzer from './StockAnalyzer.vue';
 
 const manifest = {
   schemaVersion: 1,
-  snapshotVersion: 3,
+  snapshotVersion: 4,
   sourceCommit: 'a'.repeat(40),
   snapshotHash: 'b'.repeat(64),
   generatedAt: '2026-08-11T18:00:00+08:00',

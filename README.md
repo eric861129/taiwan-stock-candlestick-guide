@@ -59,7 +59,7 @@
 
 公開網站入口是 <https://huangchiyu.com/taiwan-stock-candlestick-guide/>。GitHub Pages 預設網址 <https://eric861129.github.io/taiwan-stock-candlestick-guide/> 會依帳號設定重新導向這個自訂網域；發布健康狀態以最新的「原子化 GitHub Pages 部署」workflow 為準。
 
-互動分析器只支援 TWSE／TPEx 的普通股；ETF、ETN、權證、興櫃與其他證券會被拒絕。發布快照保留兩市場最近 120 個官方交易日，型態比對最多使用最後 60 根「連續且合法」的已完成日 K。官方列出未報價，或交易所公告停止買賣時，系統會保留 `official-no-quote`／`official-suspension` 證據，不補造 OHLC，也不跨越該日或停牌區間建立型態視窗；全市場緊急休市則由版本化日曆佐證排除。
+互動分析器只支援 TWSE／TPEx 的普通股；ETF、ETN、權證、興櫃與其他證券會被拒絕。v4 快照可保存原始日 K、週 K、月 K 各最多 120 根已完成 K 棒，型態比對最多使用所選週期最後 60 根「連續且合法」的已完成 K 棒；十年基準資料由獨立歷史工作建立。官方列出未報價，或交易所公告停止買賣時，系統會保留 `official-no-quote`／`official-suspension` 證據，不補造 OHLC，也不跨越該日或停牌區間建立型態視窗；全市場緊急休市則由版本化日曆佐證排除。
 
 瀏覽器只從同源的 `data/manifest.json` 與內容雜湊股票 JSON 載入資料，不直接呼叫交易所。來源 adapter 只讀取 TWSE／TPEx 的官方盤後行情、上市櫃公司清冊、公司行動與 TWSE 年度交易日曆；個股停復牌與緊急休市必須有版本化官方公告佐證。這些資料只供教材式的歷史型態比對，不預測未來價格，也不構成投資建議。
 

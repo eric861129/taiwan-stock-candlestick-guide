@@ -196,13 +196,34 @@ const emergencyClosureEvidenceSchema = z.object({
 const calendarEvidenceSchema = z.object({
   sourceUrl: twseOfficialHttpsUrlSchema,
   validThrough: isoDateSchema,
+  holidayDates: z.array(isoDateSchema).min(1),
   emergencyClosureEvidence: emergencyClosureEvidenceSchema,
 }).strict().superRefine((calendar, context) => {
+  if (
+    new Set(calendar.holidayDates).size !== calendar.holidayDates.length
+    || calendar.holidayDates.some((holiday, index) => (
+      holiday > calendar.validThrough
+      || (index > 0 && holiday <= calendar.holidayDates[index - 1]!)
+    ))
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['holidayDates'],
+      message: '官方休市日期必須遞增、不可重複且位於日曆有效範圍。',
+    });
+  }
   if (calendar.emergencyClosureEvidence.closures.some((closure) => closure.date > calendar.validThrough)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['emergencyClosureEvidence', 'closures'],
       message: '緊急市場休市佐證日期不得超出年度日曆範圍。',
+    });
+  }
+  if (calendar.emergencyClosureEvidence.closures.some((closure) => !calendar.holidayDates.includes(closure.date))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['holidayDates'],
+      message: '緊急市場休市日必須同時列入官方休市日期。',
     });
   }
 });
@@ -310,10 +331,10 @@ const stockIndexEntrySchema = z.object({
   }
 });
 
-/** 瀏覽器可載入的市場快照 v3 索引，含版本化停復牌公告區間。 */
+/** 瀏覽器可載入的市場快照 v4 索引，含版本化停復牌公告區間。 */
 export const marketManifestSchema = z.object({
   schemaVersion: z.literal(1),
-  snapshotVersion: z.literal(3),
+  snapshotVersion: z.literal(4),
   sourceCommit: z.string().trim().min(1).max(128),
   snapshotHash: z.string().regex(SHA256_PATTERN),
   generatedAt: z.string().datetime({ offset: true }),
@@ -378,6 +399,11 @@ export const marketManifestSchema = z.object({
 
 const ohlcvBarSchema = z.object({
   date: isoDateSchema,
+  periodStart: isoDateSchema,
+  periodEnd: isoDateSchema,
+  completed: z.boolean(),
+  evidenceStatus: z.enum(['complete', 'incomplete']),
+  missingSessionDates: z.array(isoDateSchema),
   open: z.number().finite().nonnegative(),
   high: z.number().finite().nonnegative(),
   low: z.number().finite().nonnegative(),
@@ -387,7 +413,6 @@ const ohlcvBarSchema = z.object({
   sourcePrecision: z.number().finite().positive(),
   comparisonUnit: z.number().finite().positive(),
   priceUnit: z.literal('TWD'),
-  completed: z.boolean().optional(),
 }).strict().superRefine((bar, context) => {
   if (bar.high < Math.max(bar.open, bar.close, bar.low) || bar.low > Math.min(bar.open, bar.close, bar.high)) {
     context.addIssue({
@@ -395,7 +420,85 @@ const ohlcvBarSchema = z.object({
       message: 'OHLC 高低價關係不正確。',
     });
   }
+  if (bar.periodStart > bar.periodEnd || bar.date < bar.periodStart || bar.date > bar.periodEnd) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['periodStart'],
+      message: 'K 棒期間必須遞增，且 date 必須位於期間內。',
+    });
+  }
+  if (new Set(bar.missingSessionDates).size !== bar.missingSessionDates.length
+    || bar.missingSessionDates.some((date, index) => (
+      date < bar.periodStart
+      || date > bar.periodEnd
+      || (index > 0 && date <= bar.missingSessionDates[index - 1]!)
+    ))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['missingSessionDates'],
+      message: '缺少交易日必須遞增且不可重複。',
+    });
+  }
+  if ((bar.evidenceStatus === 'complete') !== (bar.missingSessionDates.length === 0)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['evidenceStatus'],
+      message: '完整性狀態必須與缺少交易日清單一致。',
+    });
+  }
 });
+
+const timeframeSeriesSchema = z.object({
+  completedBars: z.array(ohlcvBarSchema).max(120),
+  formingBar: ohlcvBarSchema.nullable(),
+}).strict().superRefine((series, context) => {
+  if (series.completedBars.some((bar) => !bar.completed)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['completedBars'],
+      message: '完成 K 棒清單不可含形成中的 K 棒。',
+    });
+  }
+  if (series.formingBar?.completed === true) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['formingBar'],
+      message: '形成中 K 棒必須標示為未完成。',
+    });
+  }
+  const bars = [...series.completedBars, ...(series.formingBar ? [series.formingBar] : [])];
+  if (bars.some((bar, index) => index > 0 && bar.date <= bars[index - 1]!.date)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '同一週期 K 棒日期必須遞增且不可重複。',
+    });
+  }
+});
+
+const rawPriceModeSchema = z.object({
+  status: z.literal('available'),
+  reasonCodes: z.array(z.string()).length(0),
+  warnings: z.array(z.string()).length(0),
+  timeframes: z.object({
+    '1d': timeframeSeriesSchema,
+    '1w': timeframeSeriesSchema,
+    '1m': timeframeSeriesSchema,
+  }).strict(),
+}).strict().superRefine((priceMode, context) => {
+  if (priceMode.timeframes['1d'].formingBar !== null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['timeframes', '1d', 'formingBar'],
+      message: '盤後日 K 不可攜帶形成中 K 棒。',
+    });
+  }
+});
+
+const adjustedUnavailablePriceModeSchema = z.object({
+  status: z.literal('unavailable'),
+  reasonCodes: z.tuple([z.literal('adjustment-series-not-built')]),
+  warnings: z.array(z.string().trim().regex(/[\u3400-\u9fff]/, '還原價格警告必須使用繁體中文')).min(1),
+}).strict();
 
 const corporateActionSchema = z.object({
   date: isoDateSchema,
@@ -413,15 +516,14 @@ const noQuoteEvidenceSchema = z.object({
   sourceUrl: nonEmptyHttpsUrlSchema,
 }).strict();
 
-/** 單一普通股原始盤後日 K 快照 v3。 */
+/** 單一普通股原始與多時間週期盤後 K 快照 v4。 */
 export const stockSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
-  snapshotVersion: z.literal(3),
+  snapshotVersion: z.literal(4),
   code: z.string().regex(/^[0-9]{4,6}$/),
   name: z.string().trim().min(1),
   market: marketSchema,
   securityType: securityTypeSchema,
-  priceMode: z.literal('raw'),
   currency: z.literal('TWD'),
   priceUnit: z.literal('TWD'),
   listingDate: isoDateSchema,
@@ -432,12 +534,16 @@ export const stockSnapshotSchema = z.object({
     effectiveFrom: isoDateSchema,
     sourceUrl: twseOfficialHttpsUrlSchema,
   }).strict(),
-  bars: z.array(ohlcvBarSchema).max(120),
+  priceModes: z.object({
+    raw: rawPriceModeSchema,
+    adjusted: adjustedUnavailablePriceModeSchema,
+  }).strict(),
   noQuoteEvidence: z.array(noQuoteEvidenceSchema).max(120),
   corporateActions: z.array(corporateActionSchema),
   sourceUrls: z.array(nonEmptyHttpsUrlSchema).min(1),
 }).strict().superRefine((snapshot, context) => {
-  if (snapshot.availableSessions !== snapshot.bars.length + snapshot.noQuoteEvidence.length) {
+  const dailyBars = snapshot.priceModes.raw.timeframes['1d'].completedBars;
+  if (snapshot.availableSessions !== dailyBars.length + snapshot.noQuoteEvidence.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['availableSessions'],
@@ -451,10 +557,10 @@ export const stockSnapshotSchema = z.object({
       message: '短歷史資料必須說明原因。',
     });
   }
-  if (snapshot.bars.some((bar, index) => index > 0 && bar.date <= snapshot.bars[index - 1]!.date)) {
+  if (dailyBars.some((bar, index) => index > 0 && bar.date <= dailyBars[index - 1]!.date)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['bars'],
+      path: ['priceModes', 'raw', 'timeframes', '1d', 'completedBars'],
       message: '日 K 日期必須遞增且不可重複。',
     });
   }
@@ -481,7 +587,7 @@ export const stockSnapshotSchema = z.object({
       message: '公司行動來源必須屬於對應市場的官方網域。',
     });
   }
-  const barDates = new Set(snapshot.bars.map((bar) => bar.date));
+  const barDates = new Set(dailyBars.map((bar) => bar.date));
   if (snapshot.noQuoteEvidence.some((evidence) => barDates.has(evidence.date))) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -489,7 +595,7 @@ export const stockSnapshotSchema = z.object({
       message: '未報價證據不可與合法日 K 共用交易日。',
     });
   }
-  if (snapshot.bars.length === 0 && snapshot.noQuoteEvidence.length === 0) {
+  if (dailyBars.length === 0 && snapshot.noQuoteEvidence.length === 0) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: '快照至少需要一根合法日 K 或一筆官方未報價證據。',
@@ -501,7 +607,7 @@ export type MarketDataManifest = z.infer<typeof marketManifestSchema>;
 export type MarketDataSymbol = z.infer<typeof stockIndexEntrySchema>;
 export type MarketCalendar = Pick<z.infer<typeof marketCutoffSchema>, 'tradingSessions' | 'calendarValidThrough'>;
 
-/** 將已通過 Zod 驗證的資料收斂為 matcher 既有的共用契約。 */
+/** 將已通過 Zod 驗證的 v4 資料收斂為目前選取週期的 matcher 契約。 */
 export function toStockSnapshot(value: z.infer<typeof stockSnapshotSchema>): StockSnapshot {
   if (value.securityType !== 'common-stock') {
     throw new Error('非普通股不可轉換為型態比對快照。');
@@ -509,14 +615,20 @@ export function toStockSnapshot(value: z.infer<typeof stockSnapshotSchema>): Sto
 
   return {
     schemaVersion: value.schemaVersion,
+    snapshotVersion: value.snapshotVersion,
     code: value.code,
     name: value.name,
     market: value.market as Market,
     securityType: 'common-stock',
-    priceMode: value.priceMode,
+    priceMode: 'raw',
+    timeframe: '1d',
+    priceModes: value.priceModes,
     currency: value.currency,
     comparisonUnitPolicy: value.comparisonUnitPolicy,
-    bars: value.bars as readonly OhlcvBar[],
+    bars: [
+      ...value.priceModes.raw.timeframes['1d'].completedBars,
+      ...(value.priceModes.raw.timeframes['1d'].formingBar ? [value.priceModes.raw.timeframes['1d'].formingBar] : []),
+    ] as readonly OhlcvBar[],
     noQuoteEvidence: value.noQuoteEvidence as readonly NoQuoteEvidence[],
     corporateActions: value.corporateActions as readonly CorporateAction[],
     sourceUrls: value.sourceUrls,

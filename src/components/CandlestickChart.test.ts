@@ -79,4 +79,36 @@ describe('CandlestickChart', () => {
 
     wrapper.unmount();
   });
+
+  it('keeps sixty completed weekly bars plus one visible forming bar and labels their status', () => {
+    const completedBars = chartSnapshot.bars.map((bar) => ({
+      ...bar,
+      periodStart: bar.date,
+      periodEnd: bar.date,
+      completed: true,
+      evidenceStatus: 'complete' as const,
+      missingSessionDates: [],
+    }));
+    const formingBar = {
+      ...completedBars.at(-1)!,
+      date: chartDate(61),
+      periodStart: chartDate(61),
+      periodEnd: chartDate(61),
+      completed: false,
+    };
+    const wrapper = mount(CandlestickChart, {
+      props: {
+        snapshot: {
+          ...chartSnapshot,
+          snapshotVersion: 4,
+          timeframe: '1w' as const,
+          bars: [...completedBars, formingBar],
+        },
+      },
+    });
+
+    expect(wrapper.findAll('[data-candle-index]')).toHaveLength(61);
+    expect(wrapper.get('h3').text()).toContain('週 K');
+    expect(wrapper.get('[data-candle-index="60"]').attributes('aria-label')).toContain('形成中');
+  });
 });

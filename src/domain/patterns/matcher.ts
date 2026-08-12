@@ -56,6 +56,8 @@ const FRESHNESS_VALUES = new Set([
   'stale',
   'unknown',
 ]);
+const TIMEFRAME_VALUES = new Set(['1d', '1w', '1m']);
+const BAR_EVIDENCE_STATUS_VALUES = new Set(['complete', 'incomplete']);
 
 const GEOMETRY_BAR_COUNTS: Readonly<Record<RuleFamilyId, number>> = {
   'relative-body-size': 1,
@@ -126,6 +128,12 @@ function hasValidOhlcvRelationships(snapshot: StockSnapshot): boolean {
     && bar.high >= Math.max(bar.open, bar.close, bar.low)
     && bar.low <= Math.min(bar.open, bar.close, bar.high)
     && bar.volumeShares >= 0
+    && (bar.completed === undefined || typeof bar.completed === 'boolean')
+    && (bar.evidenceStatus === undefined || BAR_EVIDENCE_STATUS_VALUES.has(bar.evidenceStatus))
+    && (bar.missingSessionDates === undefined || (
+      Array.isArray(bar.missingSessionDates)
+      && bar.missingSessionDates.every(isIsoDate)
+    ))
   ));
 }
 
@@ -186,6 +194,7 @@ function hasValidSnapshotMetadata(snapshot: StockSnapshot): boolean {
   return (
     Number.isInteger(snapshot.schemaVersion) &&
     snapshot.schemaVersion > 0 &&
+    (snapshot.snapshotVersion === undefined || (Number.isInteger(snapshot.snapshotVersion) && snapshot.snapshotVersion > 0)) &&
     typeof snapshot.code === 'string' &&
     snapshot.code.trim().length > 0 &&
     typeof snapshot.name === 'string' &&
@@ -206,7 +215,8 @@ function hasValidSnapshotMetadata(snapshot: StockSnapshot): boolean {
     ) &&
     (snapshot.snapshotHash === undefined || typeof snapshot.snapshotHash === 'string') &&
     (snapshot.cutoffDate === undefined || isIsoDate(snapshot.cutoffDate)) &&
-    (snapshot.freshness === undefined || FRESHNESS_VALUES.has(snapshot.freshness))
+    (snapshot.freshness === undefined || FRESHNESS_VALUES.has(snapshot.freshness)) &&
+    (snapshot.timeframe === undefined || TIMEFRAME_VALUES.has(snapshot.timeframe))
   );
 }
 
@@ -230,8 +240,19 @@ function hasValidSnapshotShape(snapshot: StockSnapshot): boolean {
 
 function completedLegalBars(snapshot: StockSnapshot): readonly OhlcvBar[] {
   const latestNoQuoteDate = snapshot.noQuoteEvidence.at(-1)?.date;
+  const latestIncompleteDate = snapshot.bars
+    .filter((bar) => bar.evidenceStatus === 'incomplete')
+    .map((bar) => bar.date)
+    .sort()
+    .at(-1);
+  const lastContinuityBreak = [latestNoQuoteDate, latestIncompleteDate]
+    .filter((date): date is string => date !== undefined)
+    .sort()
+    .at(-1);
   return snapshot.bars.filter((bar) => (
-    bar.completed !== false && (latestNoQuoteDate === undefined || bar.date > latestNoQuoteDate)
+    bar.completed !== false
+    && bar.evidenceStatus !== 'incomplete'
+    && (lastContinuityBreak === undefined || bar.date > lastContinuityBreak)
   ));
 }
 
@@ -251,6 +272,7 @@ function analysisWarnings(
   freshness: AnalysisContext['freshness'],
   actions: readonly CorporateAction[],
   noQuoteEvidence: readonly NoQuoteEvidence[],
+  bars: readonly OhlcvBar[],
 ): string[] {
   const warnings: string[] = [];
 
@@ -272,6 +294,9 @@ function analysisWarnings(
   if (noQuoteEvidence.some((evidence) => evidence.reason === 'official-suspension')) {
     warnings.push('交易所公告停止買賣；型態比對不跨越停牌區間。');
   }
+  if (bars.some((bar) => bar.evidenceStatus === 'incomplete')) {
+    warnings.push('聚合 K 棒缺少官方交易日證據；型態比對只使用其後連續且完整的 K 棒。');
+  }
 
   return warnings;
 }
@@ -292,12 +317,12 @@ function buildContext(
   const freshness = options.freshness ?? snapshot.freshness ?? 'unknown';
 
   return {
-    snapshotVersion: snapshot.schemaVersion,
+    snapshotVersion: snapshot.snapshotVersion ?? snapshot.schemaVersion,
     snapshotHash: options.snapshotHash ?? snapshot.snapshotHash ?? 'unknown',
     market: snapshot.market,
     cutoffDate: snapshot.cutoffDate ?? analyzedTo,
     freshness,
-    timeframe: '1d',
+    timeframe: snapshot.timeframe ?? '1d',
     analyzedFrom,
     analyzedTo,
     analyzedBarCount,
@@ -308,7 +333,7 @@ function buildContext(
     affectedRuleIds: suppressedRules,
     suppressedRules,
     corporateActions: actions,
-    warnings: analysisWarnings(snapshot.cutoffDate ?? analyzedTo, freshness, actions, snapshot.noQuoteEvidence),
+    warnings: analysisWarnings(snapshot.cutoffDate ?? analyzedTo, freshness, actions, snapshot.noQuoteEvidence, snapshot.bars),
   };
 }
 

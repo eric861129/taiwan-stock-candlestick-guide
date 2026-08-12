@@ -6,6 +6,7 @@ import {
   goToRoute,
   makeBar,
   makeBrowserStockFixture,
+  rawDailyBars,
   routeBrowserMarketFixture,
   searchStock,
   trackLiveMarketRequests,
@@ -105,7 +106,7 @@ test.describe('股票型態比對', () => {
     await expect(page.locator('.analysis-result-panel__candidate')).toHaveCount(0);
   });
 
-  test('未完成日 K 會顯示證據不足，而不假裝有候選', async ({ page }) => {
+  test('不合法的未完成日 K 會 fail closed，而不假裝有候選', async ({ page }) => {
     const stock = makeBrowserStockFixture([
       makeBar('2026-08-10', 100, 101, 99, 100, false),
     ]);
@@ -114,8 +115,7 @@ test.describe('股票型態比對', () => {
     await waitForAnalyzerReady(page);
 
     await searchStock(page, '2330');
-    await expect(page.getByRole('heading', { name: /證據不足/ })).toBeVisible();
-    await expect(page.getByText(/沒有可用的已完成日 K/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: '暫時無法分析' })).toBeVisible();
     await expect(page.getByRole('heading', { name: /無明顯型態/ })).toHaveCount(0);
     await expect(page.locator('.analysis-result-panel__candidate')).toHaveCount(0);
   });
@@ -155,7 +155,7 @@ test.describe('股票型態比對', () => {
   test('未受公司行動抑制的穿透形正向 fixture 會指定候選且 Top 3 至少一張', async ({ page }) => {
     const piercing = piercingPositiveCase();
     const stock = makeBrowserStockFixture(withWeekdayDates(piercing.snapshot.bars));
-    const sessions = [...new Set(stock.bars.map((bar) => bar.date))].sort();
+    const sessions = [...new Set(rawDailyBars(stock).map((bar) => bar.date))].sort();
     await routeBrowserMarketFixture(page, createBrowserMarketFixture(stock, sessions));
     await goToRoute(page, 'analyzer');
     await waitForAnalyzerReady(page);

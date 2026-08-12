@@ -1,5 +1,5 @@
 import { SITE_BASE } from '../site/navigation';
-import type { Freshness, StockSnapshot, UnavailableReason } from './types';
+import type { Freshness, StockSnapshot, Timeframe, UnavailableReason } from './types';
 import {
   marketManifestSchema,
   stockSnapshotSchema,
@@ -154,16 +154,17 @@ function assertStockMatchesIndex(
   entry: MarketDataManifest['symbols'][number],
   snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
 ): void {
-  const firstDate = snapshot.bars[0]?.date ?? null;
-  const lastDate = snapshot.bars.at(-1)?.date ?? null;
+  const dailyCompletedBars = snapshot.priceModes.raw.timeframes['1d'].completedBars;
+  const firstDate = dailyCompletedBars[0]?.date ?? null;
+  const lastDate = dailyCompletedBars.at(-1)?.date ?? null;
   if (
     firstDate !== entry.firstDate
     || lastDate !== entry.lastDate
-    || snapshot.bars.length !== entry.barCount
+    || dailyCompletedBars.length !== entry.barCount
     || snapshot.noQuoteEvidence.length !== entry.noQuoteCount
     || snapshot.listingDate !== entry.listingDate
     || snapshot.availableSessions !== entry.availableSessions
-    || snapshot.availableSessions !== snapshot.bars.length + snapshot.noQuoteEvidence.length
+    || snapshot.availableSessions !== dailyCompletedBars.length + snapshot.noQuoteEvidence.length
     || snapshot.shortHistoryReason !== entry.shortHistoryReason
   ) {
     throw new MarketDataError('schema-error', '股票資料與清冊的日期、筆數或歷史可用性欄位不一致。');
@@ -184,8 +185,9 @@ function assertStockMatchesMarketSessions(
 ): void {
   const tradingSessions = manifest.markets[snapshot.market].tradingSessions;
   const tradingSessionSet = new Set(tradingSessions);
+  const dailyCompletedBars = snapshot.priceModes.raw.timeframes['1d'].completedBars;
   const observations = [
-    ...snapshot.bars.map((bar) => bar.date),
+    ...dailyCompletedBars.map((bar) => bar.date),
     ...snapshot.noQuoteEvidence.map((evidence) => evidence.date),
   ];
   const observationCounts = new Map<string, number>();
@@ -217,7 +219,7 @@ function assertStockMatchesSuspensionEvidence(
   const intervals = manifest.suspensionEvidence.intervals.filter((interval) => (
     interval.market === snapshot.market && interval.code === snapshot.code
   ));
-  const barDates = new Set(snapshot.bars.map((bar) => bar.date));
+  const barDates = new Set(snapshot.priceModes.raw.timeframes['1d'].completedBars.map((bar) => bar.date));
   const evidenceByDate = new Map(snapshot.noQuoteEvidence.map((evidence) => [evidence.date, evidence]));
 
   for (const evidence of snapshot.noQuoteEvidence) {
@@ -254,6 +256,145 @@ function assertStockMatchesSuspensionEvidence(
   }
 }
 
+function parseIsoDate(value: string): Date {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year!, month! - 1, day!));
+}
+
+function formatIsoDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function addUtcDays(value: Date, days: number): Date {
+  const result = new Date(value);
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
+}
+
+function calendarBounds(timeframe: Exclude<Timeframe, '1d'>, barDate: string): readonly [string, string] {
+  const parsed = parseIsoDate(barDate);
+  if (timeframe === '1w') {
+    const monday = addUtcDays(parsed, -((parsed.getUTCDay() + 6) % 7));
+    return [formatIsoDate(monday), formatIsoDate(addUtcDays(monday, 6))];
+  }
+  const first = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), 1));
+  const last = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth() + 1, 0));
+  return [formatIsoDate(first), formatIsoDate(last)];
+}
+
+function officialPeriodSessions(
+  manifest: MarketDataManifest,
+  timeframe: Exclude<Timeframe, '1d'>,
+  barDate: string,
+  listingDate: string,
+): readonly string[] {
+  const [calendarStart, calendarEnd] = calendarBounds(timeframe, barDate);
+  const effectiveStart = calendarStart > listingDate ? calendarStart : listingDate;
+  const calendarCoverageStart = `${manifest.calendar.holidayDates[0]!.slice(0, 4)}-01-01`;
+  if (effectiveStart < calendarCoverageStart || calendarEnd > manifest.calendar.validThrough) {
+    throw new MarketDataError('schema-error', '週期 K 線超出官方交易日曆可驗證範圍。');
+  }
+
+  const holidays = new Set(manifest.calendar.holidayDates);
+  const sessions: string[] = [];
+  for (
+    let candidate = parseIsoDate(effectiveStart);
+    formatIsoDate(candidate) <= calendarEnd;
+    candidate = addUtcDays(candidate, 1)
+  ) {
+    const date = formatIsoDate(candidate);
+    const weekday = candidate.getUTCDay();
+    if (weekday >= 1 && weekday <= 5 && !holidays.has(date)) {
+      sessions.push(date);
+    }
+  }
+  if (sessions.length === 0) {
+    throw new MarketDataError('schema-error', '週期 K 線找不到對應的官方交易日。');
+  }
+  return sessions;
+}
+
+function assertAggregateBar(
+  manifest: MarketDataManifest,
+  snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
+  timeframe: Exclude<Timeframe, '1d'>,
+  bar: ReturnType<typeof stockSnapshotSchema.parse>['priceModes']['raw']['timeframes']['1w']['completedBars'][number],
+): void {
+  const expectedSessions = officialPeriodSessions(manifest, timeframe, bar.date, snapshot.listingDate);
+  const market = manifest.markets[snapshot.market];
+  if (bar.periodStart !== expectedSessions[0] || bar.periodEnd !== expectedSessions.at(-1)) {
+    throw new MarketDataError('schema-error', '週期 K 線沒有涵蓋完整的官方自然期間。');
+  }
+  if (!expectedSessions.includes(bar.date)) {
+    throw new MarketDataError('schema-error', '週期 K 線日期不是該期間的官方交易日。');
+  }
+  const expectedCompleted = expectedSessions.every((session) => session <= market.cutoffDate);
+  if (bar.completed !== expectedCompleted) {
+    throw new MarketDataError('schema-error', '週期 K 線的完成狀態與官方交易日曆不一致。');
+  }
+
+  const dailyBars = snapshot.priceModes.raw.timeframes['1d'].completedBars;
+  const firstRetainedDailyDate = dailyBars[0]?.date;
+  if (!firstRetainedDailyDate || bar.periodEnd < firstRetainedDailyDate) {
+    return;
+  }
+
+  const observedExpectedSessions = expectedSessions.filter((session) => session <= market.cutoffDate);
+  const marketSessions = new Set(market.tradingSessions);
+  if (observedExpectedSessions.some((session) => !marketSessions.has(session))) {
+    throw new MarketDataError('schema-error', '週期 K 線的官方交易日與 manifest 不一致。');
+  }
+  const constituents = dailyBars.filter((daily) => (
+    daily.date >= bar.periodStart && daily.date <= bar.periodEnd
+  ));
+  if (constituents.length === 0) {
+    throw new MarketDataError('schema-error', '週期 K 線缺少可稽核的日 K 組成資料。');
+  }
+  const missingSessionDates = snapshot.noQuoteEvidence
+    .map((evidence) => evidence.date)
+    .filter((date) => date >= bar.periodStart && date <= bar.periodEnd && date <= market.cutoffDate)
+    .sort();
+  if (
+    bar.missingSessionDates.length !== missingSessionDates.length
+    || bar.missingSessionDates.some((date, index) => date !== missingSessionDates[index])
+  ) {
+    throw new MarketDataError('schema-error', '週期 K 線沒有正確彙整官方未報價證據。');
+  }
+
+  const transactionCounts = constituents
+    .map((daily) => daily.transactionCount)
+    .filter((count): count is number => count !== undefined);
+  const aggregateMismatch = (
+    bar.open !== constituents[0]!.open
+    || bar.high !== Math.max(...constituents.map((daily) => daily.high))
+    || bar.low !== Math.min(...constituents.map((daily) => daily.low))
+    || bar.close !== constituents.at(-1)!.close
+    || bar.volumeShares !== constituents.reduce((sum, daily) => sum + daily.volumeShares, 0)
+    || bar.date !== constituents.at(-1)!.date
+    || (transactionCounts.length > 0
+      ? bar.transactionCount !== transactionCounts.reduce((sum, count) => sum + count, 0)
+      : bar.transactionCount !== undefined)
+  );
+  if (aggregateMismatch) {
+    throw new MarketDataError('schema-error', '週期 K 線的 OHLCV 聚合結果不一致。');
+  }
+}
+
+function assertStockTimeframeAggregates(
+  manifest: MarketDataManifest,
+  snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
+): void {
+  for (const timeframe of ['1w', '1m'] as const) {
+    const series = snapshot.priceModes.raw.timeframes[timeframe];
+    for (const bar of [
+      ...series.completedBars,
+      ...(series.formingBar ? [series.formingBar] : []),
+    ]) {
+      assertAggregateBar(manifest, snapshot, timeframe, bar);
+    }
+  }
+}
+
 /** 將全形數字與空白正規化後，只接受 4 至 6 碼股票代碼。 */
 export function normalizeStockCode(input: unknown): string | null {
   if (typeof input !== 'string') {
@@ -264,6 +405,31 @@ export function normalizeStockCode(input: unknown): string | null {
     .replace(/\u3000/g, ' ')
     .trim();
   return /^[0-9]{4,6}$/.test(normalized) ? normalized : null;
+}
+
+/**
+ * 從已驗證的多時間週期快照選取一組圖表與 matcher 共用的 K 棒。
+ * 形成中 K 棒會保留在 bars 供圖表呈現，但 matcher 會依 completed/evidenceStatus 排除。
+ */
+export function selectStockTimeframe(snapshot: StockSnapshot, timeframe: Timeframe): StockSnapshot {
+  const raw = snapshot.priceModes?.raw;
+  if (!raw || raw.status !== 'available') {
+    throw new MarketDataError('schema-error', '原始價格多時間週期資料不可用，已停止型態比對。');
+  }
+  const series = raw.timeframes[timeframe];
+  if (!series) {
+    throw new MarketDataError('schema-error', '指定時間週期不在已驗證的股票快照中。');
+  }
+
+  return {
+    ...snapshot,
+    priceMode: 'raw',
+    timeframe,
+    bars: [
+      ...series.completedBars,
+      ...(series.formingBar ? [series.formingBar] : []),
+    ],
+  };
 }
 
 /** 讀取 manifest 前先收斂到 GitHub Pages base 下的同源安全 URL。 */
@@ -334,6 +500,7 @@ export async function loadStockSnapshot(
   assertStockMatchesIndex(entry, parsed.data);
   assertStockMatchesMarketSessions(manifest, parsed.data);
   assertStockMatchesSuspensionEvidence(manifest, parsed.data);
+  assertStockTimeframeAggregates(manifest, parsed.data);
   return toStockSnapshot(parsed.data);
 }
 

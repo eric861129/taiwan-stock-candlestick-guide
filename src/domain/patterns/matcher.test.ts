@@ -190,6 +190,48 @@ describe('explainable 17-pattern matcher', () => {
     }
   });
 
+  it('excludes incomplete and forming bars, then resumes only from the continuous legal tail of the selected timeframe', () => {
+    const hammer = caseFor('hammer', 'positive');
+    const tail = hammer.snapshot.bars.map((item, index) => ({
+      ...item,
+      date: `2026-09-${String(index + 1).padStart(2, '0')}`,
+      periodStart: `2026-09-${String(index + 1).padStart(2, '0')}`,
+      periodEnd: `2026-09-${String(index + 1).padStart(2, '0')}`,
+      completed: true,
+      evidenceStatus: 'complete' as const,
+      missingSessionDates: [],
+    }));
+    const incomplete = {
+      ...bar('2026-08-02', 100, 105, 95, 102),
+      periodStart: '2026-07-27',
+      periodEnd: '2026-08-02',
+      completed: true,
+      evidenceStatus: 'incomplete' as const,
+      missingSessionDates: ['2026-07-31'],
+    };
+    const forming = {
+      ...bar('2026-09-27', 100, 105, 95, 102),
+      periodStart: '2026-09-27',
+      periodEnd: '2026-09-27',
+      completed: false,
+      evidenceStatus: 'complete' as const,
+      missingSessionDates: [],
+    };
+    const result = analyzePatterns({
+      ...makeSnapshot([...hammer.snapshot.bars, incomplete, ...tail, forming]),
+      timeframe: '1w',
+    });
+
+    expect(resultFor(result, 'hammer')).toBe(true);
+    expect(result.status).not.toBe('unavailable');
+    if (result.status !== 'unavailable') {
+      expect(result.context.timeframe).toBe('1w');
+      expect(result.context.analyzedFrom).toBe('2026-09-01');
+      expect(result.context.analyzedTo).toBe('2026-09-26');
+      expect(result.context.analyzedBarCount).toBe(tail.length);
+    }
+  });
+
   it('does not emit a precision-sensitive match when source precision is missing', () => {
     const nearMarubozu = caseFor('near-marubozu', 'positive');
     const bars = nearMarubozu.snapshot.bars.map((item, index) => (

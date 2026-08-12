@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from io import BytesIO
 import json
 from pathlib import Path
@@ -109,8 +110,20 @@ def fixture_build_input() -> SnapshotBuildInput:
     )
 
 
+def raw_timeframe(stock: dict[str, object], timeframe: str = "1d") -> dict[str, object]:
+    """取得 v4 原始價格指定週期，讓快照黑箱測試只關心公開契約。"""
+
+    return stock["priceModes"]["raw"]["timeframes"][timeframe]
+
+
+def raw_completed_bars(stock: dict[str, object], timeframe: str = "1d") -> list[dict[str, object]]:
+    """取得 v4 原始價格指定週期的已完成 K 棒。"""
+
+    return raw_timeframe(stock, timeframe)["completedBars"]
+
+
 def downgrade_snapshot_to_v1(output: Path) -> None:
-    """將測試產出的 v3 快照轉成舊版 v1 格式。"""
+    """將測試產出的 v4 或 v3 快照轉成舊版 v1 格式。"""
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
@@ -121,6 +134,24 @@ def downgrade_snapshot_to_v1(output: Path) -> None:
     for entry in manifest["symbols"]:
         old_path = output / entry["dataPath"]
         stock = json.loads(old_path.read_text(encoding="utf-8"))
+        if "priceModes" in stock:
+            stock["priceMode"] = "raw"
+            stock["bars"] = [
+                {
+                    key: value
+                    for key, value in bar.items()
+                    if key
+                    not in {
+                        "periodStart",
+                        "periodEnd",
+                        "completed",
+                        "evidenceStatus",
+                        "missingSessionDates",
+                    }
+                }
+                for bar in raw_completed_bars(stock)
+            ]
+            stock.pop("priceModes")
         stock["snapshotVersion"] = 1
         stock.pop("listingDate")
         stock.pop("availableSessions")
@@ -160,8 +191,63 @@ def downgrade_snapshot_to_v1(output: Path) -> None:
     market_snapshot._write_sha256sums(output)
 
 
+def downgrade_snapshot_to_v2(output: Path) -> None:
+    """將完整 v4 fixture 轉成仍可驗證的 v2，測試舊版只讀相容性。"""
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
+    manifest.pop("calendar")
+    manifest.pop("suspensionEvidence")
+    provenance["calendar"].pop("emergencyClosureEvidence")
+    provenance.pop("suspensionEvidence")
+    for entry in manifest["symbols"]:
+        old_path = output / entry["dataPath"]
+        stock = json.loads(old_path.read_text(encoding="utf-8"))
+        stock["snapshotVersion"] = 2
+        stock["priceMode"] = "raw"
+        stock["bars"] = [
+            {
+                key: value
+                for key, value in bar.items()
+                if key
+                not in {
+                    "periodStart",
+                    "periodEnd",
+                    "completed",
+                    "evidenceStatus",
+                    "missingSessionDates",
+                }
+            }
+            for bar in raw_completed_bars(stock)
+        ]
+        stock.pop("priceModes")
+        stock.pop("noQuoteEvidence")
+        payload = market_snapshot._canonical_json_bytes(stock)
+        digest = market_snapshot._digest(payload)
+        new_path = output / f"data/stocks/{entry['code']}.{digest[:12]}.json"
+        new_path.write_bytes(payload)
+        old_path.unlink()
+        entry["dataPath"] = new_path.relative_to(output).as_posix()
+        entry["digest"] = digest
+        entry["size"] = len(payload)
+        entry.pop("noQuoteCount")
+
+    manifest["snapshotVersion"] = 2
+    manifest_without_hash = dict(manifest)
+    manifest_without_hash.pop("snapshotHash")
+    manifest["snapshotHash"] = market_snapshot._digest(market_snapshot._canonical_json_bytes(manifest_without_hash))
+    provenance["snapshotVersion"] = 2
+    provenance["snapshotHash"] = manifest["snapshotHash"]
+    (output / "manifest.json").write_bytes(market_snapshot._canonical_json_bytes(manifest))
+    (output / "provenance.json").write_bytes(market_snapshot._canonical_json_bytes(provenance))
+    archive_path = output / "snapshot.tar.gz"
+    archive_path.unlink()
+    market_snapshot._write_deterministic_tar(output)
+    market_snapshot._write_sha256sums(output)
+
+
 def remove_verified_session_from_v3_snapshot(output: Path, removed_date: date) -> None:
-    """建立仍可離線驗證、但市場行事曆有共同缺日的 v3 快照。"""
+    """建立仍可離線驗證、但市場行事曆有共同缺日的舊 v3 快照。"""
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
@@ -169,6 +255,25 @@ def remove_verified_session_from_v3_snapshot(output: Path, removed_date: date) -
     for entry in manifest["symbols"]:
         old_path = output / entry["dataPath"]
         stock = json.loads(old_path.read_text(encoding="utf-8"))
+        if "priceModes" in stock:
+            stock["snapshotVersion"] = 3
+            stock["priceMode"] = "raw"
+            stock["bars"] = [
+                {
+                    key: value
+                    for key, value in bar.items()
+                    if key
+                    not in {
+                        "periodStart",
+                        "periodEnd",
+                        "completed",
+                        "evidenceStatus",
+                        "missingSessionDates",
+                    }
+                }
+                for bar in raw_completed_bars(stock)
+            ]
+            stock.pop("priceModes")
         stock["bars"] = [bar for bar in stock["bars"] if bar["date"] != removed_text]
         stock["availableSessions"] = len(stock["bars"])
         payload = market_snapshot._canonical_json_bytes(stock)
@@ -185,6 +290,8 @@ def remove_verified_session_from_v3_snapshot(output: Path, removed_date: date) -
         entry["availableSessions"] = len(stock["bars"])
     for market in manifest["markets"].values():
         market["tradingSessions"] = [session for session in market["tradingSessions"] if session != removed_text]
+    manifest["snapshotVersion"] = 3
+    provenance["snapshotVersion"] = 3
     manifest_without_hash = dict(manifest)
     manifest_without_hash.pop("snapshotHash")
     manifest["snapshotHash"] = market_snapshot._digest(market_snapshot._canonical_json_bytes(manifest_without_hash))
@@ -194,6 +301,36 @@ def remove_verified_session_from_v3_snapshot(output: Path, removed_date: date) -
 
     archive_path = output / "snapshot.tar.gz"
     archive_path.unlink()
+    market_snapshot._write_deterministic_tar(output)
+    market_snapshot._write_sha256sums(output)
+
+
+def rewrite_snapshot_stock(
+    output: Path,
+    manifest_document: dict[str, object],
+    stock_path: Path,
+    stock: dict[str, object],
+) -> None:
+    """重寫測試股票並同步公開驗證會核對的 manifest、provenance 與 checksums。"""
+
+    stock_payload = market_snapshot._canonical_json_bytes(stock)
+    stock_path.write_bytes(stock_payload)
+    symbols = manifest_document["symbols"]
+    assert isinstance(symbols, list)
+    symbol = symbols[0]
+    assert isinstance(symbol, dict)
+    symbol["digest"] = market_snapshot._digest(stock_payload)
+    symbol["size"] = len(stock_payload)
+    without_hash = dict(manifest_document)
+    without_hash.pop("snapshotHash")
+    manifest_document["snapshotHash"] = market_snapshot._digest(
+        market_snapshot._canonical_json_bytes(without_hash)
+    )
+    (output / "manifest.json").write_bytes(market_snapshot._canonical_json_bytes(manifest_document))
+    provenance_path = output / "provenance.json"
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    provenance["snapshotHash"] = manifest_document["snapshotHash"]
+    provenance_path.write_bytes(market_snapshot._canonical_json_bytes(provenance))
     market_snapshot._write_deterministic_tar(output)
     market_snapshot._write_sha256sums(output)
 
@@ -209,7 +346,7 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertEqual(1, manifest.schema_version)
             self.assertEqual("fixture", document["sourceCommit"])
             self.assertEqual(1, document["schemaVersion"])
-            self.assertEqual(3, document["snapshotVersion"])
+            self.assertEqual(4, document["snapshotVersion"])
             self.assertEqual({"TWSE", "TPEx"}, set(document["markets"]))
             self.assertEqual(["2330", "6488"], [symbol["code"] for symbol in document["symbols"]])
             self.assertTrue(all(symbol["securityType"] == "common-stock" for symbol in document["symbols"]))
@@ -219,11 +356,34 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertEqual(64, len(twse_entry["digest"]))
             self.assertGreater(twse_entry["size"], 0)
             stock = json.loads((output / twse_entry["dataPath"]).read_text(encoding="utf-8"))
-            self.assertEqual("raw", stock["priceMode"])
+            self.assertNotIn("priceMode", stock)
+            self.assertNotIn("bars", stock)
+            self.assertEqual(
+                {
+                    "status": "available",
+                    "reasonCodes": [],
+                    "warnings": [],
+                },
+                {key: stock["priceModes"]["raw"][key] for key in ("status", "reasonCodes", "warnings")},
+            )
+            self.assertEqual(
+                {
+                    "status": "unavailable",
+                    "reasonCodes": ["adjustment-series-not-built"],
+                    "warnings": ["向後還原價格序列尚未建立，請使用官方原始價格。"],
+                },
+                stock["priceModes"]["adjusted"],
+            )
             self.assertEqual("TWD", stock["priceUnit"])
-            self.assertEqual(120, len(stock["bars"]))
-            self.assertEqual("2026-08-11", stock["bars"][-1]["date"])
-            self.assertEqual(5, stock["bars"][-1]["comparisonUnit"])
+            self.assertEqual(120, len(raw_completed_bars(stock)))
+            self.assertIsNone(raw_timeframe(stock)["formingBar"])
+            self.assertEqual("2026-08-11", raw_completed_bars(stock)[-1]["date"])
+            self.assertEqual(5, raw_completed_bars(stock)[-1]["comparisonUnit"])
+            self.assertEqual("2026-08-11", raw_completed_bars(stock)[-1]["periodStart"])
+            self.assertEqual("2026-08-11", raw_completed_bars(stock)[-1]["periodEnd"])
+            self.assertTrue(raw_completed_bars(stock)[-1]["completed"])
+            self.assertEqual("complete", raw_completed_bars(stock)[-1]["evidenceStatus"])
+            self.assertEqual([], raw_completed_bars(stock)[-1]["missingSessionDates"])
             self.assertEqual("cash-dividend", stock["corporateActions"][0]["type"])
             self.assertEqual("fresh", document["markets"]["TWSE"]["freshness"])
             self.assertTrue((output / "snapshot.tar.gz").is_file())
@@ -286,6 +446,91 @@ class SnapshotBuildTests(unittest.TestCase):
         self.assertNotIn("2026-07-10", manifest["markets"]["TWSE"]["tradingSessions"])
         self.assertNotIn("2026-07-10", manifest["markets"]["TPEx"]["tradingSessions"])
 
+    def test_aggregates_natural_week_and_month_across_new_year_with_holiday_and_forming_bars(self) -> None:
+        """自然週跨年、元旦休市與尚未結束的週／月，必須各自保留正確 OHLCV 與狀態。"""
+
+        base = fixture_build_input()
+        calendar = replace(
+            base.calendar,
+            holiday_dates=(date(2025, 1, 1), date(2026, 1, 1)),
+            valid_through=date(2026, 12, 31),
+        )
+        session_dates = official_fixture_sessions_ending_at(date(2026, 1, 5), 120, calendar)
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        sessions: list[MarketSession] = []
+        for index, session_date in enumerate(session_dates, start=1):
+            price = Decimal(100 + index)
+            sessions.extend(
+                (
+                    MarketSession(
+                        "TWSE",
+                        (
+                            replace(
+                                twse_quote,
+                                trading_date=session_date,
+                                open=price,
+                                high=price + Decimal(10),
+                                low=price - Decimal(10),
+                                close=price + Decimal(5),
+                                volume_shares=1_000 + index,
+                                transaction_count=10 + index,
+                            ),
+                        ),
+                    ),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
+        build_input = replace(
+            base,
+            calendar=calendar,
+            sessions=tuple(sessions),
+            generated_at=datetime(2026, 1, 5, 18, 0, tzinfo=calendar.timezone),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, build_input, output)
+            stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            validate_snapshot(output)
+
+        daily_by_date = {bar["date"]: bar for bar in raw_completed_bars(stock)}
+        completed_weeks = raw_completed_bars(stock, "1w")
+        completed_cross_year_week = next(
+            bar
+            for bar in completed_weeks
+            if bar["periodStart"] == "2025-12-29" and bar["periodEnd"] == "2026-01-02"
+        )
+        cross_year_daily = [
+            daily_by_date[day]
+            for day in ("2025-12-29", "2025-12-30", "2025-12-31", "2026-01-02")
+        ]
+        self.assertEqual(cross_year_daily[0]["open"], completed_cross_year_week["open"])
+        self.assertEqual(max(bar["high"] for bar in cross_year_daily), completed_cross_year_week["high"])
+        self.assertEqual(min(bar["low"] for bar in cross_year_daily), completed_cross_year_week["low"])
+        self.assertEqual(cross_year_daily[-1]["close"], completed_cross_year_week["close"])
+        self.assertEqual(sum(bar["volumeShares"] for bar in cross_year_daily), completed_cross_year_week["volumeShares"])
+        self.assertEqual(sum(bar["transactionCount"] for bar in cross_year_daily), completed_cross_year_week["transactionCount"])
+        self.assertTrue(completed_cross_year_week["completed"])
+        self.assertEqual("complete", completed_cross_year_week["evidenceStatus"])
+
+        weekly_forming = raw_timeframe(stock, "1w")["formingBar"]
+        self.assertEqual("2026-01-05", weekly_forming["periodStart"])
+        self.assertEqual("2026-01-09", weekly_forming["periodEnd"])
+        self.assertEqual("2026-01-05", weekly_forming["date"])
+        self.assertFalse(weekly_forming["completed"])
+
+        completed_december = next(
+            bar
+            for bar in raw_completed_bars(stock, "1m")
+            if bar["periodStart"] == "2025-12-01" and bar["periodEnd"] == "2025-12-31"
+        )
+        self.assertTrue(completed_december["completed"])
+        monthly_forming = raw_timeframe(stock, "1m")["formingBar"]
+        self.assertEqual("2026-01-02", monthly_forming["periodStart"])
+        self.assertEqual("2026-01-30", monthly_forming["periodEnd"])
+        self.assertFalse(monthly_forming["completed"])
+
     def test_expands_only_verified_suspension_sessions_and_keeps_recovery_bar(self) -> None:
         """停牌日以 official-suspension 證據補齊；endDateExclusive 當日的合法 K 線不可被覆蓋。"""
         base = fixture_build_input()
@@ -321,7 +566,7 @@ class SnapshotBuildTests(unittest.TestCase):
 
         evidence = next(item for item in stock["noQuoteEvidence"] if item["date"] == "2026-08-10")
         self.assertEqual("official-suspension", evidence["reason"])
-        self.assertEqual("2026-08-11", stock["bars"][-1]["date"])
+        self.assertEqual("2026-08-11", raw_completed_bars(stock)[-1]["date"])
         self.assertEqual(
             {
                 "schemaVersion": SUSPENSION_EVIDENCE_SCHEMA_VERSION,
@@ -505,7 +750,7 @@ class SnapshotBuildTests(unittest.TestCase):
 
             stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
             self.assertTrue(updated)
-            self.assertEqual(["2026-08-11", "2026-08-12"], [bar["date"] for bar in stock["bars"]][-2:])
+            self.assertEqual(["2026-08-11", "2026-08-12"], [bar["date"] for bar in raw_completed_bars(stock)][-2:])
             self.assertTrue(all(url.startswith("https://") for url in stock["sourceUrls"]))
             self.assertIn("https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX", stock["sourceUrls"])
 
@@ -567,7 +812,7 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertTrue(updated)
             self.assertEqual(
                 ["2026-08-06", "2026-08-07", "2026-08-10", "2026-08-11"],
-                [bar["date"] for bar in stock["bars"]][-4:],
+                [bar["date"] for bar in raw_completed_bars(stock)][-4:],
             )
             self.assertEqual(expected_backfill_dates, [call.args[0] for call in twse_history_fetch.call_args_list])
             self.assertEqual(expected_backfill_dates, [call.args[0] for call in tpex_history_fetch.call_args_list])
@@ -693,9 +938,9 @@ class SnapshotBuildTests(unittest.TestCase):
             manifest = build_snapshot(None, build_input, output)
             stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
 
-        self.assertEqual(120, len(stock["bars"]))
-        self.assertEqual(session_dates[-120].isoformat(), stock["bars"][0]["date"])
-        self.assertEqual(session_dates[-1].isoformat(), stock["bars"][-1]["date"])
+        self.assertEqual(120, len(raw_completed_bars(stock)))
+        self.assertEqual(session_dates[-120].isoformat(), raw_completed_bars(stock)[0]["date"])
+        self.assertEqual(session_dates[-1].isoformat(), raw_completed_bars(stock)[-1]["date"])
         self.assertEqual(120, manifest.symbols[0].available_sessions)
         self.assertIsNone(manifest.symbols[0].short_history_reason)
         self.assertEqual(120, stock["availableSessions"])
@@ -818,7 +1063,7 @@ class SnapshotBuildTests(unittest.TestCase):
 
         self.assertEqual(4, entry.available_sessions)
         self.assertEqual("listing-history", entry.short_history_reason)
-        self.assertEqual(4, len(stock["bars"]))
+        self.assertEqual(4, len(raw_completed_bars(stock)))
         self.assertEqual(4, stock["availableSessions"])
         self.assertEqual("listing-history", stock["shortHistoryReason"])
 
@@ -857,11 +1102,11 @@ class SnapshotBuildTests(unittest.TestCase):
             stock = json.loads((output / entry.data_path).read_text(encoding="utf-8"))
             validate_snapshot(output)
 
-        self.assertEqual(3, manifest.snapshot_version)
+        self.assertEqual(4, manifest.snapshot_version)
         self.assertEqual(119, entry.bar_count)
         self.assertEqual(1, entry.no_quote_count)
         self.assertEqual(120, entry.available_sessions)
-        self.assertNotIn(no_quote_date.isoformat(), [bar["date"] for bar in stock["bars"]])
+        self.assertNotIn(no_quote_date.isoformat(), [bar["date"] for bar in raw_completed_bars(stock)])
         self.assertEqual(
             [{
                 "market": "TWSE",
@@ -872,6 +1117,72 @@ class SnapshotBuildTests(unittest.TestCase):
             }],
             stock["noQuoteEvidence"],
         )
+        for timeframe in ("1w", "1m"):
+            aggregate_bars = [
+                *raw_completed_bars(stock, timeframe),
+                *([] if raw_timeframe(stock, timeframe)["formingBar"] is None else [raw_timeframe(stock, timeframe)["formingBar"]]),
+            ]
+            affected = next(
+                bar
+                for bar in aggregate_bars
+                if bar["periodStart"] <= no_quote_date.isoformat() <= bar["periodEnd"]
+            )
+            self.assertEqual("incomplete", affected["evidenceStatus"])
+            self.assertEqual([no_quote_date.isoformat()], affected["missingSessionDates"])
+
+    def test_does_not_create_week_or_month_price_bar_when_a_new_listing_has_only_official_no_quote_evidence(self) -> None:
+        """整個首週／首月沒有合法日 K 時，只能保留官方證據，不能補造價格棒。"""
+
+        base = fixture_build_input()
+        session_dates = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)
+        listing_date = date(2026, 8, 10)
+        twse_quote, unsupported_twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        sessions: list[MarketSession] = []
+        for session_date in session_dates:
+            if session_date < listing_date:
+                twse_session = MarketSession(
+                    "TWSE",
+                    (replace(unsupported_twse_quote, trading_date=session_date),),
+                )
+            else:
+                twse_session = MarketSession(
+                    "TWSE",
+                    (),
+                    (
+                        NoQuoteEvidence(
+                            market="TWSE",
+                            code="2330",
+                            trading_date=session_date,
+                            reason="official-no-quote",
+                            source_url=twse_quote.source_url,
+                        ),
+                    ),
+                )
+            sessions.extend(
+                (
+                    twse_session,
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
+        build_input = replace(
+            base,
+            symbols=(replace(base.symbols[0], listing_date=listing_date), base.symbols[1]),
+            sessions=tuple(sessions),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, build_input, output)
+            stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            validate_snapshot(output)
+
+        self.assertEqual(0, manifest.symbols[0].bar_count)
+        self.assertEqual(2, manifest.symbols[0].no_quote_count)
+        self.assertEqual([], raw_completed_bars(stock))
+        for timeframe in ("1w", "1m"):
+            self.assertEqual([], raw_completed_bars(stock, timeframe))
+            self.assertIsNone(raw_timeframe(stock, timeframe)["formingBar"])
 
     def test_rejects_duplicate_official_no_quote_evidence_in_one_market_session(self) -> None:
         """來源若重複同一股票的未報價列，不能在停牌區間展開前被字典覆蓋。"""
@@ -951,8 +1262,8 @@ class SnapshotBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(SnapshotValidationError, "官方交易日缺漏"):
                 build_snapshot(None, build_input, Path(temporary_directory) / "site-data")
 
-    def test_rejects_a_common_market_gap_split_between_previous_and_current_sessions(self) -> None:
-        """前次完整歷史與本次 12 不可掩蓋官方交易日 10 的共同缺漏。"""
+    def test_rejects_v3_previous_snapshot_before_any_v4_incremental_merge(self) -> None:
+        """v3 即使可離線驗證也只能辨識，不能和 v4 資料增量混用。"""
 
         base = fixture_build_input()
         twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
@@ -985,8 +1296,25 @@ class SnapshotBuildTests(unittest.TestCase):
             remove_verified_session_from_v3_snapshot(previous, date(2026, 8, 10))
             self.assertEqual(3, validate_snapshot(previous).snapshot_version)
 
-            with self.assertRaisesRegex(SnapshotValidationError, "官方交易日缺漏"):
+            with self.assertRaisesRegex(SnapshotValidationError, "v3.*重新 bootstrap"):
                 build_snapshot(previous, next_input, next_output)
+
+            self.assertFalse(next_output.exists())
+
+    def test_recognizes_v2_snapshot_but_requires_rebootstrap_before_v4_incremental_update(self) -> None:
+        """v2 仍能驗證供舊資料辨識，但不允許將舊日 K 和新 v4 聚合序列混用。"""
+
+        base = fixture_build_input()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            previous = root / "previous"
+            next_output = root / "next-output"
+            build_snapshot(None, base, previous)
+            downgrade_snapshot_to_v2(previous)
+
+            self.assertEqual(2, validate_snapshot(previous).snapshot_version)
+            with self.assertRaisesRegex(SnapshotValidationError, "v2.*重新 bootstrap"):
+                build_snapshot(previous, base, next_output)
 
             self.assertFalse(next_output.exists())
 
@@ -1026,8 +1354,12 @@ class SnapshotBuildTests(unittest.TestCase):
         self.assertEqual(tuple(session.isoformat() for session in expected_sessions), manifest.markets["TWSE"].trading_sessions)
         self.assertEqual(3, manifest.symbols[0].available_sessions)
         self.assertEqual("listing-history", manifest.symbols[0].short_history_reason)
-        self.assertEqual(["2026-08-10", "2026-08-11", "2026-08-12"], [bar["date"] for bar in stock["bars"]])
+        self.assertEqual(["2026-08-10", "2026-08-11", "2026-08-12"], [bar["date"] for bar in raw_completed_bars(stock)])
         self.assertEqual("listing-history", stock["shortHistoryReason"])
+        self.assertEqual("2026-08-10", raw_timeframe(stock, "1w")["formingBar"]["periodStart"])
+        self.assertEqual("2026-08-14", raw_timeframe(stock, "1w")["formingBar"]["periodEnd"])
+        self.assertEqual("2026-08-10", raw_timeframe(stock, "1m")["formingBar"]["periodStart"])
+        self.assertEqual("2026-08-31", raw_timeframe(stock, "1m")["formingBar"]["periodEnd"])
 
     def test_transition_rejects_count_reduction_even_with_retirement_evidence(self) -> None:
         """若退市證據使普通股總數減少超過 1%，仍需人工核准。"""
@@ -1384,6 +1716,74 @@ class SnapshotBuildTests(unittest.TestCase):
             stock_path.write_text('{"tampered":true}\n', encoding="utf-8")
             with self.assertRaisesRegex(SnapshotValidationError, "雜湊"):
                 validate_snapshot(output)
+
+    def test_validate_rejects_a_shortened_week_even_when_ohlcv_is_recalculated(self) -> None:
+        """週 K 不可縮短官方自然週後再用局部日 K 重算，否則驗證會接受不完整期間。"""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, fixture_build_input(), output)
+            manifest_path = output / "manifest.json"
+            manifest_document = json.loads(manifest_path.read_text(encoding="utf-8"))
+            stock_path = output / manifest.symbols[0].data_path
+            stock = json.loads(stock_path.read_text(encoding="utf-8"))
+            daily_bars = raw_completed_bars(stock)
+            weekly_bars = raw_completed_bars(stock, "1w")
+            target = next(
+                bar
+                for bar in weekly_bars
+                if len([
+                    daily
+                    for daily in daily_bars
+                    if bar["periodStart"] <= daily["date"] <= bar["periodEnd"]
+                ]) >= 2
+            )
+            original_constituents = [
+                daily
+                for daily in daily_bars
+                if target["periodStart"] <= daily["date"] <= target["periodEnd"]
+            ]
+            shortened = original_constituents[1:]
+            target["periodStart"] = shortened[0]["date"]
+            target["open"] = shortened[0]["open"]
+            target["high"] = max(bar["high"] for bar in shortened)
+            target["low"] = min(bar["low"] for bar in shortened)
+            target["close"] = shortened[-1]["close"]
+            target["volumeShares"] = sum(bar["volumeShares"] for bar in shortened)
+            if all("transactionCount" in bar for bar in shortened):
+                target["transactionCount"] = sum(bar["transactionCount"] for bar in shortened)
+
+            rewrite_snapshot_stock(output, manifest_document, stock_path, stock)
+
+            with self.assertRaisesRegex(SnapshotValidationError, "自然週期間邊界"):
+                validate_snapshot(output)
+
+    def test_validate_accepts_an_older_week_outside_the_retained_daily_window(self) -> None:
+        """週 K 可保存比 120 根日 K 更早的期間，讓後續十年基準能各自保留 120 根。"""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, fixture_build_input(), output)
+            manifest_path = output / "manifest.json"
+            manifest_document = json.loads(manifest_path.read_text(encoding="utf-8"))
+            stock_path = output / manifest.symbols[0].data_path
+            stock = json.loads(stock_path.read_text(encoding="utf-8"))
+            weekly_bars = raw_completed_bars(stock, "1w")
+            older_week = {
+                **weekly_bars[0],
+                "date": "2026-01-09",
+                "periodStart": "2026-01-05",
+                "periodEnd": "2026-01-09",
+                "completed": True,
+                "evidenceStatus": "complete",
+                "missingSessionDates": [],
+            }
+            weekly_bars.insert(0, older_week)
+            rewrite_snapshot_stock(output, manifest_document, stock_path, stock)
+
+            validated = validate_snapshot(output)
+
+            self.assertEqual(4, validated.snapshot_version)
 
     def test_pack_keeps_the_previous_archive_and_checksums_when_staging_fails(self) -> None:
         """若 pack 在寫完 archive 後失敗，上一成功 artifact 的兩個封裝檔必須逐位元保留。"""

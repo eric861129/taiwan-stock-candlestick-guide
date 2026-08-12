@@ -15,12 +15,11 @@ type BrowserOhlcvBar = OhlcvBar & { readonly priceUnit: 'TWD' };
 
 export interface BrowserStockFixture {
   readonly schemaVersion: 1;
-  readonly snapshotVersion: 3;
+  readonly snapshotVersion: 4;
   readonly code: string;
   readonly name: string;
   readonly market: 'TWSE' | 'TPEx';
   readonly securityType: 'common-stock' | 'etf';
-  readonly priceMode: 'raw';
   readonly currency: 'TWD';
   readonly priceUnit: 'TWD';
   readonly listingDate: string;
@@ -31,7 +30,23 @@ export interface BrowserStockFixture {
     readonly effectiveFrom: string;
     readonly sourceUrl: string;
   };
-  readonly bars: readonly BrowserOhlcvBar[];
+  readonly priceModes: {
+    readonly raw: {
+      readonly status: 'available';
+      readonly reasonCodes: readonly string[];
+      readonly warnings: readonly string[];
+      readonly timeframes: {
+        readonly '1d': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: null };
+        readonly '1w': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: BrowserOhlcvBar | null };
+        readonly '1m': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: BrowserOhlcvBar | null };
+      };
+    };
+    readonly adjusted: {
+      readonly status: 'unavailable';
+      readonly reasonCodes: readonly ['adjustment-series-not-built'];
+      readonly warnings: readonly string[];
+    };
+  };
   readonly noQuoteEvidence: readonly NoQuoteEvidence[];
   readonly corporateActions: readonly CorporateAction[];
   readonly sourceUrls: readonly string[];
@@ -86,6 +101,8 @@ export function makeBar(
 ): BrowserOhlcvBar {
   return {
     date,
+    periodStart: date,
+    periodEnd: date,
     open,
     high,
     low,
@@ -95,7 +112,13 @@ export function makeBar(
     comparisonUnit: 0.1,
     priceUnit: 'TWD',
     completed,
+    evidenceStatus: 'complete',
+    missingSessionDates: [],
   };
+}
+
+export function rawDailyBars(stock: BrowserStockFixture): readonly BrowserOhlcvBar[] {
+  return stock.priceModes.raw.timeframes['1d'].completedBars;
 }
 
 export function makeBrowserStockFixture(
@@ -112,6 +135,11 @@ export function makeBrowserStockFixture(
 ): BrowserStockFixture {
   const serializedBars: readonly BrowserOhlcvBar[] = bars.map((bar) => ({
     ...bar,
+    periodStart: bar.periodStart ?? bar.date,
+    periodEnd: bar.periodEnd ?? bar.date,
+    completed: bar.completed ?? true,
+    evidenceStatus: bar.evidenceStatus ?? 'complete',
+    missingSessionDates: bar.missingSessionDates ?? [],
     priceUnit: 'TWD',
   }));
   const market = options.market ?? 'TWSE';
@@ -128,12 +156,11 @@ export function makeBrowserStockFixture(
   const marketSource = market === 'TWSE' ? twseOfficialFixtureSource : tpexOfficialFixtureSource;
   return {
     schemaVersion: 1,
-    snapshotVersion: 3,
+    snapshotVersion: 4,
     code: options.code ?? '2330',
     name: options.name ?? '測試普通股',
     market,
     securityType: options.securityType ?? 'common-stock',
-    priceMode: 'raw',
     currency: 'TWD',
     priceUnit: 'TWD',
     listingDate,
@@ -144,7 +171,23 @@ export function makeBrowserStockFixture(
       effectiveFrom: listingDate,
       sourceUrl: twseOfficialFixtureSource,
     },
-    bars: serializedBars,
+    priceModes: {
+      raw: {
+        status: 'available',
+        reasonCodes: [],
+        warnings: [],
+        timeframes: {
+          '1d': { completedBars: serializedBars, formingBar: null },
+          '1w': { completedBars: [], formingBar: null },
+          '1m': { completedBars: [], formingBar: null },
+        },
+      },
+      adjusted: {
+        status: 'unavailable',
+        reasonCodes: ['adjustment-series-not-built'],
+        warnings: ['尚未建立可稽核的向後還原價格序列。'],
+      },
+    },
     noQuoteEvidence,
     corporateActions: options.corporateActions ?? [],
     sourceUrls: [...new Set([marketSource, ...noQuoteEvidence.map((evidence) => evidence.sourceUrl)])],
@@ -158,8 +201,9 @@ export function createBrowserMarketFixture(
 ): BrowserMarketFixture {
   const stockPath = `data/stocks/${stock.code}.e2e.json`;
   const stockBody = canonicalJson(stock);
+  const dailyBars = rawDailyBars(stock);
   const effectiveSessions = sessions ?? [...new Set([
-    ...stock.bars.map((bar) => bar.date),
+    ...dailyBars.map((bar) => bar.date),
     ...stock.noQuoteEvidence.map((evidence) => evidence.date),
   ])].sort();
   if (effectiveSessions.length === 0) {
@@ -175,9 +219,9 @@ export function createBrowserMarketFixture(
     dataPath: stockPath,
     digest: sha256(stockBody),
     size: Buffer.byteLength(stockBody, 'utf8'),
-    firstDate: stock.bars[0]?.date ?? null,
-    lastDate: stock.bars.at(-1)?.date ?? null,
-    barCount: stock.bars.length,
+    firstDate: dailyBars[0]?.date ?? null,
+    lastDate: dailyBars.at(-1)?.date ?? null,
+    barCount: dailyBars.length,
     noQuoteCount: stock.noQuoteEvidence.length,
     listingDate: stock.listingDate,
     availableSessions: stock.availableSessions,
@@ -193,12 +237,13 @@ export function createBrowserMarketFixture(
   };
   const manifestWithoutHash = {
     schemaVersion: 1,
-    snapshotVersion: 3,
+    snapshotVersion: 4,
     sourceCommit: fixtureSourceCommit,
     generatedAt: '2026-08-11T18:00:00+08:00',
     calendar: {
       sourceUrl: twseOfficialFixtureSource,
       validThrough: calendarValidThrough,
+      holidayDates: [...new Set(effectiveSessions.map((session) => `${session.slice(0, 4)}-01-01`))].sort(),
       emergencyClosureEvidence: {
         schemaVersion: 1,
         closures: [],

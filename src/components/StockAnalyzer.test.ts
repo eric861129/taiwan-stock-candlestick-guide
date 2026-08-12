@@ -4,12 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const clientMocks = vi.hoisted(() => ({
   loadManifest: vi.fn(),
   loadStockSnapshot: vi.fn(),
+  selectStockTimeframe: vi.fn(),
 }));
 const matcherMocks = vi.hoisted(() => ({ analyzePatterns: vi.fn() }));
 
 vi.mock('../domain/market-data/client', () => ({
   loadManifest: clientMocks.loadManifest,
   loadStockSnapshot: clientMocks.loadStockSnapshot,
+  selectStockTimeframe: clientMocks.selectStockTimeframe,
   normalizeStockCode: (value: unknown) => (
     typeof value === 'string'
       ? value.replace(/[０-９]/g, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0)).trim()
@@ -22,7 +24,7 @@ import StockAnalyzer from './StockAnalyzer.vue';
 
 const manifestFixture = {
   schemaVersion: 1,
-  snapshotVersion: 3,
+  snapshotVersion: 4,
   sourceCommit: 'a'.repeat(40),
   snapshotHash: 'b'.repeat(64),
   generatedAt: '2026-08-11T18:00:00+08:00',
@@ -119,13 +121,29 @@ const analysisContext = {
   warnings: [],
 };
 
+const weeklyBar = {
+  ...snapshotFixture.bars[0],
+  date: '2026-08-08',
+  periodStart: '2026-08-04',
+  periodEnd: '2026-08-08',
+  completed: true,
+  evidenceStatus: 'complete' as const,
+  missingSessionDates: [],
+};
+
 describe('StockAnalyzer', () => {
   beforeEach(() => {
     clientMocks.loadManifest.mockReset();
     clientMocks.loadStockSnapshot.mockReset();
+    clientMocks.selectStockTimeframe.mockReset();
     matcherMocks.analyzePatterns.mockReset();
     clientMocks.loadManifest.mockResolvedValue(manifestFixture);
     clientMocks.loadStockSnapshot.mockResolvedValue(snapshotFixture);
+    clientMocks.selectStockTimeframe.mockImplementation((loaded, timeframe) => ({
+      ...loaded,
+      timeframe,
+      bars: timeframe === '1w' ? [weeklyBar] : loaded.bars,
+    }));
     matcherMocks.analyzePatterns.mockReturnValue({
       status: 'no-clear-pattern',
       context: analysisContext,
@@ -146,6 +164,32 @@ describe('StockAnalyzer', () => {
     expect(clientMocks.loadStockSnapshot).toHaveBeenCalledWith(manifestFixture, '2330');
     expect(wrapper.text()).toContain('台積電');
     expect(wrapper.text()).toContain('無明顯型態');
+  });
+
+  it('lets readers switch day/week/month with native keyboard-operable radios and immediately reruns matching', async () => {
+    const wrapper = mount(StockAnalyzer);
+    await flushPromises();
+    await wrapper.get('input[name="stock-code"]').setValue('2330');
+    await wrapper.get('form[data-stock-search]').trigger('submit');
+    await flushPromises();
+
+    const weeklyControl = wrapper.get('input[data-timeframe="1w"]');
+    expect(weeklyControl.attributes('type')).toBe('radio');
+    expect(weeklyControl.attributes('name')).toBe('analysis-timeframe');
+    await weeklyControl.trigger('change');
+    await flushPromises();
+
+    expect(clientMocks.selectStockTimeframe).toHaveBeenCalledWith(
+      expect.objectContaining({ code: '2330' }),
+      '1w',
+    );
+    expect(matcherMocks.analyzePatterns).toHaveBeenLastCalledWith(
+      expect.objectContaining({ timeframe: '1w', bars: [weeklyBar] }),
+      expect.any(Object),
+    );
+    expect(wrapper.get('.stock-analyzer__status').text()).toContain('週 K');
+    expect(wrapper.text()).toContain('最近 60 根原始盤後週 K');
+    expect(wrapper.text()).not.toContain('最近 60 根原始盤後日 K');
   });
 
   it('uses the cutoff-date wording instead of calling a stale analysis current', async () => {
@@ -205,7 +249,7 @@ describe('StockAnalyzer', () => {
     await wrapper.get('form[data-stock-search]').trigger('submit');
     await flushPromises();
 
-    expect(wrapper.text()).toContain('股票日 K 最後交易日 無合法日 K');
+    expect(wrapper.text()).toContain('股票日 K最後資料日 無合法日 K');
     expect(wrapper.text()).toContain('官方未報價證據 2026-08-11');
     expect(wrapper.findComponent({ name: 'CandlestickChart' }).exists()).toBe(false);
   });

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { loadManifest, loadStockSnapshot } from '../domain/market-data/client';
+import { loadManifest, loadStockSnapshot, selectStockTimeframe } from '../domain/market-data/client';
 import { computeFreshness, mostConservativeFreshness } from '../domain/market-data/freshness';
 import type { MarketDataManifest, MarketDataSymbol } from '../domain/market-data/schema';
-import type { AnalysisResult, StockSnapshot, UnavailableReason } from '../domain/market-data/types';
+import type { AnalysisResult, StockSnapshot, Timeframe, UnavailableReason } from '../domain/market-data/types';
 import { analyzePatterns } from '../domain/patterns/matcher';
 import AnalysisResultPanel from './AnalysisResultPanel.vue';
 import CandlestickChart from './CandlestickChart.vue';
@@ -19,6 +19,7 @@ const statusMessage = ref('正在載入支援股票清冊；此頁不會直接�
 const errorMessage = ref('');
 const marketCutoffDate = ref<string | null>(null);
 const marketExpectedCutoffDate = ref<string | null>(null);
+const selectedTimeframe = ref<Timeframe>('1d');
 const stockDataLastDate = computed(() => snapshot.value?.bars.at(-1)?.date ?? null);
 const latestNoQuoteEvidence = computed(() => snapshot.value?.noQuoteEvidence.at(-1));
 const latestNoQuoteDescription = computed(() => {
@@ -34,8 +35,23 @@ const marketSnapshotMetadata = computed(() => ({
 
 let latestRequestId = 0;
 
+const timeframeLabels: Readonly<Record<Timeframe, string>> = {
+  '1d': '日 K',
+  '1w': '週 K',
+  '1m': '月 K',
+};
+
+const timeframeOptions: readonly Timeframe[] = ['1d', '1w', '1m'];
+
+function timeframeLabel(timeframe: Timeframe): string {
+  return timeframeLabels[timeframe];
+}
+
 function latestObservedStockDate(loaded: StockSnapshot): string | null {
-  const lastLegalBarDate = loaded.bars.at(-1)?.date;
+  const rawDailyBars = loaded.priceModes?.raw.status === 'available'
+    ? loaded.priceModes.raw.timeframes['1d'].completedBars
+    : loaded.bars;
+  const lastLegalBarDate = rawDailyBars.at(-1)?.date;
   const lastNoQuoteDate = loaded.noQuoteEvidence.at(-1)?.date;
   if (lastLegalBarDate === undefined) {
     return lastNoQuoteDate ?? null;
@@ -123,6 +139,7 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
   errorMessage.value = '';
   result.value = null;
   snapshot.value = null;
+  selectedTimeframe.value = '1d';
   marketCutoffDate.value = null;
   marketExpectedCutoffDate.value = null;
   statusMessage.value = `已確認 ${symbol.code} ${symbol.name}，正在載入單一股票的盤後資料。`;
@@ -145,11 +162,13 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
     );
     const scopedSnapshot: StockSnapshot = {
       ...loaded,
+      timeframe: loaded.timeframe ?? '1d',
       cutoffDate: stockCutoffDate,
       freshness,
       snapshotHash: activeManifest.snapshotHash,
     };
     snapshot.value = scopedSnapshot;
+    selectedTimeframe.value = scopedSnapshot.timeframe ?? '1d';
     marketCutoffDate.value = marketCutoff.cutoffDate;
     marketExpectedCutoffDate.value = marketCutoff.expectedCutoffDate;
     result.value = analyzePatterns(scopedSnapshot, {
@@ -157,9 +176,10 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
       snapshotHash: activeManifest.snapshotHash,
     });
     loadState.value = 'ready';
+    const label = timeframeLabel(selectedTimeframe.value);
     statusMessage.value = scopedSnapshot.bars.length > 0
-      ? `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的原始盤後日 K，可查看圖表與規則比對。`
-      : `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的官方未報價證據；沒有可畫製的日 K。`;
+      ? `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的原始盤後${label}，可查看圖表與規則比對。`
+      : `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的官方未報價證據；沒有可畫製的${label}。`;
   } catch (error) {
     if (!isCurrentRequest(requestId)) {
       return;
@@ -180,9 +200,33 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
   }
 }
 
+/** 切換已驗證快照中的日、週、月 K，並立刻以同一資料邊界重跑規則比對。 */
+function changeTimeframe(timeframe: Timeframe): void {
+  const current = snapshot.value;
+  if (!current || timeframe === selectedTimeframe.value) {
+    return;
+  }
+
+  try {
+    const selected = selectStockTimeframe(current, timeframe);
+    selectedTimeframe.value = timeframe;
+    snapshot.value = selected;
+    result.value = analyzePatterns(selected, {
+      freshness: selected.freshness,
+      snapshotHash: selected.snapshotHash,
+    });
+    statusMessage.value = `已切換為${timeframeLabel(timeframe)}；圖表可顯示形成中 K 棒，但型態比對只使用完成且證據完整的 K 棒。`;
+  } catch (error) {
+    const reason = unavailableReasonFromError(error);
+    result.value = { status: 'unavailable', reason, message: messageFromError(error) };
+    statusMessage.value = '';
+  }
+}
+
 function resetQuery(): void {
   beginRequest();
   snapshot.value = null;
+  selectedTimeframe.value = '1d';
   result.value = null;
   marketCutoffDate.value = null;
   marketExpectedCutoffDate.value = null;
@@ -208,7 +252,7 @@ onMounted(() => {
     <h2 id="stock-analyzer-title">
       股票型態比對
     </h2>
-    <p>先確認資料截止日，再把最近 60 根原始盤後日 K 與教學卡規則逐條比對。</p>
+    <p>先確認資料截止日，再把最近 60 根原始盤後{{ timeframeLabel(selectedTimeframe) }}與教學卡規則逐條比對。</p>
     <p class="stock-analyzer__disclaimer">
       本工具比較歷史價格資料與教學型態規則，不預測未來價格，也不構成投資建議。
     </p>
@@ -248,7 +292,24 @@ onMounted(() => {
         aria-label="已選擇的股票"
       >
         <h3>已選擇：{{ snapshot.code }} {{ snapshot.name }}</h3>
-        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，原始盤後日 K，股票日 K 最後交易日 {{ stockDataLastDate ?? '無合法日 K' }}。</p>
+        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，原始盤後{{ timeframeLabel(selectedTimeframe) }}，股票{{ timeframeLabel(selectedTimeframe) }}最後資料日 {{ stockDataLastDate ?? '無合法日 K' }}。</p>
+        <fieldset class="stock-analyzer__timeframes">
+          <legend>選擇 K 線週期</legend>
+          <label
+            v-for="timeframe in timeframeOptions"
+            :key="timeframe"
+          >
+            <input
+              :data-timeframe="timeframe"
+              type="radio"
+              name="analysis-timeframe"
+              :value="timeframe"
+              :checked="selectedTimeframe === timeframe"
+              @change="changeTimeframe(timeframe)"
+            >
+            {{ timeframeLabel(timeframe) }}
+          </label>
+        </fieldset>
         <p v-if="latestNoQuoteEvidence">
           官方{{ latestNoQuoteEvidence.reason === 'official-suspension' ? '停牌' : '未報價' }}證據 {{ latestNoQuoteEvidence.date }}；{{ latestNoQuoteDescription }}
           <a
@@ -318,6 +379,29 @@ onMounted(() => {
 
 .stock-analyzer__selection h3 {
   margin-top: 0;
+}
+
+.stock-analyzer__timeframes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 0.5rem;
+}
+
+.stock-analyzer__timeframes legend {
+  padding: 0 0.25rem;
+  font-weight: 700;
+}
+
+.stock-analyzer__timeframes label {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  min-height: 2.25rem;
+  cursor: pointer;
 }
 
 .stock-analyzer__selection button,

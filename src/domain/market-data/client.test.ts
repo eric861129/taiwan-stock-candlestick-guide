@@ -3,8 +3,10 @@ import {
   loadManifest,
   loadStockSnapshot,
   normalizeStockCode,
+  selectStockTimeframe,
 } from './client';
 import { marketManifestSchema, type MarketDataManifest } from './schema';
+import type { StockSnapshot } from './types';
 
 interface StockPayload {
   code: string;
@@ -14,7 +16,22 @@ interface StockPayload {
   listingDate: string;
   availableSessions: number;
   shortHistoryReason: string | null;
-  bars: Array<{ date: string; [key: string]: unknown }>;
+  priceModes: {
+    raw: {
+      status: 'available';
+      reasonCodes: string[];
+      warnings: string[];
+      timeframes: Record<string, {
+        completedBars: Array<{ date: string; [key: string]: unknown }>;
+        formingBar: { date: string; [key: string]: unknown } | null;
+      }>;
+    };
+    adjusted: {
+      status: 'unavailable';
+      reasonCodes: string[];
+      warnings: string[];
+    };
+  };
   noQuoteEvidence: Array<{ date: string; [key: string]: unknown }>;
   sourceUrls: string[];
   [key: string]: unknown;
@@ -22,12 +39,11 @@ interface StockPayload {
 
 const stockSnapshotFixture: StockPayload = {
   schemaVersion: 1,
-  snapshotVersion: 3,
+  snapshotVersion: 4,
   code: '2330',
   name: '台積電',
   market: 'TWSE',
   securityType: 'common-stock',
-  priceMode: 'raw',
   currency: 'TWD',
   priceUnit: 'TWD',
   listingDate: '1994-09-05',
@@ -38,8 +54,20 @@ const stockSnapshotFixture: StockPayload = {
     effectiveFrom: '2026-08-11',
     sourceUrl: 'https://www.twse.com.tw/zh/trading/trading-rule.html',
   },
-  bars: [{
+  priceModes: {
+    raw: {
+      status: 'available',
+      reasonCodes: [],
+      warnings: [],
+      timeframes: {
+        '1d': {
+          completedBars: [{
     date: '2026-08-11',
+    periodStart: '2026-08-11',
+    periodEnd: '2026-08-11',
+    completed: true,
+    evidenceStatus: 'complete',
+    missingSessionDates: [],
     open: 1000,
     high: 1015,
     low: 995,
@@ -49,11 +77,46 @@ const stockSnapshotFixture: StockPayload = {
     sourcePrecision: 0.01,
     comparisonUnit: 5,
     priceUnit: 'TWD',
-  }],
+          }],
+          formingBar: null,
+        },
+        '1w': { completedBars: [], formingBar: null },
+        '1m': { completedBars: [], formingBar: null },
+      },
+    },
+    adjusted: {
+      status: 'unavailable',
+      reasonCodes: ['adjustment-series-not-built'],
+      warnings: ['尚未建立可稽核的向後還原價格序列。'],
+    },
+  },
   noQuoteEvidence: [],
   corporateActions: [],
   sourceUrls: ['https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
 };
+
+function rawDailyBars(stock: StockPayload): Array<{ date: string; [key: string]: unknown }> {
+  return stock.priceModes.raw.timeframes['1d']!.completedBars;
+}
+
+function withRawDailyBars(
+  stock: StockPayload,
+  completedBars: Array<{ date: string; [key: string]: unknown }>,
+): StockPayload {
+  return {
+    ...stock,
+    priceModes: {
+      ...stock.priceModes,
+      raw: {
+        ...stock.priceModes.raw,
+        timeframes: {
+          ...stock.priceModes.raw.timeframes,
+          '1d': { completedBars, formingBar: null },
+        },
+      },
+    },
+  };
+}
 
 const encoder = new TextEncoder();
 
@@ -102,9 +165,10 @@ async function manifestFixture(
   stockBytes: Uint8Array = utf8Bytes(JSON.stringify(stockPayload)),
   indexOverrides: Record<string, unknown> = {},
 ): Promise<MarketDataManifest> {
-  const firstBar = stockPayload.bars[0];
-  const lastBar = stockPayload.bars.at(-1);
-  const observedSessions = [...stockPayload.bars, ...stockPayload.noQuoteEvidence]
+  const dailyBars = rawDailyBars(stockPayload);
+  const firstBar = dailyBars[0];
+  const lastBar = dailyBars.at(-1);
+  const observedSessions = [...dailyBars, ...stockPayload.noQuoteEvidence]
     .map((observation) => observation.date)
     .sort();
   if (observedSessions.length === 0) {
@@ -115,12 +179,13 @@ async function manifestFixture(
 
   const manifestWithoutHash = {
     schemaVersion: 1,
-    snapshotVersion: 3,
+    snapshotVersion: 4,
     sourceCommit: 'a'.repeat(40),
     generatedAt: '2026-08-11T18:00:00+08:00',
     calendar: {
       sourceUrl: 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule',
       validThrough: '2026-12-31',
+      holidayDates: ['2026-01-01'],
       emergencyClosureEvidence: {
         schemaVersion: 1,
         closures: [],
@@ -158,7 +223,7 @@ async function manifestFixture(
       size: stockBytes.byteLength,
       firstDate: firstBar?.date ?? null,
       lastDate: lastBar?.date ?? null,
-      barCount: stockPayload.bars.length,
+      barCount: dailyBars.length,
       noQuoteCount: stockPayload.noQuoteEvidence.length,
       listingDate: stockPayload.listingDate,
       availableSessions: stockPayload.availableSessions,
@@ -186,14 +251,154 @@ function fullHistoryStockFixture(): StockPayload {
     ...stockSnapshotFixture,
     availableSessions: 120,
     shortHistoryReason: null,
-    bars: tradingDates.map((date) => ({
-      ...stockSnapshotFixture.bars[0],
+    priceModes: {
+      ...stockSnapshotFixture.priceModes,
+      raw: {
+        ...stockSnapshotFixture.priceModes.raw,
+        timeframes: {
+          ...stockSnapshotFixture.priceModes.raw.timeframes,
+          '1d': {
+            completedBars: tradingDates.map((date) => ({
+      ...rawDailyBars(stockSnapshotFixture)[0],
       date,
+      periodStart: date,
+      periodEnd: date,
     })),
+            formingBar: null,
+          },
+        },
+      },
+    },
   };
 }
 
 describe('browser snapshot client', () => {
+  it('keeps all v4 timeframes and derives the selected chart bars without mutating the source snapshot', () => {
+    const daily = { ...rawDailyBars(stockSnapshotFixture)[0], completed: true, evidenceStatus: 'complete', missingSessionDates: [] };
+    const completedWeek = { ...daily, date: '2026-08-08', periodStart: '2026-08-04', periodEnd: '2026-08-08' };
+    const formingWeek = { ...daily, date: '2026-08-12', periodStart: '2026-08-11', periodEnd: '2026-08-12', completed: false };
+    const snapshot = {
+      ...stockSnapshotFixture,
+      snapshotVersion: 4,
+      timeframe: '1d' as const,
+      priceModes: {
+        raw: {
+          status: 'available' as const,
+          reasonCodes: [],
+          warnings: [],
+          timeframes: {
+            '1d': { completedBars: [daily], formingBar: null },
+            '1w': { completedBars: [completedWeek], formingBar: formingWeek },
+            '1m': { completedBars: [completedWeek], formingBar: null },
+          },
+        },
+        adjusted: {
+          status: 'unavailable' as const,
+          reasonCodes: ['adjustment-series-not-built'],
+          warnings: ['尚未建立可稽核的向後還原價格序列。'],
+        },
+      },
+      priceMode: 'raw' as const,
+      bars: [daily],
+    };
+
+    const selected = selectStockTimeframe(snapshot as unknown as StockSnapshot, '1w');
+
+    expect(selected.timeframe).toBe('1w');
+    expect(selected.bars).toEqual([completedWeek, formingWeek]);
+    expect(snapshot.bars).toEqual([daily]);
+  });
+
+  it('rejects a shortened natural week even when the payload keeps valid OHLCV relationships', async () => {
+    const template = rawDailyBars(stockSnapshotFixture)[0]!;
+    const dailyBars = [
+      {
+        ...template,
+        date: '2026-08-10',
+        periodStart: '2026-08-10',
+        periodEnd: '2026-08-10',
+        open: 100,
+        high: 110,
+        low: 95,
+        close: 105,
+        volumeShares: 1_000,
+        transactionCount: 10,
+      },
+      {
+        ...template,
+        date: '2026-08-11',
+        periodStart: '2026-08-11',
+        periodEnd: '2026-08-11',
+        open: 105,
+        high: 115,
+        low: 100,
+        close: 112,
+        volumeShares: 2_000,
+        transactionCount: 20,
+      },
+    ];
+    const formingWeek = {
+      ...template,
+      date: '2026-08-11',
+      periodStart: '2026-08-10',
+      periodEnd: '2026-08-14',
+      completed: false,
+      open: 100,
+      high: 115,
+      low: 95,
+      close: 112,
+      volumeShares: 3_000,
+      transactionCount: 30,
+    };
+    const stock = {
+      ...stockSnapshotFixture,
+      listingDate: '2026-08-10',
+      availableSessions: 2,
+      priceModes: {
+        ...stockSnapshotFixture.priceModes,
+        raw: {
+          ...stockSnapshotFixture.priceModes.raw,
+          timeframes: {
+            '1d': { completedBars: dailyBars, formingBar: null },
+            '1w': { completedBars: [], formingBar: formingWeek },
+            '1m': { completedBars: [], formingBar: null },
+          },
+        },
+      },
+    };
+    const stockBytes = utf8Bytes(JSON.stringify(stock));
+    const manifest = await manifestFixture(stock, stockBytes);
+
+    await expect(loadStockSnapshot(manifest, '2330', async () => bytesResponse(stockBytes))).resolves.toMatchObject({
+      code: '2330',
+    });
+
+    const shortened = {
+      ...stock,
+      priceModes: {
+        ...stock.priceModes,
+        raw: {
+          ...stock.priceModes.raw,
+          timeframes: {
+            ...stock.priceModes.raw.timeframes,
+            '1w': {
+              completedBars: [],
+              formingBar: { ...formingWeek, periodStart: '2026-08-11' },
+            },
+          },
+        },
+      },
+    };
+    const shortenedBytes = utf8Bytes(JSON.stringify(shortened));
+    const shortenedManifest = await manifestFixture(shortened, shortenedBytes);
+
+    await expect(loadStockSnapshot(
+      shortenedManifest,
+      '2330',
+      async () => bytesResponse(shortenedBytes),
+    )).rejects.toMatchObject({ reason: 'schema-error' });
+  });
+
   it('normalizes full-width digits and verifies the exact raw bytes including a trailing newline', async () => {
     const stockBytes = utf8Bytes(`${JSON.stringify(stockSnapshotFixture)}\n`);
     const manifest = await manifestFixture(stockSnapshotFixture, stockBytes);
@@ -209,9 +414,13 @@ describe('browser snapshot client', () => {
   it('accepts only stock suspension evidence that exactly matches the manifest interval', async () => {
     const announcementUrl = 'https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB';
     const stock = {
-      ...stockSnapshotFixture,
+      ...withRawDailyBars(stockSnapshotFixture, [{
+        ...rawDailyBars(stockSnapshotFixture)[0],
+        date: '2026-08-11',
+        periodStart: '2026-08-11',
+        periodEnd: '2026-08-11',
+      }]),
       availableSessions: 2,
-      bars: [{ ...stockSnapshotFixture.bars[0], date: '2026-08-11' }],
       noQuoteEvidence: [{
         market: 'TWSE',
         code: '2330',
@@ -280,8 +489,7 @@ describe('browser snapshot client', () => {
     });
 
     const noQuoteOnlyStock = {
-      ...stockSnapshotFixture,
-      bars: [],
+      ...withRawDailyBars(stockSnapshotFixture, []),
       availableSessions: 1,
       noQuoteEvidence: [{
         market: 'TWSE',
@@ -315,10 +523,12 @@ describe('browser snapshot client', () => {
       reason: 'schema-error',
     });
 
-    const weekendStock = {
-      ...stockSnapshotFixture,
-      bars: [{ ...stockSnapshotFixture.bars[0], date: '2026-08-09' }],
-    };
+    const weekendStock = withRawDailyBars(stockSnapshotFixture, [{
+      ...rawDailyBars(stockSnapshotFixture)[0],
+      date: '2026-08-09',
+      periodStart: '2026-08-09',
+      periodEnd: '2026-08-09',
+    }]);
     const weekendBytes = utf8Bytes(JSON.stringify(weekendStock));
     const weekendManifest = await manifestFixture(stockSnapshotFixture, weekendBytes, {
       firstDate: '2026-08-09',
@@ -329,8 +539,7 @@ describe('browser snapshot client', () => {
     });
 
     const noQuoteOnlyStock = {
-      ...stockSnapshotFixture,
-      bars: [],
+      ...withRawDailyBars(stockSnapshotFixture, []),
       availableSessions: 1,
       noQuoteEvidence: [{
         market: 'TWSE',
@@ -365,7 +574,7 @@ describe('browser snapshot client', () => {
 
     const loaded = await loadManifest('/taiwan-stock-candlestick-guide/', fetchFixture);
 
-    expect(loaded.snapshotVersion).toBe(3);
+    expect(loaded.snapshotVersion).toBe(4);
     expect(fetchFixture).toHaveBeenCalledWith('/taiwan-stock-candlestick-guide/data/manifest.json');
   });
 

@@ -2,13 +2,13 @@ import { expect, test } from '@playwright/test';
 import { goToRoute } from './fixtures';
 
 test.describe('型態卡目錄', () => {
-  test('顯示 32 張卡、篩選結果會公告，且鍵盤可翻面', async ({ page }) => {
+  test('顯示 96 張卡、篩選結果會公告，且鍵盤可翻面', async ({ page }) => {
     await goToRoute(page, 'pattern-cards');
 
     const cards = page.locator('[data-pattern-id]');
-    await expect(cards).toHaveCount(32);
+    await expect(cards).toHaveCount(96);
     const resultCount = page.locator('.pattern-catalog__result-count');
-    await expect(resultCount).toHaveText('目前顯示 32 張型態卡。');
+    await expect(resultCount).toHaveText('目前顯示 96 張型態卡。');
     await expect(resultCount).toHaveAttribute('aria-live', 'polite');
 
     const firstCard = cards.first();

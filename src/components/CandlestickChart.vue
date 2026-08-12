@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import type { CorporateAction, OhlcvBar, StockSnapshot } from '../domain/market-data/types';
+import type { CorporateAction, OhlcvBar, StockSnapshot, Timeframe } from '../domain/market-data/types';
 
 const props = withDefaults(defineProps<{
   snapshot: StockSnapshot;
@@ -18,7 +18,13 @@ const priceBottom = 355;
 const volumeTop = 405;
 const volumeBottom = 510;
 
-const bars = computed(() => props.snapshot.bars.slice(-props.maxBars));
+const timeframe = computed<Timeframe>(() => props.snapshot.timeframe ?? '1d');
+const completedBars = computed(() => props.snapshot.bars.filter((bar) => bar.completed !== false));
+const formingBar = computed(() => props.snapshot.bars.filter((bar) => bar.completed === false).at(-1) ?? null);
+const bars = computed(() => [
+  ...completedBars.value.slice(-props.maxBars),
+  ...(formingBar.value ? [formingBar.value] : []),
+]);
 const priceBounds = computed(() => {
   const lows = bars.value.map((bar) => bar.low);
   const highs = bars.value.map((bar) => bar.high);
@@ -31,6 +37,16 @@ const maximumVolume = computed(() => Math.max(1, ...bars.value.map((bar) => bar.
 const selectedBar = computed(() => bars.value[selectedIndex.value] ?? bars.value[0]);
 const chartTitleId = computed(() => `candlestick-chart-title-${props.snapshot.code}`);
 const chartDescriptionId = computed(() => `candlestick-chart-description-${props.snapshot.code}`);
+
+const timeframeLabels: Readonly<Record<Timeframe, string>> = {
+  '1d': '日 K',
+  '1w': '週 K',
+  '1m': '月 K',
+};
+
+function timeframeLabel(value: Timeframe): string {
+  return timeframeLabels[value];
+}
 
 watch(bars, (nextBars) => {
   selectedIndex.value = Math.min(selectedIndex.value, Math.max(0, nextBars.length - 1));
@@ -68,7 +84,24 @@ function directionLabel(bar: OhlcvBar): string {
 }
 
 function candleAriaLabel(bar: OhlcvBar): string {
-  return `${bar.date}，開 ${formatPrice(bar.open)}，高 ${formatPrice(bar.high)}，低 ${formatPrice(bar.low)}，收 ${formatPrice(bar.close)}，成交量 ${formatNumber(bar.volumeShares)} 股，${directionLabel(bar)}。`;
+  return `${periodLabel(bar)}，開 ${formatPrice(bar.open)}，高 ${formatPrice(bar.high)}，低 ${formatPrice(bar.low)}，收 ${formatPrice(bar.close)}，成交量 ${formatNumber(bar.volumeShares)} 股，${barStatusLabel(bar)}，${directionLabel(bar)}。`;
+}
+
+function periodLabel(bar: OhlcvBar): string {
+  if (bar.periodStart && bar.periodEnd && bar.periodStart !== bar.periodEnd) {
+    return `${bar.periodStart} 至 ${bar.periodEnd}`;
+  }
+  return bar.date;
+}
+
+function barStatusLabel(bar: OhlcvBar): string {
+  if (bar.completed === false) {
+    return '形成中，不納入型態比對';
+  }
+  if (bar.evidenceStatus === 'incomplete') {
+    return '已完成但官方交易日證據不完整，不納入型態比對';
+  }
+  return '已完成';
 }
 
 function formatPrice(value: number): string {
@@ -131,9 +164,10 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
     <div class="candlestick-chart__heading-row">
       <div>
         <h3 id="candlestick-chart-heading">
-          {{ snapshot.name }}（{{ snapshot.code }}）最近 {{ bars.length }} 根日 K
+          {{ snapshot.name }}（{{ snapshot.code }}）最近 {{ completedBars.slice(-maxBars).length }} 根{{ timeframeLabel(timeframe) }}
+          <span v-if="formingBar">，另有 1 根形成中{{ timeframeLabel(timeframe) }}</span>
         </h3>
-        <p>紅綠之外，圖上也使用實心上箭頭、空心下箭頭與菱形記號；可用左右方向鍵逐根查看。</p>
+        <p>價格單位為 TWD、成交量單位為股。紅綠之外，圖上也使用實心上箭頭、空心下箭頭與菱形記號；可用左右方向鍵逐根查看。</p>
       </div>
       <button
         type="button"
@@ -153,8 +187,8 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
         role="img"
         :aria-labelledby="`${chartTitleId} ${chartDescriptionId}`"
       >
-        <title :id="chartTitleId">{{ snapshot.name }}最近 {{ bars.length }} 根原始盤後日 K 與成交量</title>
-        <desc :id="chartDescriptionId">顯示 {{ bars.length }} 根日 K、成交量與公司行動標記。使用左右方向鍵可逐根取得繁體中文 OHLCV 摘要。</desc>
+        <title :id="chartTitleId">{{ snapshot.name }}最近 {{ bars.length }} 根原始盤後{{ timeframeLabel(timeframe) }}與成交量</title>
+        <desc :id="chartDescriptionId">顯示 {{ bars.length }} 根{{ timeframeLabel(timeframe) }}、成交量與公司行動標記。形成中或證據不完整的 K 棒不納入型態比對。使用左右方向鍵可逐根取得繁體中文 OHLCV 摘要。</desc>
         <line
           x1="40"
           :y1="priceBottom"
@@ -185,7 +219,7 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
           :id="`candle-${snapshot.code}-${index}`"
           :key="bar.date"
           :data-candle-index="index"
-          :class="['candlestick-chart__candle', `candlestick-chart__candle--${direction(bar)}`, { 'is-selected': selectedIndex === index }]"
+          :class="['candlestick-chart__candle', `candlestick-chart__candle--${direction(bar)}`, { 'is-selected': selectedIndex === index, 'is-forming': bar.completed === false, 'is-incomplete': bar.evidenceStatus === 'incomplete' }]"
           role="button"
           :tabindex="selectedIndex === index ? 0 : -1"
           :aria-label="candleAriaLabel(bar)"
@@ -255,11 +289,14 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
       tabindex="-1"
     >
       <table>
-        <caption>最近 {{ bars.length }} 根原始盤後日 K OHLCV 資料</caption>
+        <caption>最近 {{ bars.length }} 根原始盤後{{ timeframeLabel(timeframe) }} OHLCV 資料</caption>
         <thead>
           <tr>
             <th scope="col">
               日期
+            </th>
+            <th scope="col">
+              狀態
             </th>
             <th scope="col">
               開
@@ -287,8 +324,9 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
             :key="bar.date"
           >
             <th scope="row">
-              {{ bar.date }}
+              {{ periodLabel(bar) }}
             </th>
+            <td>{{ barStatusLabel(bar) }}</td>
             <td>{{ formatPrice(bar.open) }}</td>
             <td>{{ formatPrice(bar.high) }}</td>
             <td>{{ formatPrice(bar.low) }}</td>
@@ -422,6 +460,15 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
 .candlestick-chart__candle:focus .candlestick-chart__body {
   stroke: #1b4e8a;
   stroke-width: 5;
+}
+
+.candlestick-chart__candle.is-forming {
+  opacity: 0.58;
+}
+
+.candlestick-chart__candle.is-forming .candlestick-chart__body,
+.candlestick-chart__candle.is-incomplete .candlestick-chart__body {
+  stroke-dasharray: 4 3;
 }
 
 .candlestick-chart__summary {
