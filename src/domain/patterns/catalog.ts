@@ -16,6 +16,7 @@ import {
 import { hasValidRuleBindingParameters } from './rule-parameters';
 import { ADDITIONAL_STRUCTURE_CARD_DEFINITIONS } from './structure-catalog';
 import { TALIB_BATCH_1_CARD_DEFINITIONS } from './talib-batch-1';
+import { TALIB_BATCH_2_CARD_DEFINITIONS } from './talib-batch-2';
 export { PATTERN_COLLECTIONS } from './collections';
 
 const SINGLE_LESSON = ['/chapters/09-single-candlestick-signals'] as const;
@@ -49,6 +50,17 @@ const TALIB_FUNCTION_BY_CARD: Readonly<Partial<Record<PatternCardId, TalibPatter
   'talib-closing-marubozu': 'CDLCLOSINGMARUBOZU',
   'talib-concealing-baby-swallow': 'CDLCONCEALBABYSWALL',
   'talib-counterattack': 'CDLCOUNTERATTACK',
+  'talib-doji-star': 'CDLDOJISTAR',
+  'talib-dragonfly-doji': 'CDLDRAGONFLYDOJI',
+  'talib-evening-doji-star': 'CDLEVENINGDOJISTAR',
+  'talib-gap-side-by-side-white-lines': 'CDLGAPSIDESIDEWHITE',
+  'talib-gravestone-doji': 'CDLGRAVESTONEDOJI',
+  'talib-hanging-man': 'CDLHANGINGMAN',
+  'talib-harami-cross': 'CDLHARAMICROSS',
+  'talib-high-wave': 'CDLHIGHWAVE',
+  'talib-hikkake': 'CDLHIKKAKE',
+  'talib-modified-hikkake': 'CDLHIKKAKEMOD',
+  'talib-homing-pigeon': 'CDLHOMINGPIGEON',
 };
 
 type TalibTeachingMetadata = Pick<
@@ -67,6 +79,61 @@ type TalibTeachingMetadata = Pick<
 const TALIB_TEACHING_METADATA_BY_CARD: Readonly<
   Partial<Record<PatternCardId, TalibTeachingMetadata>>
 > = {
+  hammer: {
+    minimumBars: 1,
+    maximumBars: 1,
+    patternDirection: 'bullish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['目標 K 為 BodyShort 小實體。', '下影大於 ShadowLong、上影小於 ShadowVeryShort。', '實體低端不高於前一根低點加 Near 門檻。'],
+    relatedPatternIds: ['talib-hanging-man', 'talib-dragonfly-doji'],
+    confirmationGuidance: ['核對相對前一根低點的位置與三組 CandleSettings。', '下行背景需另行確認，官方函式本身不判斷趨勢。'],
+    talibObservableDefinition: '目標 K 為 BodyShort 小實體、下影長於 ShadowLong、上影短於 ShadowVeryShort；實體低端不高於前一根低點加 Near 門檻。',
+    talibDataRequirements: ['一根目標完成 K 與前一根低點', 'BodyShort、ShadowLong、ShadowVeryShort、Near 的前置平均；官方預設 lookback 11 根', '一致的 OHLC 價格模式與公司行動核對'],
+  },
+  'bullish-engulfing': {
+    minimumBars: 2,
+    maximumBars: 2,
+    patternDirection: 'bullish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['第一根為非零下跌實體。', '第二根為上漲實體並包住第一根實體。', '兩端嚴格超越回傳 +100；一端相等回傳 +80。'],
+    relatedPatternIds: ['bearish-engulfing', 'talib-three-outside'],
+    confirmationGuidance: ['只比較實體端點，不把影線納入。', '函式不判斷前段趨勢；背景與後續失效分開記錄。'],
+    talibObservableDefinition: '第一根為非零下跌實體；第二根為上漲實體並以實體端點包住第一根。兩端嚴格超越回傳 +100，一端相等回傳 +80。',
+    talibDataRequirements: ['兩根完成 K；官方固定 lookback 2 根', '不使用 CandleSettings', '一致的 OHLC 價格模式與公司行動核對'],
+  },
+  'bearish-engulfing': {
+    minimumBars: 2,
+    maximumBars: 2,
+    patternDirection: 'bearish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['第一根為非零上漲實體。', '第二根為下跌實體並包住第一根實體。', '兩端嚴格超越回傳 -100；一端相等回傳 -80。'],
+    relatedPatternIds: ['bullish-engulfing', 'talib-three-outside'],
+    confirmationGuidance: ['只比較實體端點，不把影線納入。', '函式不判斷前段趨勢；背景與後續失效分開記錄。'],
+    talibObservableDefinition: '第一根為非零上漲實體；第二根為下跌實體並以實體端點包住第一根。兩端嚴格超越回傳 -100，一端相等回傳 -80。',
+    talibDataRequirements: ['兩根完成 K；官方固定 lookback 2 根', '不使用 CandleSettings', '一致的 OHLC 價格模式與公司行動核對'],
+  },
+  'bullish-harami': {
+    minimumBars: 2,
+    maximumBars: 2,
+    patternDirection: 'bullish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['第一根為 BodyLong 長下跌實體。', '第二根為 BodyShort 短實體，完整落在第一根實體內。', '嚴格包含回傳 +100；一端相等回傳 +80。'],
+    relatedPatternIds: ['bearish-harami', 'talib-harami-cross', 'talib-homing-pigeon'],
+    confirmationGuidance: ['用實體端點核對包含，不要求第二根影線也被包含。', '第二根顏色決定官方回傳方向，背景另行確認。'],
+    talibObservableDefinition: '第一根為 BodyLong 長實體，第二根為 BodyShort 短實體且完整位於第一根實體內；嚴格包含回傳完整值，一端相等回傳較弱值。',
+    talibDataRequirements: ['兩根目標完成 K', 'BodyLong、BodyShort 前置平均；官方預設 lookback 11 根', '一致的 OHLC 價格模式與公司行動核對'],
+  },
+  'bearish-harami': {
+    minimumBars: 2,
+    maximumBars: 2,
+    patternDirection: 'bearish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['第一根為 BodyLong 長上漲實體。', '第二根為 BodyShort 短實體，完整落在第一根實體內。', '嚴格包含回傳 -100；一端相等回傳 -80。'],
+    relatedPatternIds: ['bullish-harami', 'talib-harami-cross'],
+    confirmationGuidance: ['用實體端點核對包含，不要求第二根影線也被包含。', '第二根顏色決定官方回傳方向，背景另行確認。'],
+    talibObservableDefinition: '第一根為 BodyLong 長實體，第二根為 BodyShort 短實體且完整位於第一根實體內；嚴格包含回傳完整值，一端相等回傳較弱值。',
+    talibDataRequirements: ['兩根目標完成 K', 'BodyLong、BodyShort 前置平均；官方預設 lookback 11 根', '一致的 OHLC 價格模式與公司行動核對'],
+  },
   doji: {
     minimumBars: 1,
     maximumBars: 1,
@@ -110,6 +177,17 @@ const TALIB_TEACHING_METADATA_BY_CARD: Readonly<
     confirmationGuidance: ['核對三根實體、下影與開收順序均符合設定。', '完成只代表幾何候選，仍須檢查位置、量價與失效條件。'],
     talibObservableDefinition: '前一根為上漲 K，接著三根下跌 K 收盤依序降低；三根開盤位於前根實體內，且三根下影皆相對短。',
     talibDataRequirements: ['前三黑鴉之前一根 K，加上三根目標完成 K', '足以計算 ShadowVeryShort CandleSettings 的前置 K 線', '一致的 OHLC 價格模式與公司行動核對'],
+  },
+  'evening-star': {
+    minimumBars: 3,
+    maximumBars: 3,
+    patternDirection: 'bearish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['第一根為 BodyLong 長上漲實體。', '第二根為 BodyShort 小實體且向上實體跳空。', '第三根為大於 BodyShort 的下跌實體，收盤達 penetration 深度。'],
+    relatedPatternIds: ['morning-star', 'talib-evening-doji-star'],
+    confirmationGuidance: ['等待第三根完成並核對 penetration，官方預設為 0.3。', '官方函式不判斷上行趨勢，背景需另行確認。'],
+    talibObservableDefinition: '第一根為 BodyLong 長上漲實體；第二根為向上實體跳空的 BodyShort；第三根為大於 BodyShort 的下跌實體，收盤依 penetration 參數深入第一根實體。',
+    talibDataRequirements: ['三根目標完成 K', 'BodyLong、BodyShort 前置平均與 penetration 參數；官方預設 lookback 12 根、penetration 0.3', '一致的 OHLC 價格模式與公司行動核對'],
   },
 };
 
@@ -682,6 +760,7 @@ export const PATTERN_CARDS: readonly PatternCardDefinition[] = [
     ),
   }),
   ...TALIB_BATCH_1_CARD_DEFINITIONS.map(card),
+  ...TALIB_BATCH_2_CARD_DEFINITIONS.map(card),
   card({
     id: 'range',
     nameZhTw: '區間',

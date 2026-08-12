@@ -46,7 +46,7 @@ describe('Pattern Card interactions', () => {
 
     expect(wrapper.find('h2').text()).toContain('型態卡目錄');
     expect(wrapper.findAll('h1')).toHaveLength(0);
-    expect(wrapper.get('[aria-live="polite"]').text()).toContain('58');
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('69');
 
     await wrapper.get('select[name="match-support"]').setValue('mvp');
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('17');
@@ -132,5 +132,15 @@ describe('Pattern Card interactions', () => {
     expect(wrapper.find('select[name="purpose"]').exists()).toBe(false);
     expect(wrapper.find('select[name="category"]').exists()).toBe(true);
     expect(wrapper.find('select[name="match-support"]').exists()).toBe(true);
+  });
+
+  it('offers every TA-Lib bar range used by the shipped cards', () => {
+    const wrapper = mount(PatternCatalog, {
+      props: { collection: 'talib-advanced' },
+    });
+
+    const values = wrapper.findAll('select[name="bars"] option').map((option) => option.attributes('value'));
+    expect(values).toContain('6');
+    expect(values).toContain('7');
   });
 });

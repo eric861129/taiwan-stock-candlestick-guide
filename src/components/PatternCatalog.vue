@@ -27,7 +27,7 @@ const props = withDefaults(
 const selectedCategory = ref<PatternCategory | 'all'>('all');
 const selectedSupport = ref<MatchSupport | 'all'>('all');
 const query = ref('');
-const selectedBars = ref<'all' | '1' | '2' | '3' | '4' | '5'>('all');
+const selectedBars = ref<'all' | `${number}`>('all');
 const selectedDirection = ref<PatternDirection | 'all'>('all');
 const selectedPurpose = ref<PatternPurpose | 'all'>('all');
 
@@ -93,6 +93,7 @@ const directionOptions: readonly { value: PatternDirection; label: string }[] = 
 const purposeOptions: readonly { value: PatternPurpose; label: string }[] = [
   { value: 'reversal', label: '反轉候選' },
   { value: 'continuation', label: '延續候選' },
+  { value: 'reversal-or-continuation', label: '反轉或延續候選' },
   { value: 'indecision', label: '猶豫／未決' },
   { value: 'weakening', label: '動能弱化' },
 ];
@@ -162,7 +163,7 @@ const purposeOptions: readonly { value: PatternPurpose; label: string }[] = [
         >
           <option value="all">全部根數</option>
           <option
-            v-for="bars in 5"
+            v-for="bars in 7"
             :key="bars"
             :value="String(bars)"
           >{{ bars }} 根</option>

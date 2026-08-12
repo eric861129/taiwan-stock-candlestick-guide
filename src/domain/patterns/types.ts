@@ -29,6 +29,17 @@ export const PATTERN_CARD_IDS = [
   'talib-closing-marubozu',
   'talib-concealing-baby-swallow',
   'talib-counterattack',
+  'talib-doji-star',
+  'talib-dragonfly-doji',
+  'talib-evening-doji-star',
+  'talib-gap-side-by-side-white-lines',
+  'talib-gravestone-doji',
+  'talib-hanging-man',
+  'talib-harami-cross',
+  'talib-high-wave',
+  'talib-hikkake',
+  'talib-modified-hikkake',
+  'talib-homing-pigeon',
   'range',
   'triangle-consolidation',
   'flag-consolidation',
@@ -97,7 +108,12 @@ export type TalibImplementationSupport = 'teaching-only';
 export type PatternDirection = 'bullish' | 'bearish' | 'both' | 'neutral';
 
 /** 進階 K 棒卡的教學用途。 */
-export type PatternPurpose = 'reversal' | 'continuation' | 'indecision' | 'weakening';
+export type PatternPurpose =
+  | 'reversal'
+  | 'continuation'
+  | 'reversal-or-continuation'
+  | 'indecision'
+  | 'weakening';
 
 /** 教材型態卡的閱讀分類。 */
 export type PatternCategory =

@@ -3,6 +3,7 @@ import { getPatternCard } from './catalog';
 import {
   getTalibBatchEntries,
   TALIB_BATCH_1_FUNCTIONS,
+  TALIB_BATCH_2_FUNCTIONS,
   TALIB_PATTERN_ENTRIES,
 } from './talib-catalog';
 
@@ -99,6 +100,80 @@ describe('TA-Lib pattern catalog batch 1', () => {
 
     for (const [functionName, cardId] of overlaps) {
       const entry = getTalibBatchEntries(1).find((candidate) => candidate.functionName === functionName);
+      expect(entry?.card).toBe(getPatternCard(cardId as never));
+    }
+  });
+
+  it('keeps reviewed batch-two implementation edge cases explicit', () => {
+    expect(getPatternCard('talib-hikkake').patternPurpose).toBe('reversal-or-continuation');
+    expect(getPatternCard('talib-hikkake').talibObservableDefinition).toContain(
+      '官方先輸出新 ±100',
+    );
+    expect(getPatternCard('talib-modified-hikkake').talibObservableDefinition).toContain(
+      '官方先輸出新 ±100',
+    );
+    expect(getPatternCard('talib-gap-side-by-side-white-lines').talibObservableDefinition).toContain(
+      '收盤不低於開盤，包含開收相等',
+    );
+  });
+});
+
+describe('TA-Lib pattern catalog batch 2', () => {
+  it('contains the official second fifteen functions exactly once', () => {
+    expect(TALIB_BATCH_2_FUNCTIONS).toEqual([
+      'CDLDOJISTAR',
+      'CDLDRAGONFLYDOJI',
+      'CDLENGULFING',
+      'CDLEVENINGDOJISTAR',
+      'CDLEVENINGSTAR',
+      'CDLGAPSIDESIDEWHITE',
+      'CDLGRAVESTONEDOJI',
+      'CDLHAMMER',
+      'CDLHANGINGMAN',
+      'CDLHARAMI',
+      'CDLHARAMICROSS',
+      'CDLHIGHWAVE',
+      'CDLHIKKAKE',
+      'CDLHIKKAKEMOD',
+      'CDLHOMINGPIGEON',
+    ]);
+
+    const entries = getTalibBatchEntries(2);
+    expect(entries).toHaveLength(15);
+    expect(entries.map((entry) => entry.functionName)).toEqual(TALIB_BATCH_2_FUNCTIONS);
+    expect(new Set(entries.map((entry) => entry.functionName)).size).toBe(15);
+  });
+
+  it('maps every function to complete canonical teaching content', () => {
+    for (const entry of getTalibBatchEntries(2)) {
+      const card = getPatternCard(entry.cardId);
+      expect(entry.card).toBe(card);
+      expect(card.talibFunction).toBe(entry.functionName);
+      expect(card.talibImplementationSupport).toBe('teaching-only');
+      expect(card.collections).toContain('talib-advanced');
+      expect(card.minimumBars).toBeGreaterThan(0);
+      expect(card.maximumBars).toBeGreaterThanOrEqual(card.minimumBars!);
+      expect(card.patternDirection).not.toBeUndefined();
+      expect(card.patternPurpose).not.toBeUndefined();
+      expect(card.geometrySteps?.length).toBeGreaterThan(0);
+      expect(card.relatedPatternIds?.length).toBeGreaterThan(0);
+      expect(card.confirmationGuidance?.length).toBeGreaterThan(0);
+      expect(card.talibObservableDefinition?.length).toBeGreaterThan(0);
+      expect(card.talibDataRequirements?.length).toBeGreaterThan(0);
+      expect(new Set(card.sourceNotes).size).toBe(card.sourceNotes.length);
+    }
+  });
+
+  it('reuses existing canonical cards for overlapping functions', () => {
+    const overlaps = new Map([
+      ['CDLENGULFING', 'bullish-engulfing'],
+      ['CDLEVENINGSTAR', 'evening-star'],
+      ['CDLHAMMER', 'hammer'],
+      ['CDLHARAMI', 'bullish-harami'],
+    ]);
+
+    for (const [functionName, cardId] of overlaps) {
+      const entry = getTalibBatchEntries(2).find((candidate) => candidate.functionName === functionName);
       expect(entry?.card).toBe(getPatternCard(cardId as never));
     }
   });

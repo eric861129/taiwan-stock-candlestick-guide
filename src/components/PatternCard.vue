@@ -72,6 +72,7 @@ function purposeLabel(): string {
   switch (props.card.patternPurpose) {
     case 'reversal': return '反轉候選';
     case 'continuation': return '延續候選';
+    case 'reversal-or-continuation': return '反轉或延續候選';
     case 'weakening': return '動能弱化';
     default: return '猶豫／未決';
   }
