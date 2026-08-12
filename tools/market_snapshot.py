@@ -477,6 +477,8 @@ def _build_stock_documents(
             key = (quote.market, quote.code)
             if key not in symbols:
                 continue
+            if quote.trading_date < symbols[key].listing_date:
+                continue
             normalized = _normalize_quote(quote)
             existing = bars_by_symbol.setdefault(key, [])
             if any(bar.trading_date == normalized.trading_date for bar in existing):
@@ -490,6 +492,8 @@ def _build_stock_documents(
                 raise SnapshotValidationError("官方未報價證據的市場或原因無效。")
             key = (evidence.market, evidence.code)
             if key not in symbols:
+                continue
+            if evidence.trading_date < symbols[key].listing_date:
                 continue
             if any(bar.trading_date == evidence.trading_date for bar in bars_by_symbol.get(key, ())):
                 raise SnapshotValidationError(
@@ -679,6 +683,7 @@ def _build_raw_timeframes(
 
     if not market_sessions:
         raise SnapshotValidationError("沒有市場交易日可建立多時間週期 K 線。")
+    retained_daily_sessions = set(market_sessions[-RETENTION_SESSIONS:])
     daily_bars = [
         _timeframe_bar_json(
             bar,
@@ -688,9 +693,10 @@ def _build_raw_timeframes(
             missing_session_dates=(),
         )
         for bar in bars
+        if bar.trading_date in retained_daily_sessions
     ]
     return {
-        "1d": {"completedBars": daily_bars[-RETENTION_SESSIONS:], "formingBar": None},
+        "1d": {"completedBars": daily_bars, "formingBar": None},
         "1w": _aggregate_timeframe(
             timeframe="1w",
             bars=bars,
@@ -3774,6 +3780,7 @@ def bootstrap_snapshot(
         cutoff,
         cache_directory,
     )
+    market_sessions = _with_full_market_absence_evidence(symbols, market_sessions)
     history_calendar = _calendar_with_historical_market_closures(
         calendar,
         history_start,
@@ -3867,6 +3874,61 @@ def _collect_historical_market_sessions(
     if not market_sessions:
         raise SnapshotValidationError("十年基準沒有任何可發布的官方市場交易日。")
     return tuple(market_sessions), tuple(closed_market_dates)
+
+
+def _with_full_market_absence_evidence(
+    symbols: Sequence[SupportedSymbol],
+    sessions: Sequence[MarketSession],
+) -> tuple[MarketSession, ...]:
+    """以完整官方全市場日報的缺席列建立未報價證據，不推測停牌原因或 OHLC。"""
+
+    symbols_by_market: dict[Market, tuple[SupportedSymbol, ...]] = {
+        market: tuple(symbol for symbol in symbols if symbol.market == market)
+        for market in ("TWSE", "TPEx")
+    }
+    enriched_sessions: list[MarketSession] = []
+    for session in sessions:
+        observations = {
+            *(quote.trading_date for quote in session.quotes),
+            *(evidence.trading_date for evidence in session.no_quote_evidence),
+        }
+        if len(observations) != 1:
+            raise SnapshotValidationError(f"{session.market} 完整官方市場表的交易日不一致。")
+        session_date = next(iter(observations))
+        report_source_urls = {
+            *(quote.source_url for quote in session.quotes),
+            *(evidence.source_url for evidence in session.no_quote_evidence),
+        }
+        if len(report_source_urls) != 1:
+            raise SnapshotValidationError(f"{session.market} 完整官方市場表的來源不一致。")
+        report_source_url = _official_evidence_url(next(iter(report_source_urls)))
+        observed_codes = {
+            *(quote.code for quote in session.quotes),
+            *(evidence.code for evidence in session.no_quote_evidence),
+        }
+        evidence = list(session.no_quote_evidence)
+        for symbol in symbols_by_market[session.market]:
+            if symbol.listing_date > session_date or symbol.code in observed_codes:
+                continue
+            evidence.append(
+                NoQuoteEvidence(
+                    market=session.market,
+                    code=symbol.code,
+                    trading_date=session_date,
+                    reason="official-no-quote",
+                    source_url=report_source_url,
+                )
+            )
+        enriched_sessions.append(
+            MarketSession(
+                market=session.market,
+                quotes=session.quotes,
+                no_quote_evidence=tuple(
+                    sorted(evidence, key=lambda item: (item.code, item.trading_date, item.reason))
+                ),
+            )
+        )
+    return tuple(enriched_sessions)
 
 
 def _calendar_with_historical_market_closures(
@@ -4072,12 +4134,15 @@ def update_snapshot(
             market_sessions = tuple(market_sessions_list)
         else:
             market_sessions = ()
+        if market_sessions:
+            market_sessions = _with_full_market_absence_evidence(symbols, market_sessions)
         if history_cache_complete:
             history_sessions, closed_market_dates = _load_cached_historical_market_sessions(
                 history_start,
                 expected,
                 cache_directory,
             )
+            history_sessions = _with_full_market_absence_evidence(symbols, history_sessions)
             history_calendar = _calendar_with_historical_market_closures(
                 calendar,
                 history_start,

@@ -1149,6 +1149,55 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertTrue(all(url.startswith("https://") for url in stock["sourceUrls"]))
             self.assertIn("https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX", stock["sourceUrls"])
 
+    def test_update_without_full_history_cache_preserves_full_report_absence_evidence(self) -> None:
+        """尚無十年快取時，增量更新也必須把完整日報缺席轉成可稽核未報價證據。"""
+        taipei = timezone(timedelta(hours=8), name="Asia/Taipei")
+        base = fixture_build_input()
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        session_date = date(2026, 8, 12)
+        unrelated_twse_quote = replace(
+            twse_quote,
+            code="9999",
+            name="完整日報中的其他股票",
+            trading_date=session_date,
+        )
+        tpex_new = replace(tpex_quote, trading_date=session_date)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            build_snapshot(None, base, output)
+            with patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar), patch(
+                "market_snapshot.fetch_supported_symbols", return_value=base.symbols
+            ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
+                "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
+                "market_snapshot.fetch_reduction_suspension_intervals", return_value=()
+            ), patch(
+                "market_snapshot.fetch_twse_daily", return_value=(unrelated_twse_quote,)
+            ), patch("market_snapshot.fetch_tpex_daily", return_value=(tpex_new,)):
+                manifest, updated = update_snapshot(
+                    output,
+                    output,
+                    "fixture-no-quote",
+                    Path(temporary_directory) / "cache",
+                    now=datetime(2026, 8, 12, 18, 0, tzinfo=taipei),
+                )
+
+            twse_entry = next(symbol for symbol in manifest.symbols if symbol.market == "TWSE")
+            stock = json.loads((output / twse_entry.data_path).read_text(encoding="utf-8"))
+            self.assertTrue(updated)
+            self.assertEqual(
+                {
+                    "market": "TWSE",
+                    "code": twse_entry.code,
+                    "date": session_date.isoformat(),
+                    "reason": "official-no-quote",
+                    "sourceUrl": twse_quote.source_url,
+                },
+                stock["noQuoteEvidence"][-1],
+            )
+
     def test_update_backfills_each_missing_official_trading_session_before_marking_fresh(self) -> None:
         """若舊 cutoff 落後多個交易日卻只追加最後一天，fresh 會成為錯誤宣告。"""
         base = fixture_build_input()
@@ -1716,6 +1765,71 @@ class SnapshotBuildTests(unittest.TestCase):
         self.assertIn(twse_missing_date.isoformat(), message)
         self.assertIn(f"TPEx {tpex_quote.code}", message)
         self.assertIn(tpex_missing_date.isoformat(), message)
+
+    def test_full_market_report_absence_becomes_auditable_no_quote_evidence(self) -> None:
+        """完整官方市場表缺少已上市股票時，只建立未報價證據，不得補造 OHLC。"""
+        base = fixture_build_input()
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        supported = base.symbols[0]
+        absent_symbol = replace(supported, code="9998", name="測試缺席股票")
+        session_date = date(2026, 8, 11)
+        sessions = (
+            MarketSession("TWSE", (replace(twse_quote, trading_date=session_date),)),
+        )
+
+        enriched = market_snapshot._with_full_market_absence_evidence(
+            (supported, absent_symbol),
+            sessions,
+        )
+
+        self.assertEqual(1, len(enriched))
+        self.assertEqual(1, len(enriched[0].quotes))
+        self.assertEqual(
+            (("9998", session_date, "official-no-quote", twse_quote.source_url),),
+            tuple(
+                (evidence.code, evidence.trading_date, evidence.reason, evidence.source_url)
+                for evidence in enriched[0].no_quote_evidence
+            ),
+        )
+
+    def test_full_market_report_does_not_backfill_absence_before_official_listing(self) -> None:
+        """公司主檔上市日前不屬於預期交易日，不能把尚未上市誤標成未報價。"""
+        base = fixture_build_input()
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        future_symbol = replace(base.symbols[0], code="9998", listing_date=date(2026, 8, 12))
+        session_date = date(2026, 8, 11)
+
+        enriched = market_snapshot._with_full_market_absence_evidence(
+            (base.symbols[0], future_symbol),
+            (MarketSession("TWSE", (replace(twse_quote, trading_date=session_date),)),),
+        )
+
+        self.assertEqual((), enriched[0].no_quote_evidence)
+
+    def test_ignores_official_history_before_the_current_market_listing_date(self) -> None:
+        """轉板前同代碼歷史不可污染目前市場的上市後價格序列。"""
+        base = fixture_build_input()
+        listing_date = date(2026, 7, 1)
+        build_input = replace(
+            base,
+            symbols=tuple(
+                replace(symbol, listing_date=listing_date)
+                if symbol.market == "TWSE"
+                else symbol
+                for symbol in base.symbols
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, build_input, output)
+            entry = next(entry for entry in manifest.symbols if entry.market == "TWSE")
+            document = json.loads((output / entry.data_path).read_text(encoding="utf-8"))
+
+        daily_bars = document["priceModes"]["raw"]["timeframes"]["1d"]["completedBars"]
+        self.assertTrue(daily_bars)
+        self.assertTrue(all(bar["date"] >= listing_date.isoformat() for bar in daily_bars))
+        self.assertEqual(listing_date.isoformat(), document["listingDate"])
 
     def test_rejects_common_official_market_session_gap_in_a_direct_v3_build(self) -> None:
         """直接建立 v3 時，不可把兩市場共同缺少的官方交易日誤當成不存在。"""
