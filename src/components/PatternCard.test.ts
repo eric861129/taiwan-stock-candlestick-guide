@@ -56,4 +56,15 @@ describe('Pattern Card interactions', () => {
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('8');
     expect(wrapper.findAll('article').length).toBe(8);
   });
+
+  it('shows one collection without cloning canonical card content', () => {
+    const wrapper = mount(PatternCatalog, {
+      props: { collection: 'price-structure' },
+    });
+
+    expect(wrapper.find('h2').text()).toBe('價格結構型態主館');
+    expect(wrapper.find('[data-pattern-id="range"]').exists()).toBe(true);
+    expect(wrapper.find('[data-pattern-id="hammer"]').exists()).toBe(false);
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('15');
+  });
 });

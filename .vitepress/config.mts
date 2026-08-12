@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitepress';
-import { MAIN_NAV, SITE_BASE } from '../src/domain/site/navigation';
+import { MAIN_NAV, PATTERN_GALLERY_NAV, SITE_BASE } from '../src/domain/site/navigation';
 
 const chapterItems = [
   ['第 1 章：K 線能回答與不能回答的問題', '/chapters/01-what-candlesticks-can-and-cannot-answer'],
@@ -68,6 +68,10 @@ export default defineConfig({
       next: '下一頁',
     },
     sidebar: [
+      {
+        text: '型態圖鑑',
+        items: [...PATTERN_GALLERY_NAV],
+      },
       {
         text: '二十章學習路線',
         items: chapterItems.map(([text, link]) => ({ text, link })),

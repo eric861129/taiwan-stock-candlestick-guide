@@ -4,29 +4,45 @@ import {
   MATCH_SUPPORTS,
   PATTERN_CARDS,
   PATTERN_CATEGORIES,
+  getPatternCardsByCollection,
 } from '../domain/patterns/catalog';
-import type { MatchSupport, PatternCategory } from '../domain/patterns/types';
+import type {
+  MatchSupport,
+  PatternCategory,
+  PatternCollectionId,
+} from '../domain/patterns/types';
+import { PATTERN_COLLECTIONS } from '../domain/patterns/collections';
 import PatternCard from './PatternCard.vue';
 
 const props = withDefaults(
   defineProps<{
     mode?: 'catalog' | 'reference';
+    collection?: PatternCollectionId;
   }>(),
-  { mode: 'catalog' },
+  { mode: 'catalog', collection: undefined },
 );
 
 const selectedCategory = ref<PatternCategory | 'all'>('all');
 const selectedSupport = ref<MatchSupport | 'all'>('all');
 
+const collectionDefinition = computed(() =>
+  PATTERN_COLLECTIONS.find((collection) => collection.id === props.collection),
+);
+const collectionCards = computed(() =>
+  props.collection ? getPatternCardsByCollection(props.collection) : PATTERN_CARDS,
+);
+
 const filteredCards = computed(() =>
-  PATTERN_CARDS.filter(
+  collectionCards.value.filter(
     (card) =>
       (selectedCategory.value === 'all' || card.category === selectedCategory.value) &&
       (selectedSupport.value === 'all' || card.matchSupport === selectedSupport.value),
   ),
 );
 
-const heading = computed(() => (props.mode === 'reference' ? '型態卡速查' : '型態卡目錄'));
+const heading = computed(() =>
+  collectionDefinition.value?.nameZhTw ?? (props.mode === 'reference' ? '型態卡速查' : '型態卡目錄'),
+);
 
 function supportOptionLabel(support: MatchSupport): string {
   switch (support) {
@@ -50,7 +66,7 @@ function supportOptionLabel(support: MatchSupport): string {
       {{ heading }}
     </h2>
     <p>
-      卡片先整理可觀察條件、背景與失效方式；第一版只比對標示為「第一版可比對」的 17 張短窗卡，其他卡不會被假裝成自動結果。
+      {{ collectionDefinition?.description ?? '卡片先整理可觀察條件、背景與失效方式；第一版只比對標示為「第一版可比對」的 17 張短窗卡，其他卡不會被假裝成自動結果。' }}
     </p>
 
     <form

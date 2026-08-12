@@ -1,19 +1,72 @@
 import {
   PATTERN_CARD_IDS,
   type MatchSupport,
+  type AutomationSupport,
   type PatternCardDefinition,
   type PatternCardId,
   type PatternCategory,
+  type PatternCollectionId,
+  type PatternKind,
   type PatternMatcherDefinition,
   type PatternRuleBinding,
   type RuleFamilyId,
+  type TalibPatternFunction,
 } from './types';
 import { hasValidRuleBindingParameters } from './rule-parameters';
+export { PATTERN_COLLECTIONS } from './collections';
 
 const SINGLE_LESSON = ['/chapters/09-single-candlestick-signals'] as const;
 const MULTI_LESSON = ['/chapters/10-two-three-candlestick-patterns'] as const;
 const STRUCTURE_LESSON = ['/chapters/11-consolidation-reversal-continuation-patterns'] as const;
 const VOLUME_LESSON = ['/chapters/12-volume-price-liquidity-failed-signals'] as const;
+
+const TALIB_FUNCTION_BY_CARD: Readonly<Partial<Record<PatternCardId, TalibPatternFunction>>> = {
+  doji: 'CDLDOJI',
+  hammer: 'CDLHAMMER',
+  'shooting-star': 'CDLSHOOTINGSTAR',
+  'bullish-engulfing': 'CDLENGULFING',
+  'bearish-engulfing': 'CDLENGULFING',
+  'bullish-harami': 'CDLHARAMI',
+  'bearish-harami': 'CDLHARAMI',
+  'piercing-line': 'CDLPIERCING',
+  'dark-cloud-cover': 'CDLDARKCLOUDCOVER',
+  'morning-star': 'CDLMORNINGSTAR',
+  'evening-star': 'CDLEVENINGSTAR',
+  'three-advancing-candles': 'CDL3WHITESOLDIERS',
+  'three-falling-candles': 'CDL3BLACKCROWS',
+};
+
+function kindFor(category: PatternCategory, support: MatchSupport): PatternKind {
+  if (support === 'guardrail') {
+    return 'guardrail';
+  }
+  if (category === '結構型態') {
+    return 'chart-pattern';
+  }
+  if (category === '量價、流動性與守門') {
+    return 'market-observation';
+  }
+  return 'candlestick-pattern';
+}
+
+function automationSupportFor(support: MatchSupport): AutomationSupport {
+  if (support === 'mvp') {
+    return 'short-window';
+  }
+  return support === 'guardrail' ? 'guardrail' : 'teaching-only';
+}
+
+function collectionsFor(
+  kind: PatternKind,
+  talibFunction: TalibPatternFunction | undefined,
+): readonly PatternCollectionId[] {
+  if (kind === 'candlestick-pattern') {
+    return talibFunction
+      ? ['candlestick-reference', 'talib-advanced']
+      : ['candlestick-reference'];
+  }
+  return ['price-structure'];
+}
 
 function binding(
   ruleId: string,
@@ -48,11 +101,20 @@ function mvpMatcher(
 }
 
 function card(
-  definition: Omit<PatternCardDefinition, 'slug'> & { slug?: string },
+  definition: Omit<
+    PatternCardDefinition,
+    'slug' | 'collections' | 'kind' | 'automationSupport' | 'talibFunction'
+  > & { slug?: string },
 ): PatternCardDefinition {
+  const kind = kindFor(definition.category, definition.matchSupport);
+  const talibFunction = TALIB_FUNCTION_BY_CARD[definition.id];
   return {
     ...definition,
     slug: definition.slug ?? definition.id,
+    kind,
+    automationSupport: automationSupportFor(definition.matchSupport),
+    collections: collectionsFor(kind, talibFunction),
+    ...(talibFunction ? { talibFunction } : {}),
   };
 }
 
@@ -867,6 +929,13 @@ export function getPatternCard(id: PatternCardId): PatternCardDefinition {
   }
 
   return pattern;
+}
+
+/** 由集合投影正規卡片物件，不建立內容複本。 */
+export function getPatternCardsByCollection(
+  collection: PatternCollectionId,
+): readonly PatternCardDefinition[] {
+  return PATTERN_CARDS.filter((pattern) => pattern.collections.includes(collection));
 }
 
 /** 供篩選 UI 使用的固定顯示順序。 */

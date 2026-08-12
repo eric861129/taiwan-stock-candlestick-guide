@@ -14,4 +14,14 @@ describe('VitePress foundation assets', () => {
       "['link', { rel: 'icon', type: 'image/svg+xml', href: `${SITE_BASE}logo.svg` }]",
     );
   });
+
+  it.each([
+    ['pattern-cards/candlestick.md', 'candlestick-reference'],
+    ['pattern-cards/price-structures.md', 'price-structure'],
+    ['pattern-cards/talib.md', 'talib-advanced'],
+  ])('ships the %s gallery route backed by the canonical catalog', (file, collection) => {
+    const page = readFileSync(resolve(process.cwd(), file), 'utf8');
+
+    expect(page).toContain(`<PatternCatalog collection="${collection}" />`);
+  });
 });

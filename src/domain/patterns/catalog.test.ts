@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { getPatternCard, PATTERN_CARDS } from './catalog';
+import {
+  getPatternCard,
+  getPatternCardsByCollection,
+  PATTERN_CARDS,
+  PATTERN_COLLECTIONS,
+} from './catalog';
 import { PATTERN_ILLUSTRATIONS } from './illustrations';
 import { hasValidRuleBindingParameters } from './rule-parameters';
 import type { PatternCardId } from './types';
@@ -153,5 +158,45 @@ describe('canonical Pattern Card catalog', () => {
   it('looks up a canonical card and rejects an unknown ID', () => {
     expect(getPatternCard('hammer')).toMatchObject({ id: 'hammer', nameZhTw: '錘子形' });
     expect(() => getPatternCard('not-a-pattern' as PatternCardId)).toThrow('找不到型態卡');
+  });
+
+  it('projects the same canonical cards into three stable gallery collections', () => {
+    expect(PATTERN_COLLECTIONS.map((collection) => collection.id)).toEqual([
+      'candlestick-reference',
+      'price-structure',
+      'talib-advanced',
+    ]);
+
+    const candlestickCards = getPatternCardsByCollection('candlestick-reference');
+    const structureCards = getPatternCardsByCollection('price-structure');
+    const talibCards = getPatternCardsByCollection('talib-advanced');
+
+    expect(candlestickCards.map((card) => card.id)).toContain('hammer');
+    expect(structureCards.map((card) => card.id)).toContain('range');
+    expect(talibCards.map((card) => card.id)).toContain('hammer');
+    expect(talibCards.find((card) => card.id === 'hammer')).toBe(getPatternCard('hammer'));
+    expect(PATTERN_CARDS.every((card) => card.collections.length > 0)).toBe(true);
+  });
+
+  it('keeps pattern kind and automation support explicit without changing legacy matcher support', () => {
+    expect(getPatternCard('hammer')).toMatchObject({
+      kind: 'candlestick-pattern',
+      automationSupport: 'short-window',
+      matchSupport: 'mvp',
+      talibFunction: 'CDLHAMMER',
+    });
+    expect(getPatternCard('range')).toMatchObject({
+      kind: 'chart-pattern',
+      automationSupport: 'teaching-only',
+      matchSupport: 'catalog-only',
+    });
+    expect(getPatternCard('volume-expansion')).toMatchObject({
+      kind: 'market-observation',
+      automationSupport: 'teaching-only',
+    });
+    expect(getPatternCard('insufficient-evidence')).toMatchObject({
+      kind: 'guardrail',
+      automationSupport: 'guardrail',
+    });
   });
 });

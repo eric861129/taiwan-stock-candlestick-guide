@@ -4,6 +4,12 @@
 
 第一版只會把 17 張標示為「第一版可比對」的短窗 K 線卡帶入股票型態比對；結構型態、量價與守門卡會完整保留在教材中，但不會被日 OHLCV 資料假裝自動辨識。
 
+## 選擇圖鑑
+
+- [K 棒型態速查館](./pattern-cards/candlestick)：快速核對一至數根 K 棒。
+- [價格結構型態主館](./pattern-cards/price-structures)：學習跨多根 K 棒的結構、量價與守門條件。
+- [TA-Lib 進階 K 棒圖鑑](./pattern-cards/talib)：依官方函式名稱查找進階型態。
+
 <PatternCatalog />
 
 ## 使用方式

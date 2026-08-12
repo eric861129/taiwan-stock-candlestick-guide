@@ -1,3 +1,5 @@
+import { PATTERN_COLLECTIONS } from '../patterns/collections';
+
 /** GitHub Pages 部署時使用的網站根路徑。 */
 export const SITE_BASE = '/taiwan-stock-candlestick-guide/' as const;
 
@@ -6,6 +8,14 @@ export interface NavItem {
   text: string;
   link: string;
 }
+
+/** 三個圖鑑的固定入口；舊的 /pattern-cards 仍保留為總覽。 */
+export const PATTERN_GALLERY_NAV: readonly NavItem[] = [
+  ...PATTERN_COLLECTIONS.map((collection) => ({
+    text: collection.nameZhTw,
+    link: collection.link,
+  })),
+] as const;
 
 /** 產品核准的六個主要學習目的地。 */
 export const MAIN_NAV: readonly NavItem[] = [

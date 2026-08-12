@@ -49,6 +49,12 @@ function toggleCard(): void {
         <p class="pattern-card__english">
           {{ props.card.nameEn }}
         </p>
+        <p
+          v-if="props.card.talibFunction"
+          class="pattern-card__function"
+        >
+          TA-Lib：<code>{{ props.card.talibFunction }}</code>
+        </p>
         <p>{{ props.card.oneSentenceMeaning }}</p>
         <p
           class="pattern-card__support"
@@ -206,6 +212,12 @@ function toggleCard(): void {
   margin: 0;
   color: var(--vp-c-text-2);
   font-size: 0.9rem;
+}
+
+.pattern-card__function {
+  margin: 0.35rem 0 0;
+  color: var(--vp-c-text-2);
+  font-size: 0.85rem;
 }
 
 .pattern-card h3,

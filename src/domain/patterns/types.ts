@@ -37,6 +37,33 @@ export const PATTERN_CARD_IDS = [
 /** 型態卡的穩定識別碼。 */
 export type PatternCardId = (typeof PATTERN_CARD_IDS)[number];
 
+/** 同一份正規型態內容可以出現的三個教學入口。 */
+export const PATTERN_COLLECTION_IDS = [
+  'candlestick-reference',
+  'price-structure',
+  'talib-advanced',
+] as const;
+
+/** 型態集合的穩定識別碼。 */
+export type PatternCollectionId = (typeof PATTERN_COLLECTION_IDS)[number];
+
+/** 型態本身的時間尺度與教學用途，避免把短窗 K 棒和完整價格結構混為一談。 */
+export type PatternKind =
+  | 'candlestick-pattern'
+  | 'chart-pattern'
+  | 'market-observation'
+  | 'guardrail';
+
+/** 新版自動化支援語意；保留舊 matchSupport 供現有 matcher 相容使用。 */
+export type AutomationSupport =
+  | 'short-window'
+  | 'structure'
+  | 'teaching-only'
+  | 'guardrail';
+
+/** TA-Lib Pattern Recognition 的官方函式名稱格式。 */
+export type TalibPatternFunction = `CDL${string}`;
+
 /** 教材型態卡的閱讀分類。 */
 export type PatternCategory =
   | '單根與描述型'
@@ -94,6 +121,10 @@ export interface PatternCardDefinition {
   nameZhTw: string;
   nameEn: string;
   aliases: readonly string[];
+  collections: readonly PatternCollectionId[];
+  kind: PatternKind;
+  automationSupport: AutomationSupport;
+  talibFunction?: TalibPatternFunction;
   category: PatternCategory;
   matchSupport: MatchSupport;
   sourceRow: string;

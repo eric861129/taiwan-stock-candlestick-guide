@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAIN_NAV, SITE_BASE } from './navigation';
+import { MAIN_NAV, PATTERN_GALLERY_NAV, SITE_BASE } from './navigation';
 
 describe('site navigation', () => {
   it('keeps the GitHub Pages base and six approved destinations', () => {
@@ -17,6 +17,14 @@ describe('site navigation', () => {
         text: '附錄速查',
         link: '/chapters/appendix-a-pattern-reference',
       },
+    ]);
+  });
+
+  it('provides three stable pattern gallery entry points', () => {
+    expect(PATTERN_GALLERY_NAV).toEqual([
+      { text: 'K 棒型態速查館', link: '/pattern-cards/candlestick' },
+      { text: '價格結構型態主館', link: '/pattern-cards/price-structures' },
+      { text: 'TA-Lib 進階 K 棒圖鑑', link: '/pattern-cards/talib' },
     ]);
   });
 });
