@@ -1,4 +1,5 @@
 import { mount } from '@vue/test-utils';
+import { defineComponent } from 'vue';
 import { describe, expect, it } from 'vitest';
 import CandlestickChart from './CandlestickChart.vue';
 
@@ -41,6 +42,101 @@ const chartSnapshot = {
 };
 
 describe('CandlestickChart', () => {
+  it('keeps SVG, table, candle IDs, and keyboard focus local when the same stock chart is mounted twice', async () => {
+    const Host = defineComponent({
+      components: { CandlestickChart },
+      setup: () => ({ chartSnapshot }),
+      template: '<div><CandlestickChart :snapshot="chartSnapshot" /><CandlestickChart :snapshot="chartSnapshot" /></div>',
+    });
+    const wrapper = mount(Host, { attachTo: document.body });
+    const charts = wrapper.findAllComponents(CandlestickChart);
+    const ids = wrapper.findAll('[id]').map((element) => element.attributes('id'));
+
+    expect(new Set(ids).size).toBe(ids.length);
+    await charts[0]!.get('[data-candle-index="0"]').trigger('keydown', { key: 'ArrowRight' });
+    await wrapper.vm.$nextTick();
+    expect(document.activeElement).toBe(charts[0]!.get('[data-candle-index="1"]').element);
+    expect(charts[1]!.get('[data-candle-index="0"]').classes()).toContain('is-selected');
+    wrapper.unmount();
+  });
+
+  it('renders TWD, share-volume, and date ticks with exactly one selected structure overlay', () => {
+    const wrapper = mount(CandlestickChart, {
+      props: {
+        snapshot: chartSnapshot,
+        structureOverlay: {
+          candidateId: 'range:1d:raw:2026-06-04:2026-06-30',
+          window: {
+            version: 'structure-window-v1',
+            startBarIndex: 3,
+            endBarIndex: 29,
+            startDate: chartDate(3),
+            endDate: chartDate(29),
+            barCount: 27,
+          },
+          segments: [{
+            id: 'boundary-upper',
+            kind: 'boundary',
+            label: '上方邊界／確認線',
+            startBarIndex: 3,
+            startPrice: 112,
+            endBarIndex: 29,
+            endPrice: 138,
+            lineStyle: 'solid',
+          }],
+          anchors: [{
+            id: 'high-3',
+            barIndex: 3,
+            date: chartDate(3),
+            price: 112,
+            label: '波峰',
+          }],
+        },
+      },
+    });
+
+    expect(wrapper.findAll('[data-price-tick]').length).toBeGreaterThanOrEqual(2);
+    expect(wrapper.findAll('[data-volume-tick]').length).toBeGreaterThanOrEqual(2);
+    expect(wrapper.findAll('[data-date-tick]').length).toBeGreaterThanOrEqual(2);
+    expect(wrapper.findAll('[data-structure-overlay]')).toHaveLength(1);
+    expect(wrapper.get('[data-structure-overlay]').attributes('data-structure-overlay')).toBe('range:1d:raw:2026-06-04:2026-06-30');
+    expect(wrapper.findAll('[data-structure-anchor]')).toHaveLength(1);
+  });
+
+  it('clips an older structure to the visible sixty-bar viewport instead of hiding the whole overlay', () => {
+    const wrapper = mount(CandlestickChart, {
+      props: {
+        snapshot: chartSnapshot,
+        structureOverlay: {
+          candidateId: 'range:older-than-viewport',
+          window: {
+            version: 'structure-window-v1',
+            startBarIndex: 0,
+            endBarIndex: 30,
+            startDate: chartDate(0),
+            endDate: chartDate(30),
+            barCount: 31,
+          },
+          segments: [{
+            id: 'boundary-upper',
+            kind: 'boundary',
+            label: '上方邊界',
+            startBarIndex: 0,
+            startPrice: 105,
+            endBarIndex: 30,
+            endPrice: 135,
+            lineStyle: 'solid',
+          }],
+          anchors: [],
+        },
+      },
+    });
+
+    expect(wrapper.findAll('[data-candle-index]')).toHaveLength(60);
+    expect(wrapper.get('[data-structure-overlay]').attributes('data-structure-overlay'))
+      .toBe('range:older-than-viewport');
+  });
+
   it('renders the latest sixty candles in an accessible SVG with a semantic table alternative', async () => {
     const wrapper = mount(CandlestickChart, {
       attachTo: document.body,

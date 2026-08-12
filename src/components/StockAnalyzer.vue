@@ -16,6 +16,8 @@ import type {
   UnavailableReason,
 } from '../domain/market-data/types';
 import { analyzePatterns } from '../domain/patterns/matcher';
+import { analyzeStructures } from '../domain/structures/analyzer';
+import type { StructureAnalysisResult } from '../domain/structures/types';
 import AnalysisResultPanel from './AnalysisResultPanel.vue';
 import CandlestickChart from './CandlestickChart.vue';
 import StockCodeSearch from './StockCodeSearch.vue';
@@ -25,6 +27,8 @@ type LoadState = 'loading-manifest' | 'ready' | 'loading-stock' | 'error';
 const manifest = ref<MarketDataManifest | null>(null);
 const snapshot = ref<StockSnapshot | null>(null);
 const result = ref<AnalysisResult | null>(null);
+const structureResult = ref<StructureAnalysisResult | null>(null);
+const selectedStructureCandidateId = ref<string | null>(null);
 const loadState = ref<LoadState>('loading-manifest');
 const statusMessage = ref('正在載入支援股票清冊；此頁不會直接呼叫交易所。');
 const errorMessage = ref('');
@@ -44,6 +48,9 @@ const marketSnapshotMetadata = computed(() => ({
   marketSnapshotCutoffDate: marketCutoffDate.value,
   officialExpectedCutoffDate: marketExpectedCutoffDate.value,
 }));
+const selectedStructureCandidate = computed(() => (
+  structureResult.value?.candidates.find((candidate) => candidate.candidateId === selectedStructureCandidateId.value) ?? null
+));
 
 let latestRequestId = 0;
 
@@ -132,11 +139,23 @@ function unavailableReasonFromError(error: unknown): UnavailableReason {
   return 'load-error';
 }
 
+/** 以同一快照分別執行短窗 K 棒與完整價格結構；兩者不共用排行榜。 */
+function analyzeSelectedSnapshot(
+  selected: StockSnapshot,
+  matcherOptions: Parameters<typeof analyzePatterns>[1],
+): void {
+  result.value = analyzePatterns(selected, matcherOptions);
+  structureResult.value = analyzeStructures(selected);
+  selectedStructureCandidateId.value = null;
+}
+
 async function prepareManifest(): Promise<void> {
   const requestId = beginRequest();
   loadState.value = 'loading-manifest';
   snapshot.value = null;
   result.value = null;
+  structureResult.value = null;
+  selectedStructureCandidateId.value = null;
   marketCutoffDate.value = null;
   marketExpectedCutoffDate.value = null;
   statusMessage.value = '正在載入支援股票清冊；此頁不會直接呼叫交易所。';
@@ -171,6 +190,8 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
   loadState.value = 'loading-stock';
   errorMessage.value = '';
   result.value = null;
+  structureResult.value = null;
+  selectedStructureCandidateId.value = null;
   snapshot.value = null;
   selectedTimeframe.value = '1d';
   selectedPriceMode.value = 'raw';
@@ -206,7 +227,7 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
     selectedPriceMode.value = scopedSnapshot.priceMode;
     marketCutoffDate.value = marketCutoff.cutoffDate;
     marketExpectedCutoffDate.value = marketCutoff.expectedCutoffDate;
-    result.value = analyzePatterns(scopedSnapshot, {
+    analyzeSelectedSnapshot(scopedSnapshot, {
       freshness,
       snapshotHash: activeManifest.snapshotHash,
     });
@@ -246,7 +267,7 @@ function changePriceMode(priceMode: PriceMode): void {
     const selected = selectStockPriceMode(current, priceMode);
     selectedPriceMode.value = priceMode;
     snapshot.value = selected;
-    result.value = analyzePatterns(selected, {
+    analyzeSelectedSnapshot(selected, {
       freshness: selected.freshness,
       snapshotHash: selected.snapshotHash,
     });
@@ -269,7 +290,7 @@ function changeTimeframe(timeframe: Timeframe): void {
     const selected = selectStockTimeframe(current, timeframe);
     selectedTimeframe.value = timeframe;
     snapshot.value = selected;
-    result.value = analyzePatterns(selected, {
+    analyzeSelectedSnapshot(selected, {
       freshness: selected.freshness,
       snapshotHash: selected.snapshotHash,
     });
@@ -287,6 +308,8 @@ function resetQuery(): void {
   selectedTimeframe.value = '1d';
   selectedPriceMode.value = 'raw';
   result.value = null;
+  structureResult.value = null;
+  selectedStructureCandidateId.value = null;
   marketCutoffDate.value = null;
   marketExpectedCutoffDate.value = null;
   errorMessage.value = '';
@@ -412,6 +435,7 @@ onMounted(() => {
       <CandlestickChart
         v-if="snapshot.bars.length > 0"
         :snapshot="snapshot"
+        :structure-overlay="selectedStructureCandidate?.overlay ?? null"
       />
     </template>
 
@@ -420,6 +444,9 @@ onMounted(() => {
       :result="result"
       :snapshot="snapshot"
       :market-snapshot-metadata="marketSnapshotMetadata"
+      :structure-result="structureResult"
+      :selected-structure-candidate-id="selectedStructureCandidateId"
+      @select-structure-candidate="selectedStructureCandidateId = $event"
     />
   </section>
 </template>

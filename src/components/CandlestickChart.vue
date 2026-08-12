@@ -1,16 +1,24 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, useId, watch } from 'vue';
+import type { ComponentPublicInstance } from 'vue';
 import type { CorporateAction, OhlcvBar, PriceMode, StockSnapshot, Timeframe } from '../domain/market-data/types';
+import type { StructureOverlay } from '../domain/structures/types';
 
 const props = withDefaults(defineProps<{
   snapshot: StockSnapshot;
   maxBars?: number;
+  /** 目前選中的單一結構候選；圖表只接收資料座標，不重新判斷型態。 */
+  structureOverlay?: StructureOverlay | null;
 }>(), {
   maxBars: 60,
+  structureOverlay: null,
 });
 
 const selectedIndex = ref(0);
 const showDataTable = ref(false);
+const showFullStructure = ref(false);
+const chartInstanceId = useId();
+const candleElements = ref<(SVGGElement | null)[]>([]);
 const chartWidth = 1000;
 const chartHeight = 560;
 const priceTop = 40;
@@ -21,8 +29,19 @@ const volumeBottom = 510;
 const timeframe = computed<Timeframe>(() => props.snapshot.timeframe ?? '1d');
 const completedBars = computed(() => props.snapshot.bars.filter((bar) => bar.completed !== false));
 const formingBar = computed(() => props.snapshot.bars.filter((bar) => bar.completed === false).at(-1) ?? null);
+const defaultVisibleStart = computed(() => Math.max(0, completedBars.value.length - props.maxBars));
+const hasHiddenStructureStart = computed(() => (
+  props.structureOverlay !== null
+  && props.structureOverlay.window.startBarIndex < defaultVisibleStart.value
+));
+const visibleCompletedStart = computed(() => (
+  showFullStructure.value && props.structureOverlay !== null
+    ? Math.max(0, props.structureOverlay.window.startBarIndex)
+    : defaultVisibleStart.value
+));
+const visibleCompletedBars = computed(() => completedBars.value.slice(visibleCompletedStart.value));
 const bars = computed(() => [
-  ...completedBars.value.slice(-props.maxBars),
+  ...visibleCompletedBars.value,
   ...(formingBar.value ? [formingBar.value] : []),
 ]);
 const priceBounds = computed(() => {
@@ -35,8 +54,35 @@ const priceBounds = computed(() => {
 });
 const maximumVolume = computed(() => Math.max(1, ...bars.value.map((bar) => bar.volumeShares)));
 const selectedBar = computed(() => bars.value[selectedIndex.value] ?? bars.value[0]);
-const chartTitleId = computed(() => `candlestick-chart-title-${props.snapshot.code}`);
-const chartDescriptionId = computed(() => `candlestick-chart-description-${props.snapshot.code}`);
+const chartHeadingId = `${chartInstanceId}-heading`;
+const chartTitleId = `${chartInstanceId}-title`;
+const chartDescriptionId = `${chartInstanceId}-description`;
+const chartClipId = `${chartInstanceId}-plot`;
+const chartTableId = `${chartInstanceId}-data-table`;
+
+function candleId(index: number): string {
+  return `${chartInstanceId}-candle-${index}`;
+}
+
+function setCandleElement(index: number, element: Element | ComponentPublicInstance | null): void {
+  candleElements.value[index] = element instanceof Element ? element as SVGGElement : null;
+}
+const visibleSourceEnd = computed(() => completedBars.value.length - 1);
+const displayedStructureOverlay = computed(() => {
+  const overlay = props.structureOverlay;
+  if (!overlay) return null;
+  return overlay.window.endBarIndex >= visibleCompletedStart.value
+    && overlay.window.startBarIndex <= visibleSourceEnd.value
+    ? overlay
+    : null;
+});
+const overlayDescription = computed(() => {
+  const overlay = displayedStructureOverlay.value;
+  if (!overlay) return '未選擇價格結構疊線。';
+  const anchors = overlay.anchors.map((anchor) => anchor.label).join('；');
+  const scenario = overlay.scenario ? `；${overlay.scenario.label}` : '';
+  return `目前疊線為 ${overlay.candidateId}，形成區間 ${overlay.window.startDate} 至 ${overlay.window.endDate}；${anchors}${scenario}。`;
+});
 
 const timeframeLabels: Readonly<Record<Timeframe, string>> = {
   '1d': '日 K',
@@ -60,6 +106,17 @@ function candleX(index: number): number {
   return 45 + ((index + 0.5) * 910) / Math.max(1, bars.value.length);
 }
 
+function sourceBarIndex(index: number): number {
+  if (index >= visibleCompletedBars.value.length) {
+    return completedBars.value.length;
+  }
+  return visibleCompletedStart.value + index;
+}
+
+function sourceBarX(index: number): number {
+  return candleX(index - visibleCompletedStart.value);
+}
+
 function candleWidth(): number {
   return Math.max(3, Math.min(12, 560 / Math.max(1, bars.value.length)));
 }
@@ -72,6 +129,24 @@ function priceY(price: number): number {
 function volumeY(volume: number): number {
   return volumeBottom - (volume / maximumVolume.value) * (volumeBottom - volumeTop);
 }
+
+function numericTicks(minimum: number, maximum: number, count = 4): readonly number[] {
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || count < 2) return [];
+  const step = (maximum - minimum) / (count - 1);
+  return Array.from({ length: count }, (_value, index) => minimum + step * index);
+}
+
+const priceTicks = computed(() => numericTicks(priceBounds.value.low, priceBounds.value.high));
+const volumeTicks = computed(() => numericTicks(0, maximumVolume.value));
+const dateTicks = computed(() => {
+  const visibleCount = bars.value.length;
+  if (visibleCount === 0) return [];
+  const positions = [...new Set([0, Math.floor((visibleCount - 1) / 2), visibleCount - 1])];
+  return positions.map((index) => ({
+    index,
+    label: periodLabel(bars.value[index]!),
+  }));
+});
 
 function direction(bar: OhlcvBar): 'up' | 'down' | 'flat' {
   if (bar.close > bar.open) return 'up';
@@ -118,6 +193,10 @@ function formatNumber(value: number): string {
   }).format(value);
 }
 
+function formatVolumeTick(value: number): string {
+  return `${formatNumber(value)} 股`;
+}
+
 function actionLabel(action: CorporateAction): string {
   const labels: Record<CorporateAction['type'], string> = {
     'cash-dividend': '現金股利',
@@ -142,7 +221,7 @@ async function selectCandle(index: number, moveFocus = false): Promise<void> {
   selectedIndex.value = nextIndex;
   if (moveFocus && typeof document !== 'undefined') {
     await nextTick();
-    document.getElementById(`candle-${props.snapshot.code}-${nextIndex}`)?.focus();
+    candleElements.value[nextIndex]?.focus();
   }
 }
 
@@ -169,12 +248,12 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
 <template>
   <section
     class="candlestick-chart"
-    aria-labelledby="candlestick-chart-heading"
+    :aria-labelledby="chartHeadingId"
   >
     <div class="candlestick-chart__heading-row">
       <div>
-        <h3 id="candlestick-chart-heading">
-          {{ snapshot.name }}（{{ snapshot.code }}）{{ priceModeLabel(snapshot.priceMode) }}最近 {{ completedBars.slice(-maxBars).length }} 根{{ timeframeLabel(timeframe) }}
+        <h3 :id="chartHeadingId">
+          {{ snapshot.name }}（{{ snapshot.code }}）{{ priceModeLabel(snapshot.priceMode) }}{{ showFullStructure ? '完整型態範圍' : '最近' }} {{ visibleCompletedBars.length }} 根{{ timeframeLabel(timeframe) }}
           <span v-if="formingBar">，另有 1 根形成中{{ timeframeLabel(timeframe) }}</span>
         </h3>
         <p>價格單位為 TWD；成交量在原始模式是實際股數，在還原模式是依官方因子換算的等值股數。紅綠之外，圖上也使用實心上箭頭、空心下箭頭與菱形記號；可用左右方向鍵逐根查看。</p>
@@ -183,10 +262,18 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
         type="button"
         data-chart-table-toggle
         :aria-expanded="showDataTable"
-        aria-controls="candlestick-data-table"
+        :aria-controls="chartTableId"
         @click="showDataTable = !showDataTable"
       >
         {{ showDataTable ? '收合 OHLCV 資料表' : '展開 OHLCV 資料表' }}
+      </button>
+      <button
+        v-if="hasHiddenStructureStart"
+        type="button"
+        data-full-structure-toggle
+        @click="showFullStructure = !showFullStructure"
+      >
+        {{ showFullStructure ? '顯示最近 60 根 K 棒' : '展開完整型態範圍' }}
       </button>
     </div>
 
@@ -198,7 +285,17 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
         :aria-labelledby="`${chartTitleId} ${chartDescriptionId}`"
       >
         <title :id="chartTitleId">{{ snapshot.name }}最近 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }}與成交量</title>
-        <desc :id="chartDescriptionId">顯示 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }}、成交量與公司行動標記。形成中或證據不完整的 K 棒不納入型態比對。使用左右方向鍵可逐根取得繁體中文 OHLCV 摘要。</desc>
+        <desc :id="chartDescriptionId">顯示 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }}、成交量與公司行動標記。形成中或證據不完整的 K 棒不納入型態比對。{{ overlayDescription }}使用左右方向鍵可逐根取得繁體中文 OHLCV 摘要。</desc>
+        <defs>
+          <clipPath :id="chartClipId">
+            <rect
+              x="40"
+              :y="priceTop"
+              width="925"
+              :height="priceBottom - priceTop"
+            />
+          </clipPath>
+        </defs>
         <line
           x1="40"
           :y1="priceBottom"
@@ -225,10 +322,70 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
         >成交量（股）</text>
 
         <g
+          v-for="tick in priceTicks"
+          :key="`price-${tick}`"
+          data-price-tick
+        >
+          <line
+            x1="40"
+            x2="965"
+            :y1="priceY(tick)"
+            :y2="priceY(tick)"
+            class="candlestick-chart__grid"
+          />
+          <text
+            x="960"
+            :y="priceY(tick) - 4"
+            text-anchor="end"
+            class="candlestick-chart__tick-label"
+          >{{ formatPrice(tick) }} TWD</text>
+        </g>
+        <g
+          v-for="tick in volumeTicks"
+          :key="`volume-${tick}`"
+          data-volume-tick
+        >
+          <line
+            x1="40"
+            x2="965"
+            :y1="volumeY(tick)"
+            :y2="volumeY(tick)"
+            class="candlestick-chart__grid"
+          />
+          <text
+            x="960"
+            :y="volumeY(tick) - 4"
+            text-anchor="end"
+            class="candlestick-chart__tick-label"
+          >{{ formatVolumeTick(tick) }}</text>
+        </g>
+        <g
+          v-for="tick in dateTicks"
+          :key="`date-${tick.index}`"
+          data-date-tick
+        >
+          <line
+            :x1="candleX(tick.index)"
+            :x2="candleX(tick.index)"
+            :y1="volumeBottom"
+            y2="520"
+            class="candlestick-chart__axis"
+          />
+          <text
+            :x="candleX(tick.index)"
+            y="540"
+            text-anchor="middle"
+            class="candlestick-chart__tick-label"
+          >{{ tick.label }}</text>
+        </g>
+
+        <g
           v-for="(bar, index) in bars"
-          :id="`candle-${snapshot.code}-${index}`"
+          :id="candleId(index)"
+          :ref="(element) => setCandleElement(index, element)"
           :key="bar.date"
           :data-candle-index="index"
+          :data-source-bar-index="sourceBarIndex(index)"
           :class="['candlestick-chart__candle', `candlestick-chart__candle--${direction(bar)}`, { 'is-selected': selectedIndex === index, 'is-forming': bar.completed === false, 'is-incomplete': bar.evidenceStatus === 'incomplete' }]"
           role="button"
           :tabindex="selectedIndex === index ? 0 : -1"
@@ -279,6 +436,47 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
             <title>{{ actionLabel(action) }}；資料來源：{{ action.sourceUrl }}</title>
           </g>
         </g>
+
+        <g
+          v-if="displayedStructureOverlay"
+          :data-structure-overlay="displayedStructureOverlay.candidateId"
+          class="candlestick-chart__structure-overlay"
+          :clip-path="`url(#${chartClipId})`"
+        >
+          <g
+            v-for="segment in displayedStructureOverlay.segments"
+            :key="segment.id"
+            :data-structure-segment="segment.kind"
+          >
+            <line
+              :x1="sourceBarX(segment.startBarIndex)"
+              :x2="sourceBarX(segment.endBarIndex)"
+              :y1="priceY(segment.startPrice)"
+              :y2="priceY(segment.endPrice)"
+              :class="['candlestick-chart__structure-line', `candlestick-chart__structure-line--${segment.kind}`, { 'is-dashed': segment.lineStyle === 'dashed' }]"
+            />
+            <title>{{ segment.label }}</title>
+          </g>
+          <g
+            v-for="anchor in displayedStructureOverlay.anchors"
+            :key="anchor.id"
+            data-structure-anchor
+          >
+            <circle
+              :cx="sourceBarX(anchor.barIndex)"
+              :cy="priceY(anchor.price)"
+              r="5"
+              class="candlestick-chart__structure-anchor"
+            />
+            <title>{{ anchor.label }}</title>
+          </g>
+          <text
+            v-if="displayedStructureOverlay.scenario"
+            x="52"
+            :y="priceTop + 24"
+            class="candlestick-chart__structure-scenario"
+          >{{ displayedStructureOverlay.scenario.label }}</text>
+        </g>
       </svg>
     </div>
 
@@ -294,7 +492,7 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
 
     <div
       v-if="showDataTable"
-      id="candlestick-data-table"
+      :id="chartTableId"
       class="candlestick-chart__table-wrap"
       tabindex="-1"
     >
@@ -406,6 +604,17 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
   font-size: 18px;
 }
 
+.candlestick-chart__grid {
+  stroke: #d8c9bd;
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.candlestick-chart__tick-label {
+  fill: #65564e;
+  font-size: 12px;
+}
+
 .candlestick-chart__wick {
   stroke: #594842;
   stroke-width: 2;
@@ -455,6 +664,41 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
   fill: #d28a21;
   stroke: #594842;
   stroke-width: 1;
+}
+
+.candlestick-chart__structure-line {
+  fill: none;
+  stroke: #1b4e8a;
+  stroke-width: 3;
+}
+
+.candlestick-chart__structure-line--confirmation {
+  stroke: #1f633f;
+}
+
+.candlestick-chart__structure-line--invalidation {
+  stroke: #8b3f35;
+}
+
+.candlestick-chart__structure-line--outline {
+  stroke: #785f9d;
+  stroke-width: 2;
+}
+
+.candlestick-chart__structure-line.is-dashed {
+  stroke-dasharray: 7 4;
+}
+
+.candlestick-chart__structure-anchor {
+  fill: #fffdf9;
+  stroke: #1b4e8a;
+  stroke-width: 3;
+}
+
+.candlestick-chart__structure-scenario {
+  fill: #1e3655;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .candlestick-chart__candle {

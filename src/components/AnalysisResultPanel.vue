@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { SITE_BASE } from '../domain/site/navigation';
 import { getPatternCard } from '../domain/patterns/catalog';
+import type { StructureAnalysisResult, StructureCandidate, StructureNearMiss } from '../domain/structures/types';
 import type {
   AnalysisContext,
   AnalysisResult,
@@ -21,6 +22,12 @@ const props = defineProps<{
   result: AnalysisResult;
   snapshot: StockSnapshot | null;
   marketSnapshotMetadata: MarketSnapshotMetadata;
+  /** 完整價格結構與一至三根短窗 K 棒結果分開呈現與排序。 */
+  structureResult?: StructureAnalysisResult | null;
+  selectedStructureCandidateId?: string | null;
+}>();
+const emit = defineEmits<{
+  'select-structure-candidate': [candidateId: string];
 }>();
 
 const context = computed<AnalysisContext | undefined>(() => props.result.context);
@@ -145,6 +152,31 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
   };
   return labels[type];
 }
+
+function structureCardFor(candidate: StructureCandidate) {
+  return getPatternCard(candidate.structureId);
+}
+
+function structureStatusLabel(candidate: StructureCandidate): string {
+  return candidate.status === 'confirmed' ? '已確認' : '形成中';
+}
+
+function structureDirectionLabel(candidate: StructureCandidate): string {
+  const labels: Record<StructureCandidate['direction'], string> = {
+    up: '向上離開邊界',
+    down: '向下離開邊界',
+    undetermined: '尚未離開邊界，不預設方向',
+  };
+  return labels[candidate.direction];
+}
+
+function nearMissLabel(nearMiss: StructureNearMiss): string {
+  return nearMiss.status === 'invalid' ? '已失效的教學參考' : '接近但未成立的教學參考';
+}
+
+function selectStructureCandidate(candidate: StructureCandidate): void {
+  emit('select-structure-candidate', candidate.candidateId);
+}
 </script>
 
 <template>
@@ -258,6 +290,56 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
       </section>
 
       <section
+        v-if="structureResult"
+        class="analysis-result-panel__structures"
+        aria-labelledby="analysis-structure-title"
+      >
+        <h3 id="analysis-structure-title">
+          價格結構候選（最多三個）
+        </h3>
+        <p>完整價格結構和一至三根短窗 K 棒觀察分開排名；規則符合度只描述結構與規則的接近程度，不是機率、預測或買賣建議。</p>
+        <template v-if="structureResult.candidates.length > 0">
+          <article
+            v-for="candidate in structureResult.candidates"
+            :key="candidate.candidateId"
+            class="analysis-result-panel__structure-candidate"
+          >
+            <h4>{{ structureCardFor(candidate).nameZhTw }}：{{ structureStatusLabel(candidate) }}（規則符合度 {{ candidate.ruleFit }}）</h4>
+            <p>形成區間：{{ candidate.window.startDate }} 至 {{ candidate.window.endDate }}（{{ candidate.window.barCount }} 根）。{{ structureDirectionLabel(candidate) }}。</p>
+            <p>確認條件：{{ candidate.confirmationCondition }}</p>
+            <p>失效條件：{{ candidate.invalidationCondition }}</p>
+            <button
+              type="button"
+              data-structure-candidate
+              :aria-pressed="selectedStructureCandidateId === candidate.candidateId"
+              @click="selectStructureCandidate(candidate)"
+            >
+              {{ selectedStructureCandidateId === candidate.candidateId ? '目前圖表疊線' : '套用到圖表' }}
+            </button>
+          </article>
+        </template>
+        <p v-else>
+          無明顯價格結構；本次不為了湊滿前三名而補入低於門檻的結果。
+        </p>
+        <section
+          v-if="structureResult.nearMisses.length > 0"
+          aria-labelledby="analysis-structure-near-miss-title"
+        >
+          <h4 id="analysis-structure-near-miss-title">
+            接近但未成立的教學參考
+          </h4>
+          <ul>
+            <li
+              v-for="nearMiss in structureResult.nearMisses"
+              :key="`${nearMiss.structureId}-${nearMiss.status}`"
+            >
+              {{ nearMissLabel(nearMiss) }}：{{ getPatternCard(nearMiss.structureId).nameZhTw }}；缺少條件：{{ nearMiss.missingConditions.join('、') }}。
+            </li>
+          </ul>
+        </section>
+      </section>
+
+      <section
         v-if="context.unavailableCardIds.length > 0"
         aria-labelledby="analysis-limit-title"
       >
@@ -267,13 +349,14 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
         <p>{{ context.unavailableCardIds.length }} 張卡因資料量、價格精度或公司行動限制未納入候選。</p>
       </section>
 
-      <section
+      <details
         v-if="result.status === 'matched'"
+        data-short-window-observations
         aria-labelledby="analysis-candidate-title"
       >
-        <h3 id="analysis-candidate-title">
-          候選型態（最多三張）
-        </h3>
+        <summary id="analysis-candidate-title">
+          短窗 K 棒觀察（最多三張，可展開）
+        </summary>
         <article
           v-for="match in result.matches"
           :key="match.cardId"
@@ -309,7 +392,7 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
             >{{ lesson }}</a>
           </p>
         </article>
-      </section>
+      </details>
 
       <section
         v-else-if="result.status === 'no-clear-pattern'"
@@ -431,6 +514,52 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
 
 .analysis-result-panel__candidate {
   margin-top: 1rem;
+}
+
+.analysis-result-panel__structures {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.analysis-result-panel__structure-candidate {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 0.5rem;
+  background: var(--vp-c-bg);
+}
+
+.analysis-result-panel__structure-candidate h4,
+.analysis-result-panel__structure-candidate p {
+  margin-top: 0;
+}
+
+.analysis-result-panel__structure-candidate button {
+  min-height: 2.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--vp-c-brand-1);
+  border-radius: 0.45rem;
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.analysis-result-panel__structure-candidate button[aria-pressed='true'] {
+  border-width: 2px;
+  background: #eef5ff;
+  color: #1e3655;
+  font-weight: 700;
+}
+
+.analysis-result-panel details {
+  margin-top: 1rem;
+}
+
+.analysis-result-panel summary {
+  cursor: pointer;
+  font-weight: 700;
 }
 
 .analysis-result-panel__candidate h4,

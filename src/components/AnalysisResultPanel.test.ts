@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils';
 import { describe, expect, it } from 'vitest';
 import type { AnalysisContext, AnalysisResult, StockSnapshot } from '../domain/market-data/types';
+import type { StructureAnalysisResult } from '../domain/structures/types';
 import AnalysisResultPanel from './AnalysisResultPanel.vue';
 
 const context: AnalysisContext = {
@@ -59,12 +60,14 @@ const marketSnapshotMetadata: MarketSnapshotMetadata = {
 function render(
   result: AnalysisResult,
   metadata: MarketSnapshotMetadata = marketSnapshotMetadata,
+  structureResult: StructureAnalysisResult | null = null,
 ) {
   return mount(AnalysisResultPanel, {
     props: {
       result,
       snapshot,
       marketSnapshotMetadata: metadata,
+      structureResult,
     },
   });
 }
@@ -77,6 +80,75 @@ function factValues(wrapper: ReturnType<typeof render>): Record<string, string> 
 }
 
 describe('AnalysisResultPanel guided rendering', () => {
+  it('keeps long structures in a separate selectable ranking and short-window observations collapsible', async () => {
+    const structureResult: StructureAnalysisResult = {
+      status: 'matched',
+      matcherVersion: 'structure-v1',
+      timeframe: '1d',
+      priceMode: 'raw',
+      cutoffDate: '2026-08-11',
+      features: {
+        configVersion: 'structure-features-v1',
+        sourceBarCount: 20,
+        analyzedBarCount: 20,
+        smoothedClose: [],
+        atr: { version: 'atr-v1', period: 14, latest: 3, values: [] },
+        pivots: [],
+        warnings: [],
+      },
+      candidates: [{
+        candidateId: 'range:1d:raw:2026-08-01:2026-08-11',
+        structureId: 'range',
+        timeframe: '1d',
+        priceMode: 'raw',
+        ruleFit: 90,
+        geometryCompleteness: 100,
+        dataCompleteness: 100,
+        status: 'forming',
+        direction: 'undetermined',
+        window: { version: 'structure-window-v1', startBarIndex: 0, endBarIndex: 10, startDate: '2026-08-01', endDate: '2026-08-11', barCount: 11 },
+        anchors: [],
+        boundaries: [],
+        evaluations: [],
+        confirmationCondition: '收盤離開邊界後確認。',
+        invalidationCondition: '返回區間即失效。',
+        warnings: [],
+        matcherVersion: 'structure-v1',
+        overlay: {
+          candidateId: 'range:1d:raw:2026-08-01:2026-08-11',
+          window: { version: 'structure-window-v1', startBarIndex: 0, endBarIndex: 10, startDate: '2026-08-01', endDate: '2026-08-11', barCount: 11 },
+          segments: [],
+          anchors: [],
+        },
+      }],
+      nearMisses: [{
+        structureId: 'triangle-consolidation',
+        status: 'insufficient-evidence',
+        ruleFit: 55,
+        missingConditions: ['上下邊界各至少兩個有效轉折點'],
+        evaluations: [],
+      }],
+      reasonCodes: [],
+    };
+    const wrapper = render({
+      status: 'matched',
+      context,
+      matches: [{
+        cardId: 'hammer', score: 90, label: '高度符合', dataCompleteness: 100,
+        analyzedFrom: '2026-08-10', analyzedTo: '2026-08-11', evaluations: [], warnings: [],
+      }],
+    }, marketSnapshotMetadata, structureResult);
+
+    expect(wrapper.text()).toContain('價格結構候選');
+    expect(wrapper.text()).toContain('規則符合度 90');
+    expect(wrapper.text()).toContain('接近但未成立的教學參考');
+    expect(wrapper.get('details[data-short-window-observations]').attributes('open')).toBeUndefined();
+    await wrapper.get('[data-structure-candidate]').trigger('click');
+    expect(wrapper.emitted('select-structure-candidate')?.[0]).toEqual([
+      'range:1d:raw:2026-08-01:2026-08-11',
+    ]);
+  });
+
   it('keeps matched candidates in an evidence-oriented guided state', () => {
     const wrapper = render({
       status: 'matched',

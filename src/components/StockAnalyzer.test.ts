@@ -8,6 +8,7 @@ const clientMocks = vi.hoisted(() => ({
   selectStockTimeframe: vi.fn(),
 }));
 const matcherMocks = vi.hoisted(() => ({ analyzePatterns: vi.fn() }));
+const structureMocks = vi.hoisted(() => ({ analyzeStructures: vi.fn() }));
 
 vi.mock('../domain/market-data/client', () => ({
   loadManifest: clientMocks.loadManifest,
@@ -21,6 +22,7 @@ vi.mock('../domain/market-data/client', () => ({
   ),
 }));
 vi.mock('../domain/patterns/matcher', () => ({ analyzePatterns: matcherMocks.analyzePatterns }));
+vi.mock('../domain/structures/analyzer', () => ({ analyzeStructures: structureMocks.analyzeStructures }));
 
 import StockAnalyzer from './StockAnalyzer.vue';
 
@@ -124,6 +126,50 @@ const analysisContext = {
   warnings: [],
 };
 
+const structureResultFixture = {
+  status: 'matched' as const,
+  matcherVersion: 'structure-v1' as const,
+  timeframe: '1d' as const,
+  priceMode: 'raw' as const,
+  cutoffDate: '2026-08-11',
+  features: {
+    configVersion: 'structure-features-v1' as const,
+    sourceBarCount: 1,
+    analyzedBarCount: 1,
+    smoothedClose: [],
+    atr: { version: 'atr-v1' as const, period: 14, latest: 3, values: [] },
+    pivots: [],
+    warnings: [],
+  },
+  candidates: [{
+    candidateId: 'range:1d:raw:2026-08-11:2026-08-11',
+    structureId: 'range' as const,
+    timeframe: '1d' as const,
+    priceMode: 'raw' as const,
+    ruleFit: 90,
+    geometryCompleteness: 100,
+    dataCompleteness: 100,
+    status: 'forming' as const,
+    direction: 'undetermined' as const,
+    window: { version: 'structure-window-v1' as const, startBarIndex: 0, endBarIndex: 0, startDate: '2026-08-11', endDate: '2026-08-11', barCount: 1 },
+    anchors: [],
+    boundaries: [],
+    evaluations: [],
+    confirmationCondition: '收盤離開邊界後確認。',
+    invalidationCondition: '返回區間即失效。',
+    warnings: [],
+    matcherVersion: 'structure-v1' as const,
+    overlay: {
+      candidateId: 'range:1d:raw:2026-08-11:2026-08-11',
+      window: { version: 'structure-window-v1' as const, startBarIndex: 0, endBarIndex: 0, startDate: '2026-08-11', endDate: '2026-08-11', barCount: 1 },
+      segments: [],
+      anchors: [],
+    },
+  }],
+  nearMisses: [],
+  reasonCodes: [],
+};
+
 const weeklyBar = {
   ...snapshotFixture.bars[0],
   date: '2026-08-08',
@@ -141,6 +187,7 @@ describe('StockAnalyzer', () => {
     clientMocks.selectStockPriceMode.mockReset();
     clientMocks.selectStockTimeframe.mockReset();
     matcherMocks.analyzePatterns.mockReset();
+    structureMocks.analyzeStructures.mockReset();
     clientMocks.loadManifest.mockResolvedValue(manifestFixture);
     clientMocks.loadStockSnapshot.mockResolvedValue(snapshotFixture);
     clientMocks.selectStockTimeframe.mockImplementation((loaded, timeframe) => ({
@@ -158,6 +205,7 @@ describe('StockAnalyzer', () => {
       context: analysisContext,
       matches: [],
     });
+    structureMocks.analyzeStructures.mockReturnValue(structureResultFixture);
   });
 
   it('loads no market data until this route mounts, then normalizes a supported code before loading one stock', async () => {
@@ -173,6 +221,25 @@ describe('StockAnalyzer', () => {
     expect(clientMocks.loadStockSnapshot).toHaveBeenCalledWith(manifestFixture, '2330');
     expect(wrapper.text()).toContain('台積電');
     expect(wrapper.text()).toContain('無明顯型態');
+  });
+
+  it('runs the independent structure matcher with the same selected snapshot and applies only the selected overlay to the chart', async () => {
+    const wrapper = mount(StockAnalyzer);
+    await flushPromises();
+    await wrapper.get('input[name="stock-code"]').setValue('2330');
+    await wrapper.get('form[data-stock-search]').trigger('submit');
+    await flushPromises();
+
+    expect(structureMocks.analyzeStructures).toHaveBeenCalledWith(expect.objectContaining({
+      code: '2330', priceMode: 'raw', timeframe: '1d',
+    }));
+    expect(wrapper.findComponent({ name: 'CandlestickChart' }).props('structureOverlay')).toBeNull();
+
+    await wrapper.get('[data-structure-candidate]').trigger('click');
+
+    expect(wrapper.findComponent({ name: 'CandlestickChart' }).props('structureOverlay')).toMatchObject({
+      candidateId: 'range:1d:raw:2026-08-11:2026-08-11',
+    });
   });
 
   it('lets readers switch day/week/month with native keyboard-operable radios and immediately reruns matching', async () => {
