@@ -107,6 +107,17 @@ function toggleCard(): void {
             </li>
           </ul>
         </section>
+        <section v-if="props.card.confirmationGuidance?.length">
+          <h4>確認方式</h4>
+          <ul>
+            <li
+              v-for="item in props.card.confirmationGuidance"
+              :key="item"
+            >
+              {{ item }}
+            </li>
+          </ul>
+        </section>
         <section>
           <h4>常見誤讀</h4>
           <ul>

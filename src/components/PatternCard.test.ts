@@ -21,6 +21,8 @@ describe('Pattern Card interactions', () => {
     expect(document.activeElement).toBe(button.element);
     expect(button.attributes('aria-expanded')).toBe('true');
     expect(wrapper.find('[data-card-side="back"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain('可觀察定義');
+    expect(wrapper.text()).not.toContain('確認方式');
     expect(wrapper.text()).toContain('失效或減弱條件');
 
     wrapper.unmount();
@@ -44,7 +46,7 @@ describe('Pattern Card interactions', () => {
 
     expect(wrapper.find('h2').text()).toContain('型態卡目錄');
     expect(wrapper.findAll('h1')).toHaveLength(0);
-    expect(wrapper.get('[aria-live="polite"]').text()).toContain('32');
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('46');
 
     await wrapper.get('select[name="match-support"]').setValue('mvp');
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('17');
@@ -53,8 +55,8 @@ describe('Pattern Card interactions', () => {
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('0');
 
     await wrapper.get('select[name="match-support"]').setValue('catalog-only');
-    expect(wrapper.get('[aria-live="polite"]').text()).toContain('8');
-    expect(wrapper.findAll('article').length).toBe(8);
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('22');
+    expect(wrapper.findAll('article').length).toBe(22);
   });
 
   it('shows one collection without cloning canonical card content', () => {
@@ -65,6 +67,17 @@ describe('Pattern Card interactions', () => {
     expect(wrapper.find('h2').text()).toBe('價格結構型態主館');
     expect(wrapper.find('[data-pattern-id="range"]').exists()).toBe(true);
     expect(wrapper.find('[data-pattern-id="hammer"]').exists()).toBe(false);
-    expect(wrapper.get('[aria-live="polite"]').text()).toContain('15');
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('29');
+  });
+
+  it('shows confirmation guidance on a second-stage structure card', async () => {
+    const wrapper = mount(PatternCard, {
+      props: { card: PATTERN_CARDS.find((card) => card.id === 'rounding-top')! },
+    });
+
+    expect(wrapper.text()).toContain('教學卡：第一版不參與自動比對');
+    await wrapper.get('button').trigger('click');
+    expect(wrapper.text()).toContain('確認方式');
+    expect(wrapper.text()).toContain('收盤有效跌破');
   });
 });

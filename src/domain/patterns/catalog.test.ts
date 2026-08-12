@@ -35,6 +35,20 @@ const CANONICAL_IDS = [
   'head-and-shoulders-top',
   'head-and-shoulders-bottom',
   'false-breakout',
+  'rounding-top',
+  'rounding-bottom',
+  'triple-top',
+  'triple-bottom',
+  'symmetrical-triangle',
+  'ascending-triangle',
+  'descending-triangle',
+  'bullish-rectangle',
+  'bearish-rectangle',
+  'pennant',
+  'rising-wedge',
+  'falling-wedge',
+  'broadening-top',
+  'broadening-bottom',
   'volume-expansion',
   'volume-contraction',
   'effort-vs-result',
@@ -42,6 +56,23 @@ const CANONICAL_IDS = [
   'low-liquidity-distortion',
   'failed-signal',
   'insufficient-evidence',
+] as const satisfies readonly PatternCardId[];
+
+const ADDITIONAL_STRUCTURE_IDS = [
+  'rounding-top',
+  'rounding-bottom',
+  'triple-top',
+  'triple-bottom',
+  'symmetrical-triangle',
+  'ascending-triangle',
+  'descending-triangle',
+  'bullish-rectangle',
+  'bearish-rectangle',
+  'pennant',
+  'rising-wedge',
+  'falling-wedge',
+  'broadening-top',
+  'broadening-bottom',
 ] as const satisfies readonly PatternCardId[];
 
 const MVP_IDS = [
@@ -65,10 +96,10 @@ const MVP_IDS = [
 ] as const satisfies readonly PatternCardId[];
 
 describe('canonical Pattern Card catalog', () => {
-  it('contains the 32 approved IDs exactly once and 17 MVP matcher cards', () => {
-    expect(PATTERN_CARDS).toHaveLength(32);
+  it('contains the 46 approved IDs exactly once and 17 MVP matcher cards', () => {
+    expect(PATTERN_CARDS).toHaveLength(46);
     expect(PATTERN_CARDS.map((card) => card.id)).toEqual(CANONICAL_IDS);
-    expect(new Set(PATTERN_CARDS.map((card) => card.id)).size).toBe(32);
+    expect(new Set(PATTERN_CARDS.map((card) => card.id)).size).toBe(46);
     expect(PATTERN_CARDS.filter((card) => card.matchSupport === 'mvp').map((card) => card.id)).toEqual(
       MVP_IDS,
     );
@@ -198,5 +229,25 @@ describe('canonical Pattern Card catalog', () => {
       kind: 'guardrail',
       automationSupport: 'guardrail',
     });
+  });
+
+  it('ships every additional price structure as a complete teaching card', () => {
+    const cards = ADDITIONAL_STRUCTURE_IDS.map(getPatternCard);
+
+    expect(cards.every((card) => card.collections.includes('price-structure'))).toBe(true);
+    expect(cards.every((card) => card.kind === 'chart-pattern')).toBe(true);
+    expect(cards.every((card) => card.automationSupport === 'teaching-only')).toBe(true);
+    expect(cards.every((card) => card.matchSupport === 'catalog-only')).toBe(true);
+
+    for (const card of cards) {
+      expect(card.background.length).toBeGreaterThan(0);
+      expect(card.confirmationGuidance?.length).toBeGreaterThan(0);
+      expect(card.invalidationGuidance.length).toBeGreaterThan(0);
+      expect(card.commonMisreads.length).toBeGreaterThan(0);
+      expect(card.limitations.length).toBeGreaterThan(0);
+      expect(card.sourceNotes.length).toBeGreaterThan(0);
+      expect(PATTERN_ILLUSTRATIONS[card.id].altTextZhTw).not.toHaveLength(0);
+      expect(PATTERN_ILLUSTRATIONS[card.id].primitives.length).toBeGreaterThan(2);
+    }
   });
 });

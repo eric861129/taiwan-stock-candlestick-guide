@@ -3,6 +3,7 @@ import {
   type MatchSupport,
   type AutomationSupport,
   type PatternCardDefinition,
+  type PatternCardInput,
   type PatternCardId,
   type PatternCategory,
   type PatternCollectionId,
@@ -13,6 +14,7 @@ import {
   type TalibPatternFunction,
 } from './types';
 import { hasValidRuleBindingParameters } from './rule-parameters';
+import { ADDITIONAL_STRUCTURE_CARD_DEFINITIONS } from './structure-catalog';
 export { PATTERN_COLLECTIONS } from './collections';
 
 const SINGLE_LESSON = ['/chapters/09-single-candlestick-signals'] as const;
@@ -100,12 +102,7 @@ function mvpMatcher(
   };
 }
 
-function card(
-  definition: Omit<
-    PatternCardDefinition,
-    'slug' | 'collections' | 'kind' | 'automationSupport' | 'talibFunction'
-  > & { slug?: string },
-): PatternCardDefinition {
+function card(definition: PatternCardInput): PatternCardDefinition {
   const kind = kindFor(definition.category, definition.matchSupport);
   const talibFunction = TALIB_FUNCTION_BY_CARD[definition.id];
   return {
@@ -735,6 +732,7 @@ export const PATTERN_CARDS: readonly PatternCardDefinition[] = [
     limitations: [...commonLimitations, '假突破需要事前可審核的邊界與觸發，第一版不參與自動比對。'],
     lessonLinks: STRUCTURE_LESSON,
   }),
+  ...ADDITIONAL_STRUCTURE_CARD_DEFINITIONS.map(card),
   card({
     id: 'volume-expansion',
     nameZhTw: '量能擴張',

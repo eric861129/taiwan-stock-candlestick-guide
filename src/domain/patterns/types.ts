@@ -25,6 +25,20 @@ export const PATTERN_CARD_IDS = [
   'head-and-shoulders-top',
   'head-and-shoulders-bottom',
   'false-breakout',
+  'rounding-top',
+  'rounding-bottom',
+  'triple-top',
+  'triple-bottom',
+  'symmetrical-triangle',
+  'ascending-triangle',
+  'descending-triangle',
+  'bullish-rectangle',
+  'bearish-rectangle',
+  'pennant',
+  'rising-wedge',
+  'falling-wedge',
+  'broadening-top',
+  'broadening-bottom',
   'volume-expansion',
   'volume-contraction',
   'effort-vs-result',
@@ -133,6 +147,7 @@ export interface PatternCardDefinition {
   observableDefinition: string;
   dataRequirements: readonly string[];
   background: readonly string[];
+  confirmationGuidance?: readonly string[];
   commonMisreads: readonly string[];
   invalidationGuidance: readonly string[];
   limitations: readonly string[];
@@ -140,6 +155,12 @@ export interface PatternCardDefinition {
   matcher?: PatternMatcherDefinition;
   guardrail?: PatternGuardrailDefinition;
 }
+
+/** 建立正規卡片前的內容輸入；集合、種類與支援狀態由單一 factory 衍生。 */
+export type PatternCardInput = Omit<
+  PatternCardDefinition,
+  'slug' | 'collections' | 'kind' | 'automationSupport' | 'talibFunction'
+> & { slug?: string };
 
 /** SVG 圖例可重用的 K 線資料。 */
 export interface CandleIllustrationPrimitive {
