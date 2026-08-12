@@ -268,6 +268,82 @@ describe('StockAnalyzer', () => {
     expect(wrapper.text()).not.toContain('最近 60 根官方原始價格日 K');
   });
 
+  it('coordinates independent month, week, and day results and reveals three separate charts', async () => {
+    const dailyBar = { ...snapshotFixture.bars[0], completed: true, evidenceStatus: 'complete' as const };
+    const monthlyBar = {
+      ...dailyBar,
+      date: '2026-07-31',
+      periodStart: '2026-07-01',
+      periodEnd: '2026-07-31',
+    };
+    const timeframes = {
+      '1d': { completedBars: [dailyBar], formingBar: null },
+      '1w': { completedBars: [weeklyBar], formingBar: null },
+      '1m': { completedBars: [monthlyBar], formingBar: null },
+    };
+    clientMocks.loadStockSnapshot.mockResolvedValue({
+      ...snapshotFixture,
+      snapshotVersion: 4,
+      timeframe: '1d',
+      priceModes: {
+        raw: { status: 'available', reasonCodes: [], warnings: [], timeframes },
+        adjusted: { status: 'unavailable', reasonCodes: ['missing-adjustment-evidence'], warnings: ['證據不足'] },
+      },
+      bars: [dailyBar],
+    });
+    clientMocks.selectStockPriceMode.mockImplementation((loaded, priceMode) => ({
+      ...loaded,
+      priceMode,
+      bars: loaded.priceModes[priceMode].timeframes[loaded.timeframe ?? '1d'].completedBars,
+    }));
+    clientMocks.selectStockTimeframe.mockImplementation((loaded, timeframe) => ({
+      ...loaded,
+      timeframe,
+      bars: loaded.priceModes[loaded.priceMode].timeframes[timeframe].completedBars,
+    }));
+    structureMocks.analyzeStructures.mockImplementation((loaded) => ({
+      ...structureResultFixture,
+      timeframe: loaded.timeframe,
+      candidates: structureResultFixture.candidates.map((candidate) => ({
+        ...candidate,
+        candidateId: `range:${loaded.timeframe}:raw:fixture`,
+        timeframe: loaded.timeframe,
+        overlay: { ...candidate.overlay, candidateId: `range:${loaded.timeframe}:raw:fixture` },
+      })),
+    }));
+    matcherMocks.analyzePatterns.mockImplementation((loaded) => ({
+      status: 'no-clear-pattern',
+      context: { ...analysisContext, timeframe: loaded.timeframe },
+      matches: [],
+    }));
+
+    const wrapper = mount(StockAnalyzer);
+    await flushPromises();
+    await wrapper.get('input[name="stock-code"]').setValue('2330');
+    await wrapper.get('form[data-stock-search]').trigger('submit');
+    await flushPromises();
+
+    expect(wrapper.get('input[data-timeframe="1m"]').attributes('checked')).toBeDefined();
+    expect(wrapper.findAll('[data-timeframe-summary]')).toHaveLength(0);
+    await wrapper.get('input[name="monthly-direction"][value="up"]').setValue();
+    await wrapper.get('textarea[name="monthly-key-area"]').setValue('月 K 長期壓力區');
+    await flushPromises();
+    await wrapper.get('[data-exercise-step-button="1w"]').trigger('click');
+    await wrapper.get('input[name="weekly-relationship"][value="aligned"]').setValue();
+    await flushPromises();
+    await wrapper.get('[data-exercise-step-button="1d"]').trigger('click');
+    await wrapper.get('input[name="daily-check"][value="confirmed"]').setValue();
+    await flushPromises();
+    await wrapper.get('[data-exercise-reveal]').trigger('click');
+
+    expect(wrapper.findAll('[data-timeframe-summary]').map((item) => item.attributes('data-timeframe-summary')))
+      .toEqual(['1m', '1w', '1d']);
+
+    await wrapper.get('[data-multitimeframe-comparison-toggle]').trigger('click');
+    expect(wrapper.findAll('[data-timeframe-chart]').map((item) => item.attributes('data-timeframe-chart')))
+      .toEqual(['1m', '1w', '1d']);
+  });
+
   it('switches from audited adjusted prices to raw prices and reruns chart matching with the same selected mode', async () => {
     const rawBar = { ...snapshotFixture.bars[0], close: 1010 };
     const adjustedBar = { ...snapshotFixture.bars[0], close: 1005 };
@@ -287,6 +363,11 @@ describe('StockAnalyzer', () => {
       },
       bars: [adjustedBar],
     });
+    clientMocks.selectStockTimeframe.mockImplementation((loaded, timeframe) => ({
+      ...loaded,
+      timeframe,
+      bars: loaded.priceModes[loaded.priceMode].timeframes[timeframe].completedBars,
+    }));
     const wrapper = mount(StockAnalyzer);
     await flushPromises();
     await wrapper.get('input[name="stock-code"]').setValue('2330');
@@ -301,11 +382,11 @@ describe('StockAnalyzer', () => {
       expect.objectContaining({ priceMode: 'adjusted' }),
       'raw',
     );
-    expect(matcherMocks.analyzePatterns).toHaveBeenLastCalledWith(
+    expect(matcherMocks.analyzePatterns).toHaveBeenCalledWith(
       expect.objectContaining({ priceMode: 'raw', bars: [rawBar] }),
       expect.any(Object),
     );
-    expect(wrapper.text()).toContain('最近 60 根官方原始價格日 K');
+    expect(wrapper.text()).toContain('最近 60 根官方原始價格月 K');
   });
 
   it('disables adjusted analysis and explains the missing official evidence while keeping raw prices usable', async () => {

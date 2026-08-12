@@ -15,11 +15,17 @@ import type {
   Timeframe,
   UnavailableReason,
 } from '../domain/market-data/types';
+import { coordinateMultiTimeframe } from '../domain/multi-timeframe';
+import type { MultiTimeframeAnalysisResult } from '../domain/multi-timeframe';
+import { getPatternCard } from '../domain/patterns/catalog';
 import { analyzePatterns } from '../domain/patterns/matcher';
 import { analyzeStructures } from '../domain/structures/analyzer';
-import type { StructureAnalysisResult } from '../domain/structures/types';
+import type { StructureAnalysisResult, StructureId } from '../domain/structures/types';
 import AnalysisResultPanel from './AnalysisResultPanel.vue';
 import CandlestickChart from './CandlestickChart.vue';
+import MultiTimeframeComparison from './MultiTimeframeComparison.vue';
+import MultiTimeframeExercise from './MultiTimeframeExercise.vue';
+import MultiTimeframeSummary from './MultiTimeframeSummary.vue';
 import StockCodeSearch from './StockCodeSearch.vue';
 
 type LoadState = 'loading-manifest' | 'ready' | 'loading-stock' | 'error';
@@ -29,6 +35,16 @@ const snapshot = ref<StockSnapshot | null>(null);
 const result = ref<AnalysisResult | null>(null);
 const structureResult = ref<StructureAnalysisResult | null>(null);
 const selectedStructureCandidateId = ref<string | null>(null);
+const multiTimeframeResult = ref<MultiTimeframeAnalysisResult | null>(null);
+const selectedStructureIds = ref<Partial<Record<Timeframe, StructureId>>>({});
+const showMultiTimeframeComparison = ref(false);
+const multiTimeframeExerciseAnswers = ref<{
+  monthlyDirection: 'up' | 'down' | 'neutral' | 'undetermined' | null;
+  monthlyKeyArea: string;
+  weeklyRelationship: 'aligned' | 'partially-aligned' | 'divergent' | 'insufficient-evidence' | null;
+  dailyCheck: 'forming' | 'confirmed' | 'invalid' | 'insufficient-evidence' | null;
+}>({ monthlyDirection: null, monthlyKeyArea: '', weeklyRelationship: null, dailyCheck: null });
+const multiTimeframeExerciseRevealed = ref(false);
 const loadState = ref<LoadState>('loading-manifest');
 const statusMessage = ref('正在載入支援股票清冊；此頁不會直接呼叫交易所。');
 const errorMessage = ref('');
@@ -51,6 +67,36 @@ const marketSnapshotMetadata = computed(() => ({
 const selectedStructureCandidate = computed(() => (
   structureResult.value?.candidates.find((candidate) => candidate.candidateId === selectedStructureCandidateId.value) ?? null
 ));
+const multiTimeframePeriods = computed(() => multiTimeframeResult.value?.timeframes.map((period) => {
+  const candidates = period.selectedCandidate
+    ? [
+        period.selectedCandidate,
+        ...period.structureAnalysis.candidates.filter((candidate) => (
+          candidate.candidateId !== period.selectedCandidateId
+        )),
+      ]
+    : period.structureAnalysis.candidates;
+  return {
+    timeframe: period.timeframe,
+    cutoffDate: period.latestCompletedBarDate,
+    availableBarCount: period.availableCompletedBarCount,
+    priceMode: period.snapshot.priceMode,
+    background: period.backgroundDirection,
+    analysisStatus: period.structureAnalysis.status,
+    candidates: candidates.map((candidate) => ({
+      candidateId: candidate.candidateId,
+      name: getPatternCard(candidate.structureId).nameZhTw,
+      ruleFit: candidate.ruleFit,
+      status: candidate.status,
+    })),
+  };
+}) ?? []);
+const multiTimeframeSelectedCandidateIds = computed(() => Object.fromEntries(
+  (multiTimeframeResult.value?.timeframes ?? []).map((period) => [
+    period.timeframe,
+    period.selectedCandidateId,
+  ]),
+) as Partial<Record<Timeframe, string | null>>);
 
 let latestRequestId = 0;
 
@@ -85,6 +131,15 @@ function priceModeAvailable(priceMode: PriceMode): boolean {
     return true;
   }
   return snapshot.value?.priceModes?.adjusted.status === 'available';
+}
+
+function timeframeAvailableForExercise(timeframe: Timeframe): boolean {
+  if (!multiTimeframeResult.value) return true;
+  if (timeframe === '1m') return true;
+  const monthlyComplete = multiTimeframeExerciseAnswers.value.monthlyDirection !== null
+    && multiTimeframeExerciseAnswers.value.monthlyKeyArea.trim().length > 0;
+  if (timeframe === '1w') return monthlyComplete;
+  return monthlyComplete && multiTimeframeExerciseAnswers.value.weeklyRelationship !== null;
 }
 
 function latestObservedStockDate(loaded: StockSnapshot): string | null {
@@ -149,6 +204,68 @@ function analyzeSelectedSnapshot(
   selectedStructureCandidateId.value = null;
 }
 
+/** 以同一 cutoff 與價格口徑建立月、週、日獨立結果，再把目前週期投影到詳細面板。 */
+function coordinateSelectedSnapshot(selected: StockSnapshot): void {
+  if (!selected.priceModes) {
+    analyzeSelectedSnapshot(selected, {
+      freshness: selected.freshness,
+      snapshotHash: selected.snapshotHash,
+    });
+    multiTimeframeResult.value = null;
+    return;
+  }
+  const coordinated = coordinateMultiTimeframe(selected, {
+    priceMode: selected.priceMode,
+    cutoffDate: selected.cutoffDate,
+    selectedStructureIds: selectedStructureIds.value,
+  });
+  multiTimeframeResult.value = coordinated;
+  const active = coordinated.timeframes.find((period) => period.timeframe === selectedTimeframe.value);
+  if (!active) {
+    throw new Error('多時間週期結果缺少目前選取的 K 線週期。');
+  }
+  snapshot.value = active.snapshot;
+  result.value = active.patternAnalysis;
+  structureResult.value = active.structureAnalysis;
+  selectedStructureCandidateId.value = active.selectedCandidateId;
+}
+
+function selectSummaryCandidate(selection: { timeframe: Timeframe; candidateId: string }): void {
+  const current = multiTimeframeResult.value;
+  const baseSnapshot = snapshot.value;
+  const period = current?.timeframes.find((item) => item.timeframe === selection.timeframe);
+  const candidate = period?.structureAnalysis.candidates.find((item) => item.candidateId === selection.candidateId);
+  if (!candidate || !baseSnapshot) return;
+  selectedStructureIds.value = { ...selectedStructureIds.value, [selection.timeframe]: candidate.structureId };
+  coordinateSelectedSnapshot(baseSnapshot);
+  changeTimeframe(selection.timeframe);
+}
+
+function selectDetailedCandidate(candidateId: string): void {
+  const candidate = structureResult.value?.candidates.find((item) => item.candidateId === candidateId);
+  if (!candidate) {
+    selectedStructureCandidateId.value = candidateId;
+    return;
+  }
+  selectedStructureIds.value = { ...selectedStructureIds.value, [selectedTimeframe.value]: candidate.structureId };
+  if (snapshot.value?.priceModes) {
+    coordinateSelectedSnapshot(snapshot.value);
+  } else {
+    selectedStructureCandidateId.value = candidateId;
+  }
+}
+
+function resetMultiTimeframeExercise(): void {
+  multiTimeframeExerciseAnswers.value = {
+    monthlyDirection: null,
+    monthlyKeyArea: '',
+    weeklyRelationship: null,
+    dailyCheck: null,
+  };
+  multiTimeframeExerciseRevealed.value = false;
+  showMultiTimeframeComparison.value = false;
+}
+
 async function prepareManifest(): Promise<void> {
   const requestId = beginRequest();
   loadState.value = 'loading-manifest';
@@ -156,6 +273,9 @@ async function prepareManifest(): Promise<void> {
   result.value = null;
   structureResult.value = null;
   selectedStructureCandidateId.value = null;
+  multiTimeframeResult.value = null;
+  selectedStructureIds.value = {};
+  resetMultiTimeframeExercise();
   marketCutoffDate.value = null;
   marketExpectedCutoffDate.value = null;
   statusMessage.value = '正在載入支援股票清冊；此頁不會直接呼叫交易所。';
@@ -192,6 +312,9 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
   result.value = null;
   structureResult.value = null;
   selectedStructureCandidateId.value = null;
+  multiTimeframeResult.value = null;
+  selectedStructureIds.value = {};
+  resetMultiTimeframeExercise();
   snapshot.value = null;
   selectedTimeframe.value = '1d';
   selectedPriceMode.value = 'raw';
@@ -223,17 +346,14 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
       snapshotHash: activeManifest.snapshotHash,
     };
     snapshot.value = scopedSnapshot;
-    selectedTimeframe.value = scopedSnapshot.timeframe ?? '1d';
+    selectedTimeframe.value = scopedSnapshot.priceModes ? '1m' : scopedSnapshot.timeframe ?? '1d';
     selectedPriceMode.value = scopedSnapshot.priceMode;
     marketCutoffDate.value = marketCutoff.cutoffDate;
     marketExpectedCutoffDate.value = marketCutoff.expectedCutoffDate;
-    analyzeSelectedSnapshot(scopedSnapshot, {
-      freshness,
-      snapshotHash: activeManifest.snapshotHash,
-    });
+    coordinateSelectedSnapshot(scopedSnapshot);
     loadState.value = 'ready';
     const label = timeframeLabel(selectedTimeframe.value);
-    statusMessage.value = scopedSnapshot.bars.length > 0
+    statusMessage.value = (snapshot.value?.bars.length ?? 0) > 0
       ? `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的${priceModeLabel(scopedSnapshot.priceMode)}${label}，可查看圖表與規則比對。`
       : `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的官方未報價證據；沒有可畫製的${label}。`;
   } catch (error) {
@@ -265,12 +385,12 @@ function changePriceMode(priceMode: PriceMode): void {
 
   try {
     const selected = selectStockPriceMode(current, priceMode);
+    selectedStructureIds.value = {};
+    resetMultiTimeframeExercise();
+    selectedTimeframe.value = '1m';
     selectedPriceMode.value = priceMode;
     snapshot.value = selected;
-    analyzeSelectedSnapshot(selected, {
-      freshness: selected.freshness,
-      snapshotHash: selected.snapshotHash,
-    });
+    coordinateSelectedSnapshot(selected);
     statusMessage.value = `已切換為${priceModeLabel(priceMode)}；圖表與型態比對已使用同一價格口徑重算。`;
   } catch (error) {
     const reason = unavailableReasonFromError(error);
@@ -287,13 +407,22 @@ function changeTimeframe(timeframe: Timeframe): void {
   }
 
   try {
-    const selected = selectStockTimeframe(current, timeframe);
     selectedTimeframe.value = timeframe;
-    snapshot.value = selected;
-    analyzeSelectedSnapshot(selected, {
-      freshness: selected.freshness,
-      snapshotHash: selected.snapshotHash,
-    });
+    if (multiTimeframeResult.value) {
+      const active = multiTimeframeResult.value.timeframes.find((period) => period.timeframe === timeframe);
+      if (!active) throw new Error('多時間週期結果缺少指定週期。');
+      snapshot.value = active.snapshot;
+      result.value = active.patternAnalysis;
+      structureResult.value = active.structureAnalysis;
+      selectedStructureCandidateId.value = active.selectedCandidateId;
+    } else {
+      const selected = selectStockTimeframe(current, timeframe);
+      snapshot.value = selected;
+      analyzeSelectedSnapshot(selected, {
+        freshness: selected.freshness,
+        snapshotHash: selected.snapshotHash,
+      });
+    }
     statusMessage.value = `已切換為${timeframeLabel(timeframe)}；圖表可顯示形成中 K 棒，但型態比對只使用完成且證據完整的 K 棒。`;
   } catch (error) {
     const reason = unavailableReasonFromError(error);
@@ -310,6 +439,9 @@ function resetQuery(): void {
   result.value = null;
   structureResult.value = null;
   selectedStructureCandidateId.value = null;
+  multiTimeframeResult.value = null;
+  selectedStructureIds.value = {};
+  resetMultiTimeframeExercise();
   marketCutoffDate.value = null;
   marketExpectedCutoffDate.value = null;
   errorMessage.value = '';
@@ -411,6 +543,7 @@ onMounted(() => {
               name="analysis-timeframe"
               :value="timeframe"
               :checked="selectedTimeframe === timeframe"
+              :disabled="!timeframeAvailableForExercise(timeframe)"
               @change="changeTimeframe(timeframe)"
             >
             {{ timeframeLabel(timeframe) }}
@@ -439,6 +572,50 @@ onMounted(() => {
       />
     </template>
 
+    <template v-if="multiTimeframeResult">
+      <MultiTimeframeExercise
+        :stock-name="snapshot?.name ?? ''"
+        :stock-code="multiTimeframeResult.code"
+        :cutoff-date="multiTimeframeResult.cutoffDate"
+        :answers="multiTimeframeExerciseAnswers"
+        :active-timeframe="selectedTimeframe"
+        :revealed="multiTimeframeExerciseRevealed"
+        @update:answers="multiTimeframeExerciseAnswers = $event"
+        @select-timeframe="changeTimeframe"
+        @reveal-summary="multiTimeframeExerciseRevealed = true"
+      >
+        <template #summary>
+          <MultiTimeframeSummary
+            :periods="multiTimeframePeriods"
+            :overall-status="multiTimeframeResult.summary.state"
+            :active-timeframe="selectedTimeframe"
+            :selected-candidate-ids="multiTimeframeSelectedCandidateIds"
+            @select-timeframe="changeTimeframe"
+            @select-candidate="selectSummaryCandidate"
+          />
+        </template>
+      </MultiTimeframeExercise>
+      <section
+        v-if="multiTimeframeExerciseRevealed"
+        class="stock-analyzer__comparison-control"
+      >
+        <h2>三週期圖表比較</h2>
+        <p>需要並排核對時再展開；手機會改成月、週、日依序堆疊。</p>
+        <button
+          type="button"
+          data-multitimeframe-comparison-toggle
+          :aria-expanded="showMultiTimeframeComparison"
+          @click="showMultiTimeframeComparison = !showMultiTimeframeComparison"
+        >
+          {{ showMultiTimeframeComparison ? '收合三週期圖表' : '展開三週期圖表' }}
+        </button>
+      </section>
+      <MultiTimeframeComparison
+        v-if="showMultiTimeframeComparison"
+        :analysis="multiTimeframeResult"
+      />
+    </template>
+
     <AnalysisResultPanel
       v-if="result"
       :result="result"
@@ -446,7 +623,7 @@ onMounted(() => {
       :market-snapshot-metadata="marketSnapshotMetadata"
       :structure-result="structureResult"
       :selected-structure-candidate-id="selectedStructureCandidateId"
-      @select-structure-candidate="selectedStructureCandidateId = $event"
+      @select-structure-candidate="selectDetailedCandidate"
     />
   </section>
 </template>
@@ -485,6 +662,18 @@ onMounted(() => {
   border: 1px solid var(--vp-c-divider);
   border-radius: 0.75rem;
   background: var(--vp-c-bg-alt);
+}
+
+.stock-analyzer__comparison-control {
+  width: min(100% - 2rem, 76rem);
+  margin: 2rem auto;
+  padding: 1rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 0.75rem;
+}
+
+.stock-analyzer__comparison-control h2 {
+  margin-top: 0;
 }
 
 .stock-analyzer__selection h3 {
@@ -527,6 +716,7 @@ onMounted(() => {
 }
 
 .stock-analyzer__selection button,
+.stock-analyzer__comparison-control button,
 .stock-analyzer > button {
   min-height: 2.5rem;
   padding: 0.5rem 0.8rem;

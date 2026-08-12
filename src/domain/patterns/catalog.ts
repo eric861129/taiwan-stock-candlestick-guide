@@ -327,6 +327,11 @@ function card(definition: PatternCardInput): PatternCardDefinition {
         `TA-Lib Core C 原始碼｜ta_${talibFunction}.c`,
       ]
     : [];
+  const timeframeGuidance = kind === 'chart-pattern' ? [
+    { timeframe: '1m' as const, label: '月 K：長期背景', guidance: '先看長期方向、主要支撐壓力與結構是否具備足夠歷史；不要用月 K 找精細進出點。' },
+    { timeframe: '1w' as const, label: '週 K：中期結構', guidance: '再看中期波段、頸線或整理邊界是否呼應月 K；週期分歧時降低結論強度。' },
+    { timeframe: '1d' as const, label: '日 K：近期條件', guidance: '最後核對完成日 K 的確認線、失效線與近期反應；日 K 不得覆寫較長週期背景。' },
+  ] : undefined;
   return {
     ...definition,
     ...teachingMetadata,
@@ -335,6 +340,7 @@ function card(definition: PatternCardInput): PatternCardDefinition {
     automationSupport: definition.automationSupport ?? automationSupportFor(definition.matchSupport),
     collections: collectionsFor(kind, talibFunction),
     sourceNotes: [...definition.sourceNotes, ...officialSources],
+    ...(timeframeGuidance ? { timeframeGuidance } : {}),
     ...(talibFunction
       ? {
           talibFunction,

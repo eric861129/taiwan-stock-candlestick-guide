@@ -194,6 +194,17 @@ function purposeLabel(): string {
             </li>
           </ul>
         </section>
+        <section v-if="props.card.timeframeGuidance?.length">
+          <h4>月、週、日 K 解讀順序</h4>
+          <ol>
+            <li
+              v-for="item in props.card.timeframeGuidance"
+              :key="item.timeframe"
+            >
+              <strong>{{ item.label }}</strong>：{{ item.guidance }}
+            </li>
+          </ol>
+        </section>
         <section v-if="props.card.geometrySteps?.length">
           <h4>逐根幾何</h4>
           <ol>

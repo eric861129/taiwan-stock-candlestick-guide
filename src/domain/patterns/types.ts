@@ -193,6 +193,13 @@ export interface PatternGuardrailDefinition {
   readerAction: string;
 }
 
+/** 同一價格結構在月、週、日 K 的閱讀焦點，不代表不同週期會得到相同結論。 */
+export interface PatternTimeframeGuidance {
+  timeframe: '1m' | '1w' | '1d';
+  label: string;
+  guidance: string;
+}
+
 /** UI 與後續 matcher 共用的唯一型態卡來源。 */
 export interface PatternCardDefinition {
   id: PatternCardId;
@@ -226,6 +233,7 @@ export interface PatternCardDefinition {
   invalidationGuidance: readonly string[];
   limitations: readonly string[];
   lessonLinks: readonly string[];
+  timeframeGuidance?: readonly PatternTimeframeGuidance[];
   matcher?: PatternMatcherDefinition;
   guardrail?: PatternGuardrailDefinition;
 }

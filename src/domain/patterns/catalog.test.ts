@@ -235,6 +235,20 @@ describe('canonical Pattern Card catalog', () => {
     expect(guardrailCards.every((card) => card.guardrail?.whyNotInMvp.length)).toBeTruthy();
   });
 
+  it('gives every price-structure card the same month-to-week-to-day reading contract', () => {
+    const structureCards = PATTERN_CARDS.filter((card) => card.kind === 'chart-pattern');
+
+    expect(structureCards.length).toBeGreaterThan(0);
+    for (const card of structureCards) {
+      expect(card.timeframeGuidance?.map((item) => item.timeframe)).toEqual(['1m', '1w', '1d']);
+      expect(card.timeframeGuidance?.map((item) => item.label)).toEqual([
+        '月 K：長期背景',
+        '週 K：中期結構',
+        '日 K：近期條件',
+      ]);
+    }
+  });
+
   it('gives every canonical card an accessible illustration made from structural primitives', () => {
     expect(Object.keys(PATTERN_ILLUSTRATIONS)).toEqual(CANONICAL_IDS);
 

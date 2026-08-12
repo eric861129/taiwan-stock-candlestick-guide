@@ -48,6 +48,16 @@ describe('Pattern Card interactions', () => {
     expect(wrapper.text()).not.toContain('不參與自動比對');
   });
 
+  it('shows month, week, and day reading guidance on the back of every price-structure card', async () => {
+    const wrapper = mount(PatternCard, { props: { card: getPatternCard('head-and-shoulders-top') } });
+    await wrapper.get('button').trigger('click');
+
+    expect(wrapper.text()).toContain('月、週、日 K 解讀順序');
+    expect(wrapper.text()).toContain('月 K：長期背景');
+    expect(wrapper.text()).toContain('週 K：中期結構');
+    expect(wrapper.text()).toContain('日 K：近期條件');
+  });
+
   it('filters by category and support while announcing the result count', async () => {
     const wrapper = mount(PatternCatalog);
 

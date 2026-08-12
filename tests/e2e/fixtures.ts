@@ -13,6 +13,33 @@ const tpexOfficialFixtureSource = 'https://www.tpex.org.tw/openapi/v1/tpex_mainb
 
 type BrowserOhlcvBar = OhlcvBar & { readonly priceUnit: 'TWD' };
 
+/**
+ * 提供給瀏覽器 E2E 的單一週期資料。週、月 K 必須已按官方交易日曆聚合，
+ * 讓前端仍會經過與正式快照相同的 v4 驗證流程。
+ */
+export interface BrowserTimeframeFixture {
+  readonly completedBars: readonly OhlcvBar[];
+  readonly formingBar?: OhlcvBar | null;
+}
+
+/** 一次注入日、週、月三套預先聚合 K 線的 E2E 接縫。 */
+export interface BrowserMultiTimeframeFixture {
+  readonly '1d': BrowserTimeframeFixture;
+  readonly '1w': BrowserTimeframeFixture;
+  readonly '1m': BrowserTimeframeFixture;
+}
+
+interface BrowserTimeframeSeries {
+  readonly completedBars: readonly BrowserOhlcvBar[];
+  readonly formingBar: BrowserOhlcvBar | null;
+}
+
+interface BrowserTimeframeSeriesSet {
+  readonly '1d': BrowserTimeframeSeries;
+  readonly '1w': BrowserTimeframeSeries;
+  readonly '1m': BrowserTimeframeSeries;
+}
+
 export interface BrowserStockFixture {
   readonly schemaVersion: 1;
   readonly snapshotVersion: 4;
@@ -35,11 +62,7 @@ export interface BrowserStockFixture {
       readonly status: 'available';
       readonly reasonCodes: readonly string[];
       readonly warnings: readonly string[];
-      readonly timeframes: {
-        readonly '1d': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: null };
-        readonly '1w': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: BrowserOhlcvBar | null };
-        readonly '1m': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: BrowserOhlcvBar | null };
-      };
+      readonly timeframes: BrowserTimeframeSeriesSet;
     };
     readonly adjusted: {
       readonly status: 'unavailable';
@@ -49,11 +72,7 @@ export interface BrowserStockFixture {
       readonly status: 'available';
       readonly reasonCodes: readonly [];
       readonly warnings: readonly [];
-      readonly timeframes: {
-        readonly '1d': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: null };
-        readonly '1w': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: BrowserOhlcvBar | null };
-        readonly '1m': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: BrowserOhlcvBar | null };
-      };
+      readonly timeframes: BrowserTimeframeSeriesSet;
     };
   };
   readonly adjustmentFactors: readonly AdjustmentFactor[];
@@ -73,6 +92,17 @@ export interface BrowserMarketFixtureOptions {
   readonly expectedCutoffDate?: string | null;
   readonly freshness?: 'fresh' | 'one-session-behind' | 'stale' | 'unknown';
   readonly calendarValidThrough?: string;
+}
+
+export interface BrowserStockFixtureOptions {
+  readonly code?: string;
+  readonly name?: string;
+  readonly market?: 'TWSE' | 'TPEx';
+  readonly securityType?: 'common-stock' | 'etf';
+  readonly corporateActions?: readonly CorporateAction[];
+  readonly adjustmentFactors?: readonly AdjustmentFactor[];
+  readonly noQuoteEvidence?: readonly NoQuoteEvidence[];
+  readonly listingDate?: string;
 }
 
 export async function goToRoute(page: Page, route = ''): Promise<void> {
@@ -131,38 +161,66 @@ export function rawDailyBars(stock: BrowserStockFixture): readonly BrowserOhlcvB
   return stock.priceModes.raw.timeframes['1d'].completedBars;
 }
 
-export function makeBrowserStockFixture(
-  bars: readonly OhlcvBar[],
-  options: {
-    code?: string;
-    name?: string;
-    market?: 'TWSE' | 'TPEx';
-    securityType?: 'common-stock' | 'etf';
-    corporateActions?: readonly CorporateAction[];
-    adjustmentFactors?: readonly AdjustmentFactor[];
-    noQuoteEvidence?: readonly NoQuoteEvidence[];
-    listingDate?: string;
-  } = {},
-): BrowserStockFixture {
-  const serializedBars: readonly BrowserOhlcvBar[] = bars.map((bar) => ({
+function serializeBrowserBar(bar: OhlcvBar, defaultCompleted: boolean): BrowserOhlcvBar {
+  return {
     ...bar,
     periodStart: bar.periodStart ?? bar.date,
     periodEnd: bar.periodEnd ?? bar.date,
-    completed: bar.completed ?? true,
+    completed: bar.completed ?? defaultCompleted,
     evidenceStatus: bar.evidenceStatus ?? 'complete',
     missingSessionDates: bar.missingSessionDates ?? [],
     priceUnit: 'TWD',
-  }));
+  };
+}
+
+function serializeTimeframeSeries(series: BrowserTimeframeFixture): BrowserTimeframeSeries {
+  return {
+    completedBars: series.completedBars.map((bar) => serializeBrowserBar(bar, true)),
+    formingBar: series.formingBar === undefined || series.formingBar === null
+      ? null
+      : serializeBrowserBar(series.formingBar, false),
+  };
+}
+
+function serializeTimeframes(timeframes: BrowserMultiTimeframeFixture): BrowserTimeframeSeriesSet {
+  return {
+    '1d': serializeTimeframeSeries(timeframes['1d']),
+    '1w': serializeTimeframeSeries(timeframes['1w']),
+    '1m': serializeTimeframeSeries(timeframes['1m']),
+  };
+}
+
+export function makeBrowserStockFixture(
+  bars: readonly OhlcvBar[],
+  options: BrowserStockFixtureOptions = {},
+): BrowserStockFixture {
+  return makeBrowserMultiTimeframeStockFixture({
+    '1d': { completedBars: bars },
+    '1w': { completedBars: [] },
+    '1m': { completedBars: [] },
+  }, options);
+}
+
+/**
+ * 建立含預先聚合日、週、月 K 的單一股票快照；不在測試端重建前端資料流。
+ * 呼叫端須提供與日 K、manifest 交易日曆一致的週／月聚合棒，正式載入時會再次驗證。
+ */
+export function makeBrowserMultiTimeframeStockFixture(
+  timeframes: BrowserMultiTimeframeFixture,
+  options: BrowserStockFixtureOptions = {},
+): BrowserStockFixture {
+  const serializedTimeframes = serializeTimeframes(timeframes);
+  const dailyBars = serializedTimeframes['1d'].completedBars;
   const market = options.market ?? 'TWSE';
   const noQuoteEvidence = options.noQuoteEvidence ?? [];
-  const observedDates = [...serializedBars, ...noQuoteEvidence]
+  const observedDates = [...dailyBars, ...noQuoteEvidence]
     .map((observation) => observation.date)
     .sort();
   if (observedDates.length === 0) {
     throw new Error('瀏覽器測試股票必須至少包含一筆 K 線或官方無報價證據。');
   }
   const listingDate = options.listingDate ?? observedDates[0]!;
-  const availableSessions = serializedBars.length + noQuoteEvidence.length;
+  const availableSessions = dailyBars.length + noQuoteEvidence.length;
   const shortHistoryReason = availableSessions < 120 ? 'listing-history' : null;
   const marketSource = market === 'TWSE' ? twseOfficialFixtureSource : tpexOfficialFixtureSource;
   const corporateActions = options.corporateActions ?? [];
@@ -173,11 +231,6 @@ export function makeBrowserStockFixture(
       factor.effectiveDate === action.date && factor.actionTypes.includes(action.type)
     ))
   ));
-  const timeframes = {
-    '1d': { completedBars: serializedBars, formingBar: null },
-    '1w': { completedBars: [], formingBar: null },
-    '1m': { completedBars: [], formingBar: null },
-  } as const;
   return {
     schemaVersion: 1,
     snapshotVersion: 4,
@@ -200,7 +253,7 @@ export function makeBrowserStockFixture(
         status: 'available',
         reasonCodes: [],
         warnings: [],
-        timeframes,
+        timeframes: serializedTimeframes,
       },
       adjusted: hasMissingAdjustmentEvidence ? {
         status: 'unavailable',
@@ -210,7 +263,7 @@ export function makeBrowserStockFixture(
         status: 'available',
         reasonCodes: [],
         warnings: [],
-        timeframes,
+        timeframes: serializedTimeframes,
       },
     },
     adjustmentFactors,
@@ -261,6 +314,14 @@ export function createBrowserMarketFixture(
     calendarValidThrough,
     tradingSessions: [...effectiveSessions],
   };
+  const publishedBars = Object.values(stock.priceModes.raw.timeframes).flatMap((series) => [
+    ...series.completedBars,
+    ...(series.formingBar ? [series.formingBar] : []),
+  ]);
+  const calendarYears = new Set([
+    ...effectiveSessions,
+    ...publishedBars.flatMap((bar) => [bar.periodStart, bar.periodEnd]),
+  ].map((date) => date.slice(0, 4)));
   const manifestWithoutHash = {
     schemaVersion: 1,
     snapshotVersion: 4,
@@ -269,7 +330,8 @@ export function createBrowserMarketFixture(
     calendar: {
       sourceUrl: twseOfficialFixtureSource,
       validThrough: calendarValidThrough,
-      holidayDates: [...new Set(effectiveSessions.map((session) => `${session.slice(0, 4)}-01-01`))].sort(),
+      // 補齊預先聚合舊週／月 K 的年度覆蓋，讓前端可在載入時驗證其自然週與曆月範圍。
+      holidayDates: [...calendarYears].sort().map((year) => `${year}-01-01`),
       emergencyClosureEvidence: {
         schemaVersion: 1,
         closures: [],
