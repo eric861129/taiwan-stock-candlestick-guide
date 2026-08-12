@@ -1,7 +1,9 @@
 import type { PriceMode, Timeframe } from '../market-data/types';
 import { STRUCTURE_ENGINE_CONFIG, STRUCTURE_MATCHER_VERSION } from './config';
+import { CONTINUATION_STRUCTURE_CONFIG, evaluateContinuationStructures } from './continuation';
 import { extractStructureFeatures, isValidStructureBar } from './features';
 import { buildStructureOverlay } from './overlay';
+import { matchReversalStructures, REVERSAL_STRUCTURE_CONFIG } from './reversal';
 import type {
   AnalyzeStructuresOptions,
   IndexedStructureBar,
@@ -12,6 +14,8 @@ import type {
   StructureDirection,
   StructureEngineConfig,
   StructureNearMiss,
+  StructureOverlay,
+  StructureOverlaySegment,
   StructurePivot,
   StructureRuleEvaluation,
   StructureStatus,
@@ -28,7 +32,7 @@ interface PreparedInput {
 }
 
 interface CandidateDraft {
-  structureId: 'range' | 'triangle-consolidation';
+  structureId: StructureCandidate['structureId'];
   anchors: readonly StructurePivot[];
   boundaries: readonly StructureBoundary[];
   window: StructureWindow;
@@ -37,6 +41,9 @@ interface CandidateDraft {
   direction: StructureDirection;
   confirmationCondition: string;
   invalidationCondition: string;
+  ruleFit?: number;
+  overlaySegments?: readonly StructureOverlaySegment[];
+  scenarioConditions?: NonNullable<StructureOverlay['scenario']>['conditions'];
 }
 
 interface BoundaryStatus {
@@ -309,13 +316,15 @@ function candidateFromDraft(
     anchors: draft.anchors,
     status: draft.status as Extract<StructureStatus, 'forming' | 'confirmed'>,
     direction: draft.direction,
+    ...(draft.overlaySegments ? { segments: draft.overlaySegments } : {}),
+    ...(draft.scenarioConditions ? { scenarioConditions: draft.scenarioConditions } : {}),
   });
   return {
     candidateId,
     structureId: draft.structureId,
     timeframe: prepared.timeframe,
     priceMode: prepared.priceMode,
-    ruleFit: fit,
+    ruleFit: draft.ruleFit ?? fit,
     geometryCompleteness,
     dataCompleteness: 100,
     status: draft.status as Extract<StructureStatus, 'forming' | 'confirmed'>,
@@ -534,6 +543,177 @@ function buildTriangleDraft(
   return draft;
 }
 
+function sourceIndexAt(bars: readonly IndexedStructureBar[], localIndex: number): number {
+  return bars[localIndex]?.sourceIndex ?? localIndex;
+}
+
+function sourcePivot(
+  pivot: StructurePivot,
+  bars: readonly IndexedStructureBar[],
+): StructurePivot {
+  return { ...pivot, barIndex: sourceIndexAt(bars, pivot.barIndex) };
+}
+
+function sourceBoundary(
+  boundary: StructureBoundary,
+  bars: readonly IndexedStructureBar[],
+): StructureBoundary {
+  const startBarIndex = sourceIndexAt(bars, boundary.startBarIndex);
+  const endBarIndex = sourceIndexAt(bars, boundary.endBarIndex);
+  const denominator = endBarIndex - startBarIndex;
+  const slopePerBar = denominator === 0 ? 0 : (boundary.endPrice - boundary.startPrice) / denominator;
+  return {
+    ...boundary,
+    startBarIndex,
+    endBarIndex,
+    slopePerBar,
+    intercept: boundary.startPrice - slopePerBar * startBarIndex,
+    touchBarIndexes: boundary.touchBarIndexes.map((index) => sourceIndexAt(bars, index)),
+  };
+}
+
+function sourceWindow(
+  window: StructureWindow,
+  bars: readonly IndexedStructureBar[],
+): StructureWindow {
+  return {
+    ...window,
+    startBarIndex: sourceIndexAt(bars, window.startBarIndex),
+    endBarIndex: sourceIndexAt(bars, window.endBarIndex),
+  };
+}
+
+function sourceSegment(
+  segment: StructureOverlaySegment,
+  bars: readonly IndexedStructureBar[],
+): StructureOverlaySegment {
+  return {
+    ...segment,
+    startBarIndex: sourceIndexAt(bars, segment.startBarIndex),
+    endBarIndex: sourceIndexAt(bars, segment.endBarIndex),
+  };
+}
+
+function buildReversalDrafts(
+  bars: readonly IndexedStructureBar[],
+  pivots: readonly StructurePivot[],
+  atrValues: readonly (number | null)[],
+): readonly (CandidateDraft | StructureNearMiss)[] {
+  const localBySource = new Map(bars.map((entry, index) => [entry.sourceIndex, index]));
+  const localPivots = pivots.flatMap((pivot) => {
+    const localIndex = localBySource.get(pivot.barIndex);
+    return localIndex === undefined ? [] : [{ ...pivot, barIndex: localIndex }];
+  });
+  const results = matchReversalStructures({
+    bars: bars.map((entry) => entry.bar),
+    pivots: localPivots,
+    atrValues,
+    cutoffBarIndex: bars.length - 1,
+  });
+
+  return results.map((result): CandidateDraft | StructureNearMiss => {
+    const window = result.window ? sourceWindow(result.window, bars) : undefined;
+    const anchors = result.anchors.map((anchor) => sourcePivot(anchor, bars));
+    const boundaries = result.boundaries.map((boundary) => sourceBoundary(boundary, bars));
+    const overlaySegments = result.overlaySegments.map((segment) => sourceSegment(segment, bars));
+    if (result.status === 'invalid' || result.status === 'insufficient-evidence' || !window) {
+      return {
+        structureId: result.structureId,
+        status: result.status === 'invalid' ? 'invalid' : 'insufficient-evidence',
+        ruleFit: result.ruleFit,
+        missingConditions: result.missingConditions,
+        ...(window ? { window } : {}),
+        ...(window && anchors.length > 0
+          ? {
+            anchors,
+            boundaries,
+            confirmationCondition: result.confirmationCondition,
+            invalidationCondition: result.invalidationCondition,
+            overlay: buildStructureOverlay({
+              candidateId: `reference:${result.candidateId}`,
+              window,
+              boundaries,
+              anchors,
+              status: 'forming',
+              direction: 'undetermined',
+              segments: overlaySegments,
+            }),
+          }
+          : {}),
+        evaluations: result.evaluations,
+      };
+    }
+
+    const topPattern = result.structureId === 'double-top' || result.structureId === 'head-and-shoulders-top';
+    return {
+      structureId: result.structureId,
+      anchors,
+      boundaries,
+      window,
+      evaluations: result.evaluations,
+      status: result.status,
+      direction: result.direction,
+      confirmationCondition: result.confirmationCondition,
+      invalidationCondition: result.invalidationCondition,
+      ruleFit: result.ruleFit,
+      overlaySegments,
+      ...(result.status === 'confirmed'
+        ? {
+          scenarioConditions: [
+            { kind: 'continuation', label: '延續情境', condition: topPattern ? '後續完成 K 棒仍收在頸線下方。' : '後續完成 K 棒仍收在頸線上方。' },
+            { kind: 'retest', label: '回測情境', condition: '價格回測頸線後，以完成 K 棒重新守住確認方向。' },
+            { kind: 'invalidation', label: '失效情境', condition: topPattern ? '完成 K 棒重新站回頸線上方。' : '完成 K 棒重新跌回頸線下方。' },
+          ],
+        }
+        : {}),
+    };
+  });
+}
+
+function buildContinuationDrafts(
+  bars: readonly IndexedStructureBar[],
+): readonly (CandidateDraft | StructureNearMiss)[] {
+  return evaluateContinuationStructures({ bars }).map((result): CandidateDraft | StructureNearMiss => {
+    if (result.status === 'invalid' || result.status === 'insufficient-evidence' || !result.window) {
+      return nearMiss(
+        result.structureId,
+        result.status === 'invalid' ? 'invalid' : 'insufficient-evidence',
+        result.evaluations,
+        result.window,
+      );
+    }
+
+    return {
+      structureId: result.structureId,
+      anchors: result.anchors,
+      boundaries: result.boundaries,
+      window: result.window,
+      evaluations: result.evaluations,
+      status: result.status,
+      direction: result.direction,
+      confirmationCondition: result.confirmationCondition,
+      invalidationCondition: result.invalidationCondition,
+      overlaySegments: result.segments,
+      ...(result.scenarios ? { scenarioConditions: result.scenarios } : {}),
+    };
+  });
+}
+
+function minimumFitFor(
+  structureId: StructureCandidate['structureId'],
+  config: StructureEngineConfig,
+): number {
+  if (structureId === 'range') return config.box.minimumRuleFit;
+  if (structureId === 'triangle-consolidation') return config.triangle.minimumRuleFit;
+  if (
+    structureId === 'double-top'
+    || structureId === 'double-bottom'
+    || structureId === 'head-and-shoulders-top'
+    || structureId === 'head-and-shoulders-bottom'
+  ) return REVERSAL_STRUCTURE_CONFIG.minimumRuleFit;
+  return CONTINUATION_STRUCTURE_CONFIG.minimumRuleFit;
+}
+
 function rank(candidates: readonly StructureCandidate[]): readonly StructureCandidate[] {
   return [...candidates]
     .sort((left, right) => (
@@ -601,6 +781,8 @@ export function analyzeStructures(
       new Map(prepared.bars.map((entry, index) => [entry.sourceIndex, features.atr.values[index] ?? null])),
       config,
     ),
+    ...buildReversalDrafts(prepared.bars, features.pivots, features.atr.values),
+    ...buildContinuationDrafts(prepared.bars),
   ];
   const candidates: StructureCandidate[] = [];
   const nearMisses: StructureNearMiss[] = [];
@@ -610,13 +792,13 @@ export function analyzeStructures(
       nearMisses.push(draft);
       return;
     }
-    const minimumFit = draft.structureId === 'range' ? config.box.minimumRuleFit : config.triangle.minimumRuleFit;
+    const minimumFit = minimumFitFor(draft.structureId, config);
     // 已發生的確認後返回屬於歷史失效事實；不能因後續 K 棒改變形成期幾何而被洗成一般資料不足。
     if (draft.status === 'invalid') {
       nearMisses.push(nearMiss(draft.structureId, 'invalid', draft.evaluations, draft.window));
       return;
     }
-    if (!requiredMet(draft.evaluations) || score(draft.evaluations) < minimumFit) {
+    if (!requiredMet(draft.evaluations) || (draft.ruleFit ?? score(draft.evaluations)) < minimumFit) {
       nearMisses.push(nearMiss(draft.structureId, 'insufficient-evidence', draft.evaluations, draft.window));
       return;
     }

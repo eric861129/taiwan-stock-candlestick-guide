@@ -19,8 +19,12 @@ test.describe('型態卡目錄', () => {
     await expect(firstCard.locator('[data-card-side="back"]')).toBeVisible();
     await expect(flipButton).toBeFocused();
 
-    await page.getByLabel('第一版支援範圍').selectOption('mvp');
+    await page.getByLabel('自動比對支援範圍').selectOption('short-window');
     await expect(resultCount).toHaveText('目前顯示 17 張型態卡。');
     await expect(cards).toHaveCount(17);
+
+    await page.getByLabel('自動比對支援範圍').selectOption('structure');
+    await expect(resultCount).toHaveText('目前顯示 9 張型態卡。');
+    await expect(cards).toHaveCount(9);
   });
 });

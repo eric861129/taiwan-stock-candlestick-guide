@@ -36,9 +36,11 @@ const supportLabel = computed(() => {
       : 'TA-Lib 官方函式只供教學查閱，第一版不執行此函式的自動辨識';
   }
 
-  switch (props.card.matchSupport) {
-    case 'mvp':
-      return '第一版可參與自動比對';
+  switch (props.card.automationSupport) {
+    case 'short-window':
+      return '短窗規則可參與自動比對';
+    case 'structure':
+      return '結構引擎可參與自動比對';
     case 'guardrail':
       return '守門提醒：第一版不參與自動比對';
     default:

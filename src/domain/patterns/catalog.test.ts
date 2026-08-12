@@ -212,8 +212,19 @@ describe('canonical Pattern Card catalog', () => {
     }
   });
 
-  it('labels unsupported structural cards as catalog-only and evidence protections as guardrails', () => {
+  it('keeps legacy structural cards catalog-only while exposing the nine implemented structures through the explicit automation contract', () => {
     expect(PATTERN_CARDS.filter((card) => card.category === '結構型態').every((card) => card.matchSupport === 'catalog-only')).toBe(true);
+    expect(PATTERN_CARDS.filter((card) => card.automationSupport === 'structure').map((card) => card.id)).toEqual([
+      'range',
+      'triangle-consolidation',
+      'flag-consolidation',
+      'double-top',
+      'double-bottom',
+      'head-and-shoulders-top',
+      'head-and-shoulders-bottom',
+      'false-breakout',
+      'rounding-top',
+    ]);
 
     const guardrailCards = PATTERN_CARDS.filter((card) => card.matchSupport === 'guardrail');
     expect(guardrailCards.map((card) => card.id)).toEqual([
@@ -268,7 +279,7 @@ describe('canonical Pattern Card catalog', () => {
     });
     expect(getPatternCard('range')).toMatchObject({
       kind: 'chart-pattern',
-      automationSupport: 'teaching-only',
+      automationSupport: 'structure',
       matchSupport: 'catalog-only',
     });
     expect(getPatternCard('volume-expansion')).toMatchObject({
@@ -286,7 +297,8 @@ describe('canonical Pattern Card catalog', () => {
 
     expect(cards.every((card) => card.collections.includes('price-structure'))).toBe(true);
     expect(cards.every((card) => card.kind === 'chart-pattern')).toBe(true);
-    expect(cards.every((card) => card.automationSupport === 'teaching-only')).toBe(true);
+    expect(cards.find((card) => card.id === 'rounding-top')?.automationSupport).toBe('structure');
+    expect(cards.filter((card) => card.id !== 'rounding-top').every((card) => card.automationSupport === 'teaching-only')).toBe(true);
     expect(cards.every((card) => card.matchSupport === 'catalog-only')).toBe(true);
 
     for (const card of cards) {

@@ -211,7 +211,7 @@ describe('analyzeStructures', () => {
     expect(analyzeStructures(snapshot(confirmedBars)).candidates.find((item) => item.structureId === 'range')?.status).toBe('confirmed');
     const invalid = analyzeStructures(snapshot(invalidBars));
 
-    expect(invalid.candidates).toEqual([]);
+    expect(invalid.candidates.some((item) => item.structureId === 'range')).toBe(false);
     expect(invalid.nearMisses).toEqual(expect.arrayContaining([
       expect.objectContaining({ structureId: 'range', status: 'invalid' }),
     ]));
@@ -246,5 +246,75 @@ describe('analyzeStructures', () => {
 
     expect(analyzeStructures(snapshot(incomplete)).status).toBe('insufficient-evidence');
     expect(analyzeStructures(snapshot(malformed)).status).toBe('insufficient-evidence');
+  });
+
+  it('integrates a confirmed double top after the 120-bar slice without confusing source and local indexes', () => {
+    const dated = (index: number, close: number): OhlcvBar => ({
+      ...bar(index % 28, close + 1, close - 1, close),
+      date: new Date(Date.UTC(2025, 0, index + 1)).toISOString().slice(0, 10),
+    });
+    const prefix = Array.from({ length: 116 }, (_value, index) => dated(index, 100 + (index % 2) * 0.1));
+    const pattern = [100, 104, 109, 105, 100, 104, 109.4, 106, 101.5, 95]
+      .map((close, index) => dated(prefix.length + index, close));
+    const result = analyzeStructures(snapshot([...prefix, ...pattern]));
+    const candidate = result.candidates.find((item) => item.structureId === 'double-top');
+
+    expect(candidate).toMatchObject({ status: 'confirmed', direction: 'down' });
+    expect(candidate?.anchors.every((anchor) => anchor.barIndex >= 116)).toBe(true);
+    expect(candidate?.overlay.segments.some((segment) => segment.kind === 'confirmation')).toBe(true);
+    expect(candidate?.overlay.segments.some((segment) => segment.kind === 'invalidation')).toBe(true);
+  });
+
+  it.each([
+    ['flag-consolidation', [100, 102, 104.5, 107, 110, 109.6, 109.2, 109.4, 109, 108.8, 109.1, 110.5]],
+    ['false-breakout', [100, 100.4, 99.8, 100.2, 99.9, 100.3, 100.1, 99.7, 102, 100.5, 100.2]],
+    ['rounding-top', [
+      100, 101, 102.2, 103.4, 104.5, 105.4, 106.2,
+      106.8, 107.2, 107.5, 107.6, 107.5, 107.3, 106.9,
+      106.3, 105.6, 104.8, 104, 103.2, 102.5, 101.8, 99.5,
+    ]],
+  ] as const)('integrates the confirmed %s core into ranked candidates with three conditional scenarios', (structureId, closes) => {
+    const bars = closes.map((close, index) => bar(index, close + 0.6, close - 0.6, close));
+    const candidate = analyzeStructures(snapshot(bars)).candidates.find((item) => item.structureId === structureId);
+
+    expect(candidate).toMatchObject({ structureId, status: 'confirmed' });
+    expect(candidate?.overlay.scenario?.conditions?.map((condition) => condition.kind)).toEqual([
+      'continuation',
+      'retest',
+      'invalidation',
+    ]);
+    expect(candidate?.overlay.segments.some((segment) => segment.kind === 'confirmation')).toBe(true);
+    expect(candidate?.overlay.segments.some((segment) => segment.kind === 'invalidation')).toBe(true);
+  });
+
+  it('keeps an invalid reversal as an explainable historical reference with anchors, neckline, and thresholds', () => {
+    const closes = [100, 104, 109, 105, 100, 104, 109.4, 106, 101.5, 95, 102];
+    const bars = closes.map((close, index) => bar(index, close + 1, close - 1, close));
+    const reference = analyzeStructures(snapshot(bars)).nearMisses.find((item) => item.structureId === 'double-top');
+
+    expect(reference).toMatchObject({ status: 'invalid' });
+    expect(reference?.anchors?.length).toBeGreaterThanOrEqual(3);
+    expect(reference?.boundaries?.[0]).toMatchObject({ id: 'lower' });
+    expect(reference?.confirmationCondition).toContain('頸線');
+    expect(reference?.invalidationCondition).toContain('頸線');
+    expect(reference?.overlay?.segments.some((segment) => segment.kind === 'confirmation')).toBe(true);
+    expect(reference?.overlay?.segments.some((segment) => segment.kind === 'invalidation')).toBe(true);
+  });
+
+  it.each([
+    ['false-breakout', [100, 100.4, 99.8, 100.2, 99.9, 100.3, 100.1, 99.7, 102]],
+    ['rounding-top', [
+      100, 101, 102.2, 103.4, 104.5, 105.4, 106.2,
+      106.8, 107.2, 107.5, 107.6, 107.5, 107.3, 106.9,
+      106.3, 105.6, 104.8, 104, 103.2, 102.5, 101.8,
+    ]],
+  ] as const)('keeps a forming %s in candidates so its confirmation and invalidation lines remain inspectable', (structureId, closes) => {
+    const bars = closes.map((close, index) => bar(index, close + 0.6, close - 0.6, close));
+    const candidate = analyzeStructures(snapshot(bars)).candidates.find((item) => item.structureId === structureId);
+
+    expect(candidate).toMatchObject({ structureId, status: 'forming', direction: 'undetermined' });
+    expect(candidate?.overlay.scenario).toBeUndefined();
+    expect(candidate?.overlay.segments.some((segment) => segment.kind === 'confirmation')).toBe(true);
+    expect(candidate?.overlay.segments.some((segment) => segment.kind === 'invalidation')).toBe(true);
   });
 });

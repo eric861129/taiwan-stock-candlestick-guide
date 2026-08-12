@@ -15,6 +15,12 @@ const STRUCTURE_LIMITATIONS = [
   '本站目前只提供教學比對；在規則族、正反案例與誤判邊界完成前，不參與自動排行。',
 ] as const;
 
+const AUTOMATED_STRUCTURE_LIMITATIONS = [
+  '型態名稱只協助整理可觀察條件，不構成未來價格保證或任何交易建議。',
+  '轉折點、區域寬度與邊界使用固定且版本化規則，不能為了貼合圖形事後移動。',
+  '圓弧頂只在跨度、斜率變化、曲率、殘差與支撐條件通過時列為候選；單一尖峰不會補入。',
+] as const;
+
 type StructureCardInput = Omit<PatternCardInput, 'slug' | 'category' | 'matchSupport' | 'lessonLinks'>;
 
 function structureCard(definition: StructureCardInput): PatternCardInput {
@@ -30,6 +36,7 @@ function structureCard(definition: StructureCardInput): PatternCardInput {
 export const ADDITIONAL_STRUCTURE_CARD_DEFINITIONS: readonly PatternCardInput[] = [
   structureCard({
     id: 'rounding-top',
+    automationSupport: 'structure',
     nameZhTw: '圓弧頂',
     nameEn: 'Rounding top',
     aliases: ['碟形頂', '圓頂'],
@@ -42,7 +49,7 @@ export const ADDITIONAL_STRUCTURE_CARD_DEFINITIONS: readonly PatternCardInput[] 
     confirmationGuidance: ['收盤有效跌破事前建立的支撐區或弧形基準後，才把輪廓標為已確認。'],
     commonMisreads: ['要求每根價格形成完美拋物線。', '把單一尖峰後回落稱為圓弧頂。'],
     invalidationGuidance: ['斜率沒有由正轉平再轉負、輪廓主要由少數異常 K 棒造成，或價格重新站回失效區時不成立。'],
-    limitations: STRUCTURE_LIMITATIONS,
+    limitations: AUTOMATED_STRUCTURE_LIMITATIONS,
   }),
   structureCard({
     id: 'rounding-bottom',

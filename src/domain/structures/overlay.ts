@@ -15,6 +15,8 @@ export interface StructureOverlayInput {
   anchors: readonly StructurePivot[];
   status: Extract<StructureStatus, 'forming' | 'confirmed'>;
   direction: StructureDirection;
+  segments?: StructureOverlay['segments'];
+  scenarioConditions?: NonNullable<StructureOverlay['scenario']>['conditions'];
 }
 
 function anchorLabel(anchor: StructurePivot): string {
@@ -62,11 +64,15 @@ function outlineSegments(anchors: readonly StructurePivot[]): StructureOverlay['
  * 將已判斷的候選轉成圖表資料座標。所有狀態及方向均由呼叫端傳入，這裡不包含任何 matcher 規則。
  */
 export function buildStructureOverlay(input: StructureOverlayInput): StructureOverlay {
-  const segments = [...boundarySegments(input.boundaries), ...outlineSegments(input.anchors)];
+  const segments = input.segments
+    ? [...input.segments]
+    : input.status === 'forming'
+      ? []
+      : [...boundarySegments(input.boundaries), ...outlineSegments(input.anchors)];
   const upper = input.boundaries.find((boundary) => boundary.id === 'upper');
   const lower = input.boundaries.find((boundary) => boundary.id === 'lower');
 
-  if (input.status === 'forming') {
+  if (!input.segments && input.status === 'forming') {
     ([
       [upper, 'up', lower],
       [lower, 'down', upper],
@@ -96,7 +102,7 @@ export function buildStructureOverlay(input: StructureOverlayInput): StructureOv
         });
       }
     });
-  } else if (input.direction !== 'undetermined') {
+  } else if (!input.segments && input.direction !== 'undetermined') {
     const confirmationBoundary = input.direction === 'up' ? upper : lower;
     const invalidationBoundary = input.direction === 'up' ? lower : upper;
     if (confirmationBoundary) {
@@ -142,6 +148,7 @@ export function buildStructureOverlay(input: StructureOverlayInput): StructureOv
           label: '條件式情境，非價格預測' as const,
           direction: input.direction,
           boundaryId: input.direction === 'up' ? 'upper' as const : 'lower' as const,
+          ...(input.scenarioConditions ? { conditions: input.scenarioConditions } : {}),
         },
       }
       : {}),

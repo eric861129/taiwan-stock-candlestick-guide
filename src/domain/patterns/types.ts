@@ -150,7 +150,7 @@ export type PatternCategory =
   | '結構型態'
   | '量價、流動性與守門';
 
-/** 第一版的自動比對支援範圍。 */
+/** 目前站內可用的自動比對層級。 */
 export type MatchSupport = 'mvp' | 'catalog-only' | 'guardrail';
 
 /** 第一版可比對卡共用的規則族。 */
@@ -234,7 +234,7 @@ export interface PatternCardDefinition {
 export type PatternCardInput = Omit<
   PatternCardDefinition,
   'slug' | 'collections' | 'kind' | 'automationSupport' | 'talibFunction'
-> & { slug?: string };
+> & { slug?: string; automationSupport?: AutomationSupport };
 
 /** SVG 圖例可重用的 K 線資料。 */
 export interface CandleIllustrationPrimitive {

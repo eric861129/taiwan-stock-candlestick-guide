@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import {
-  MATCH_SUPPORTS,
+  AUTOMATION_SUPPORTS,
   PATTERN_CARDS,
   PATTERN_CATEGORIES,
   getPatternCardsByCollection,
 } from '../domain/patterns/catalog';
 import type {
-  MatchSupport,
+  AutomationSupport,
   PatternCategory,
   PatternCollectionId,
   PatternDirection,
@@ -25,7 +25,7 @@ const props = withDefaults(
 );
 
 const selectedCategory = ref<PatternCategory | 'all'>('all');
-const selectedSupport = ref<MatchSupport | 'all'>('all');
+const selectedSupport = ref<AutomationSupport | 'all'>('all');
 const query = ref('');
 const selectedBars = ref<'all' | `${number}`>('all');
 const selectedDirection = ref<PatternDirection | 'all'>('all');
@@ -60,7 +60,7 @@ const filteredCards = computed(() => {
     return (
       (!normalizedQuery || searchableText.includes(normalizedQuery)) &&
       (selectedCategory.value === 'all' || card.category === selectedCategory.value) &&
-      (selectedSupport.value === 'all' || card.matchSupport === selectedSupport.value) &&
+      (selectedSupport.value === 'all' || card.automationSupport === selectedSupport.value) &&
       matchesBars &&
       (!isTalibCollection.value || selectedDirection.value === 'all' || card.patternDirection === selectedDirection.value) &&
       (!isTalibCollection.value || selectedPurpose.value === 'all' || card.patternPurpose === selectedPurpose.value)
@@ -72,11 +72,13 @@ const heading = computed(() =>
   collectionDefinition.value?.nameZhTw ?? (props.mode === 'reference' ? '型態卡速查' : '型態卡目錄'),
 );
 
-function supportOptionLabel(support: MatchSupport): string {
+function supportOptionLabel(support: AutomationSupport): string {
   switch (support) {
-    case 'mvp':
-      return '第一版可比對';
-    case 'catalog-only':
+    case 'short-window':
+      return '短窗規則可比對';
+    case 'structure':
+      return '結構引擎可比對';
+    case 'teaching-only':
       return '教學卡，尚不比對';
     default:
       return '守門提醒，尚不比對';
@@ -109,7 +111,7 @@ const purposeOptions: readonly { value: PatternPurpose; label: string }[] = [
       {{ heading }}
     </h2>
     <p>
-      {{ collectionDefinition?.description ?? '卡片先整理可觀察條件、背景與失效方式；第一版只比對標示為「第一版可比對」的 17 張短窗卡，其他卡不會被假裝成自動結果。' }}
+      {{ collectionDefinition?.description ?? '卡片先整理可觀察條件、背景與失效方式；短窗規則與價格結構引擎分開比對，教學卡不會被假裝成自動結果。' }}
     </p>
 
     <form
@@ -142,14 +144,14 @@ const purposeOptions: readonly { value: PatternPurpose; label: string }[] = [
         </select>
       </label>
       <label>
-        第一版支援範圍
+        自動比對支援範圍
         <select
           v-model="selectedSupport"
           name="match-support"
         >
           <option value="all">全部範圍</option>
           <option
-            v-for="support in MATCH_SUPPORTS"
+            v-for="support in AUTOMATION_SUPPORTS"
             :key="support"
             :value="support"
           >{{ supportOptionLabel(support) }}</option>
@@ -222,7 +224,7 @@ const purposeOptions: readonly { value: PatternPurpose; label: string }[] = [
       v-else
       class="pattern-catalog__empty"
     >
-      沒有符合這組篩選條件的型態卡。請調整分類或第一版支援範圍。
+      沒有符合這組篩選條件的型態卡。請調整分類或自動比對支援範圍。
     </p>
   </section>
 </template>

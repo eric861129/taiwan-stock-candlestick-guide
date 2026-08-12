@@ -1,6 +1,6 @@
 import { mount } from '@vue/test-utils';
 import { describe, expect, it } from 'vitest';
-import { PATTERN_CARDS } from '../domain/patterns/catalog';
+import { getPatternCard, PATTERN_CARDS } from '../domain/patterns/catalog';
 import PatternCard from './PatternCard.vue';
 import PatternCatalog from './PatternCatalog.vue';
 
@@ -30,7 +30,7 @@ describe('Pattern Card interactions', () => {
 
   it('gives catalog-only and guardrail cards an explicit first-release matcher limit', () => {
     const catalogOnly = mount(PatternCard, {
-      props: { card: PATTERN_CARDS.find((card) => card.id === 'range')! },
+      props: { card: PATTERN_CARDS.find((card) => card.id === 'rounding-bottom')! },
     });
     const guardrail = mount(PatternCard, {
       props: { card: PATTERN_CARDS.find((card) => card.id === 'insufficient-evidence')! },
@@ -41,6 +41,13 @@ describe('Pattern Card interactions', () => {
     expect(guardrail.text()).toContain('守門提醒');
   });
 
+  it('labels structures implemented by the long-window engine as automatically comparable', () => {
+    const wrapper = mount(PatternCard, { props: { card: getPatternCard('range') } });
+
+    expect(wrapper.text()).toContain('結構引擎可參與自動比對');
+    expect(wrapper.text()).not.toContain('不參與自動比對');
+  });
+
   it('filters by category and support while announcing the result count', async () => {
     const wrapper = mount(PatternCatalog);
 
@@ -48,15 +55,15 @@ describe('Pattern Card interactions', () => {
     expect(wrapper.findAll('h1')).toHaveLength(0);
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('96');
 
-    await wrapper.get('select[name="match-support"]').setValue('mvp');
+    await wrapper.get('select[name="match-support"]').setValue('short-window');
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('17');
 
     await wrapper.get('select[name="category"]').setValue('結構型態');
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('0');
 
-    await wrapper.get('select[name="match-support"]').setValue('catalog-only');
-    expect(wrapper.get('[aria-live="polite"]').text()).toContain('22');
-    expect(wrapper.findAll('article').length).toBe(22);
+    await wrapper.get('select[name="match-support"]').setValue('structure');
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('9');
+    expect(wrapper.findAll('article').length).toBe(9);
   });
 
   it('shows one collection without cloning canonical card content', () => {
@@ -75,7 +82,7 @@ describe('Pattern Card interactions', () => {
       props: { card: PATTERN_CARDS.find((card) => card.id === 'rounding-top')! },
     });
 
-    expect(wrapper.text()).toContain('教學卡：第一版不參與自動比對');
+    expect(wrapper.text()).toContain('結構引擎可參與自動比對');
     await wrapper.get('button').trigger('click');
     expect(wrapper.text()).toContain('確認方式');
     expect(wrapper.text()).toContain('收盤有效跌破');

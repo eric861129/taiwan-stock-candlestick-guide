@@ -80,7 +80,11 @@ const overlayDescription = computed(() => {
   const overlay = displayedStructureOverlay.value;
   if (!overlay) return '未選擇價格結構疊線。';
   const anchors = overlay.anchors.map((anchor) => anchor.label).join('；');
-  const scenario = overlay.scenario ? `；${overlay.scenario.label}` : '';
+  const scenario = overlay.scenario
+    ? `；${overlay.scenario.label}${overlay.scenario.conditions?.length
+      ? `：${overlay.scenario.conditions.map((condition) => `${condition.label} ${condition.condition}`).join('；')}`
+      : ''}`
+    : '';
   return `目前疊線為 ${overlay.candidateId}，形成區間 ${overlay.window.startDate} 至 ${overlay.window.endDate}；${anchors}${scenario}。`;
 });
 

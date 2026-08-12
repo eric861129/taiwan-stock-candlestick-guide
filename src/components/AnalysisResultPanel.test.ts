@@ -104,8 +104,8 @@ describe('AnalysisResultPanel guided rendering', () => {
         ruleFit: 90,
         geometryCompleteness: 100,
         dataCompleteness: 100,
-        status: 'forming',
-        direction: 'undetermined',
+        status: 'confirmed',
+        direction: 'up',
         window: { version: 'structure-window-v1', startBarIndex: 0, endBarIndex: 10, startDate: '2026-08-01', endDate: '2026-08-11', barCount: 11 },
         anchors: [],
         boundaries: [],
@@ -119,6 +119,15 @@ describe('AnalysisResultPanel guided rendering', () => {
           window: { version: 'structure-window-v1', startBarIndex: 0, endBarIndex: 10, startDate: '2026-08-01', endDate: '2026-08-11', barCount: 11 },
           segments: [],
           anchors: [],
+          scenario: {
+            label: '條件式情境，非價格預測',
+            direction: 'up',
+            conditions: [
+              { kind: 'continuation', label: '延續情境', condition: '完成 K 棒仍守在確認邊界外。' },
+              { kind: 'retest', label: '回測情境', condition: '回測後重新守住確認邊界。' },
+              { kind: 'invalidation', label: '失效情境', condition: '完成 K 棒返回原整理區。' },
+            ],
+          },
         },
       }],
       nearMisses: [{
@@ -141,6 +150,10 @@ describe('AnalysisResultPanel guided rendering', () => {
 
     expect(wrapper.text()).toContain('價格結構候選');
     expect(wrapper.text()).toContain('規則符合度 90');
+    expect(wrapper.text()).toContain('條件式情境，非價格預測');
+    expect(wrapper.text()).toContain('延續情境：完成 K 棒仍守在確認邊界外。');
+    expect(wrapper.text()).toContain('回測情境：回測後重新守住確認邊界。');
+    expect(wrapper.text()).toContain('失效情境：完成 K 棒返回原整理區。');
     expect(wrapper.text()).toContain('接近但未成立的教學參考');
     expect(wrapper.get('details[data-short-window-observations]').attributes('open')).toBeUndefined();
     await wrapper.get('[data-structure-candidate]').trigger('click');

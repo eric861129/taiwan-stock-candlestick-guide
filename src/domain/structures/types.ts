@@ -2,7 +2,17 @@ import type { OhlcvBar, PriceMode, StockSnapshot, Timeframe } from '../market-da
 import type { PatternCardId } from '../patterns/types';
 
 /** 首批可由結構引擎自動比對的正規價格結構卡。 */
-export type StructureId = Extract<PatternCardId, 'range' | 'triangle-consolidation'>;
+export type StructureId = Extract<PatternCardId,
+  | 'range'
+  | 'triangle-consolidation'
+  | 'flag-consolidation'
+  | 'double-top'
+  | 'double-bottom'
+  | 'head-and-shoulders-top'
+  | 'head-and-shoulders-bottom'
+  | 'false-breakout'
+  | 'rounding-top'
+>;
 
 /** 價格結構在指定資料截止日的可觀察狀態。 */
 export type StructureStatus = 'forming' | 'confirmed' | 'invalid' | 'insufficient-evidence';
@@ -81,7 +91,12 @@ export interface StructureOverlayAnchor {
 export interface StructureScenarioOverlay {
   label: '條件式情境，非價格預測';
   direction: Exclude<StructureDirection, 'undetermined'>;
-  boundaryId: 'upper' | 'lower';
+  boundaryId?: 'upper' | 'lower';
+  conditions?: readonly {
+    kind: 'continuation' | 'retest' | 'invalidation';
+    label: string;
+    condition: string;
+  }[];
 }
 
 /** 單一候選可畫到 K 線圖上的一套疊線。 */
@@ -122,6 +137,11 @@ export interface StructureNearMiss {
   ruleFit: number;
   missingConditions: readonly string[];
   window?: StructureWindow;
+  anchors?: readonly StructurePivot[];
+  boundaries?: readonly StructureBoundary[];
+  confirmationCondition?: string;
+  invalidationCondition?: string;
+  overlay?: StructureOverlay;
   evaluations: readonly StructureRuleEvaluation[];
 }
 

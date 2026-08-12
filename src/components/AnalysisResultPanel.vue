@@ -308,6 +308,21 @@ function selectStructureCandidate(candidate: StructureCandidate): void {
             <p>形成區間：{{ candidate.window.startDate }} 至 {{ candidate.window.endDate }}（{{ candidate.window.barCount }} 根）。{{ structureDirectionLabel(candidate) }}。</p>
             <p>確認條件：{{ candidate.confirmationCondition }}</p>
             <p>失效條件：{{ candidate.invalidationCondition }}</p>
+            <section
+              v-if="candidate.overlay.scenario?.conditions?.length"
+              class="analysis-result-panel__scenario-conditions"
+              aria-label="確認後的三種條件式情境"
+            >
+              <p>{{ candidate.overlay.scenario.label }}：</p>
+              <ul>
+                <li
+                  v-for="condition in candidate.overlay.scenario.conditions"
+                  :key="condition.kind"
+                >
+                  {{ condition.label }}：{{ condition.condition }}
+                </li>
+              </ul>
+            </section>
             <button
               type="button"
               data-structure-candidate
@@ -334,6 +349,9 @@ function selectStructureCandidate(candidate: StructureCandidate): void {
               :key="`${nearMiss.structureId}-${nearMiss.status}`"
             >
               {{ nearMissLabel(nearMiss) }}：{{ getPatternCard(nearMiss.structureId).nameZhTw }}；缺少條件：{{ nearMiss.missingConditions.join('、') }}。
+              <template v-if="nearMiss.window && nearMiss.confirmationCondition && nearMiss.invalidationCondition">
+                參考區間 {{ nearMiss.window.startDate }} 至 {{ nearMiss.window.endDate }}；確認條件：{{ nearMiss.confirmationCondition }}；失效條件：{{ nearMiss.invalidationCondition }}
+              </template>
             </li>
           </ul>
         </section>
