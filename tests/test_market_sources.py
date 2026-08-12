@@ -327,6 +327,29 @@ class OfficialFetchBoundaryTests(unittest.TestCase):
 
         self.assertEqual(("TWSE", date(2025, 1, 1)), (raised.exception.market, raised.exception.trading_date))
 
+    def test_tpex_historical_fetch_marks_a_matching_zero_count_table_as_a_closed_market_date(self) -> None:
+        """TPEx 休市日會回傳日期與欄位完整的零筆表格，不能誤判為來源故障。"""
+
+        payload = {
+            "stat": "ok",
+            "date": "20160708",
+            "tables": [
+                {
+                    "date": "105/07/08",
+                    "totalCount": 0,
+                    "fields": ["代號", "名稱", "收盤", "開盤", "最高", "最低", "成交股數", "成交筆數"],
+                    "data": [],
+                }
+            ],
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        with patch("market_sources._urlopen_official_market_source", return_value=FakeResponse(body)):
+            with self.assertRaises(OfficialMarketClosedError) as raised:
+                fetch_tpex_historical_daily(date(2016, 7, 8))
+
+        self.assertEqual(("TPEx", date(2016, 7, 8)), (raised.exception.market, raised.exception.trading_date))
+
     def test_tls_compatibility_retry_only_allows_the_exact_official_ski_error(self) -> None:
         """若 TLS fallback 擴大到其他錯誤，CA 或主機驗證可能被意外弱化。"""
         certificate_error = ssl.SSLCertVerificationError(1, "Missing Subject Key Identifier")

@@ -269,7 +269,10 @@ def fetch_tpex_historical_daily(requested_date: date) -> DailyMarketResponse:
         "tpex-historical-daily",
         {"date": roc_date, "type": "EW", "response": "json"},
     )
-    if _is_explicit_historical_market_closure(payload):
+    if _is_explicit_historical_market_closure(payload) or _is_explicit_tpex_zero_count_closure(
+        payload,
+        requested_date,
+    ):
         raise OfficialMarketClosedError("TPEx", requested_date, TPEX_HISTORICAL_DAILY_URL)
     quotes = parse_tpex_historical_daily(payload)
     return _require_requested_date(quotes, requested_date, "TPEx")
@@ -857,6 +860,46 @@ def _is_explicit_historical_market_closure(payload: object) -> bool:
         and isinstance(payload.get("stat"), str)
         and payload["stat"].strip() in _EXPLICIT_NO_HISTORICAL_DATA_STATUSES
     )
+
+
+def _is_explicit_tpex_zero_count_closure(payload: object, requested_date: date) -> bool:
+    """辨識 TPEx 休市日使用的日期正確、欄位完整零筆表格。"""
+
+    if not isinstance(payload, dict) or str(payload.get("stat", "")).strip().lower() != "ok":
+        return False
+    response_date = payload.get("date")
+    if not isinstance(response_date, str):
+        return False
+    try:
+        if _parse_official_date(response_date) != requested_date:
+            return False
+    except ValueError:
+        return False
+    tables = payload.get("tables")
+    if not isinstance(tables, list):
+        return False
+    required_fields = frozenset(("代號", "名稱", "收盤", "開盤", "最高", "最低", "成交股數", "成交筆數"))
+    matching_tables: list[dict[object, object]] = []
+    for table in tables:
+        if not isinstance(table, dict) or not isinstance(table.get("fields"), list):
+            continue
+        try:
+            fields = frozenset(_normalized_field_indexes(table["fields"]))
+        except ValueError:
+            return False
+        if required_fields.issubset(fields):
+            matching_tables.append(table)
+    if len(matching_tables) != 1:
+        return False
+    table = matching_tables[0]
+    table_date = table.get("date")
+    if not isinstance(table_date, str):
+        return False
+    try:
+        matches_requested_date = _parse_official_date(table_date) == requested_date
+    except ValueError:
+        return False
+    return matches_requested_date and table.get("totalCount") == 0 and table.get("data") == []
 
 
 def _historical_rows(
