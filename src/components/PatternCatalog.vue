@@ -10,6 +10,8 @@ import type {
   MatchSupport,
   PatternCategory,
   PatternCollectionId,
+  PatternDirection,
+  PatternPurpose,
 } from '../domain/patterns/types';
 import { PATTERN_COLLECTIONS } from '../domain/patterns/collections';
 import PatternCard from './PatternCard.vue';
@@ -24,21 +26,47 @@ const props = withDefaults(
 
 const selectedCategory = ref<PatternCategory | 'all'>('all');
 const selectedSupport = ref<MatchSupport | 'all'>('all');
+const query = ref('');
+const selectedBars = ref<'all' | '1' | '2' | '3' | '4' | '5'>('all');
+const selectedDirection = ref<PatternDirection | 'all'>('all');
+const selectedPurpose = ref<PatternPurpose | 'all'>('all');
 
 const collectionDefinition = computed(() =>
   PATTERN_COLLECTIONS.find((collection) => collection.id === props.collection),
 );
+const isTalibCollection = computed(() => props.collection === 'talib-advanced');
 const collectionCards = computed(() =>
   props.collection ? getPatternCardsByCollection(props.collection) : PATTERN_CARDS,
 );
 
-const filteredCards = computed(() =>
-  collectionCards.value.filter(
-    (card) =>
+const filteredCards = computed(() => {
+  const normalizedQuery = query.value.trim().toLocaleLowerCase('zh-TW');
+  const bars = selectedBars.value === 'all' ? undefined : Number(selectedBars.value);
+
+  return collectionCards.value.filter((card) => {
+    const searchableText = [
+      card.nameZhTw,
+      card.nameEn,
+      card.talibFunction ?? '',
+      ...card.aliases,
+    ].join(' ').toLocaleLowerCase('zh-TW');
+    const matchesBars = !isTalibCollection.value || bars === undefined || (
+      card.minimumBars !== undefined &&
+      card.maximumBars !== undefined &&
+      card.minimumBars <= bars &&
+      card.maximumBars >= bars
+    );
+
+    return (
+      (!normalizedQuery || searchableText.includes(normalizedQuery)) &&
       (selectedCategory.value === 'all' || card.category === selectedCategory.value) &&
-      (selectedSupport.value === 'all' || card.matchSupport === selectedSupport.value),
-  ),
-);
+      (selectedSupport.value === 'all' || card.matchSupport === selectedSupport.value) &&
+      matchesBars &&
+      (!isTalibCollection.value || selectedDirection.value === 'all' || card.patternDirection === selectedDirection.value) &&
+      (!isTalibCollection.value || selectedPurpose.value === 'all' || card.patternPurpose === selectedPurpose.value)
+    );
+  });
+});
 
 const heading = computed(() =>
   collectionDefinition.value?.nameZhTw ?? (props.mode === 'reference' ? '型態卡速查' : '型態卡目錄'),
@@ -54,6 +82,20 @@ function supportOptionLabel(support: MatchSupport): string {
       return '守門提醒，尚不比對';
   }
 }
+
+const directionOptions: readonly { value: PatternDirection; label: string }[] = [
+  { value: 'bullish', label: '偏多版本' },
+  { value: 'bearish', label: '偏空版本' },
+  { value: 'both', label: '多空皆有' },
+  { value: 'neutral', label: '中性／未決' },
+];
+
+const purposeOptions: readonly { value: PatternPurpose; label: string }[] = [
+  { value: 'reversal', label: '反轉候選' },
+  { value: 'continuation', label: '延續候選' },
+  { value: 'indecision', label: '猶豫／未決' },
+  { value: 'weakening', label: '動能弱化' },
+];
 </script>
 
 <template>
@@ -74,6 +116,16 @@ function supportOptionLabel(support: MatchSupport): string {
       aria-label="篩選型態卡"
       @submit.prevent
     >
+      <label class="pattern-catalog__search">
+        搜尋名稱或 TA-Lib 函式
+        <input
+          v-model="query"
+          name="pattern-query"
+          type="search"
+          autocomplete="off"
+          placeholder="例如：十字線、Doji、CDLDOJI"
+        >
+      </label>
       <label>
         分類
         <select
@@ -102,6 +154,48 @@ function supportOptionLabel(support: MatchSupport): string {
           >{{ supportOptionLabel(support) }}</option>
         </select>
       </label>
+      <label v-if="isTalibCollection">
+        使用根數
+        <select
+          v-model="selectedBars"
+          name="bars"
+        >
+          <option value="all">全部根數</option>
+          <option
+            v-for="bars in 5"
+            :key="bars"
+            :value="String(bars)"
+          >{{ bars }} 根</option>
+        </select>
+      </label>
+      <label v-if="isTalibCollection">
+        函式方向
+        <select
+          v-model="selectedDirection"
+          name="direction"
+        >
+          <option value="all">全部方向</option>
+          <option
+            v-for="option in directionOptions"
+            :key="option.value"
+            :value="option.value"
+          >{{ option.label }}</option>
+        </select>
+      </label>
+      <label v-if="isTalibCollection">
+        教學用途
+        <select
+          v-model="selectedPurpose"
+          name="purpose"
+        >
+          <option value="all">全部用途</option>
+          <option
+            v-for="option in purposeOptions"
+            :key="option.value"
+            :value="option.value"
+          >{{ option.label }}</option>
+        </select>
+      </label>
     </form>
 
     <output
@@ -120,6 +214,7 @@ function supportOptionLabel(support: MatchSupport): string {
         v-for="card in filteredCards"
         :key="card.id"
         :card="card"
+        :collection="props.collection"
       />
     </div>
     <p
@@ -157,7 +252,8 @@ function supportOptionLabel(support: MatchSupport): string {
   font-weight: 700;
 }
 
-.pattern-catalog__filters select {
+.pattern-catalog__filters select,
+.pattern-catalog__filters input {
   min-height: 2.75rem;
   padding: 0.45rem;
   border: 1px solid var(--vp-c-brand-1);
@@ -165,6 +261,10 @@ function supportOptionLabel(support: MatchSupport): string {
   background: var(--vp-c-bg);
   color: var(--vp-c-text-1);
   font: inherit;
+}
+
+.pattern-catalog__search {
+  flex: 1 1 22rem;
 }
 
 .pattern-catalog__result-count {

@@ -46,7 +46,7 @@ describe('Pattern Card interactions', () => {
 
     expect(wrapper.find('h2').text()).toContain('型態卡目錄');
     expect(wrapper.findAll('h1')).toHaveLength(0);
-    expect(wrapper.get('[aria-live="polite"]').text()).toContain('46');
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('58');
 
     await wrapper.get('select[name="match-support"]').setValue('mvp');
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('17');
@@ -79,5 +79,58 @@ describe('Pattern Card interactions', () => {
     await wrapper.get('button').trigger('click');
     expect(wrapper.text()).toContain('確認方式');
     expect(wrapper.text()).toContain('收盤有效跌破');
+  });
+
+  it('searches and filters the TA-Lib gallery by function, bars, direction, and purpose', async () => {
+    const wrapper = mount(PatternCatalog, {
+      props: { collection: 'talib-advanced' },
+    });
+
+    await wrapper.get('input[name="pattern-query"]').setValue('CDL2CROWS');
+    expect(wrapper.findAll('article')).toHaveLength(1);
+    expect(wrapper.text()).toContain('兩隻烏鴉');
+
+    await wrapper.get('input[name="pattern-query"]').setValue('');
+    await wrapper.get('select[name="bars"]').setValue('5');
+    await wrapper.get('select[name="direction"]').setValue('both');
+    await wrapper.get('select[name="purpose"]').setValue('reversal');
+    expect(wrapper.find('[data-pattern-id="talib-breakaway"]').exists()).toBe(true);
+    expect(wrapper.find('[data-pattern-id="doji"]').exists()).toBe(false);
+  });
+
+  it('separates the official TA-Lib teaching scope from a reused site matcher', async () => {
+    const wrapper = mount(PatternCatalog, {
+      props: { collection: 'talib-advanced' },
+    });
+
+    await wrapper.get('input[name="pattern-query"]').setValue('CDLDOJI');
+    expect(wrapper.text()).toContain('官方函式只供教學查閱');
+    expect(wrapper.text()).toContain('不是官方函式執行結果');
+
+    await wrapper.get('[data-pattern-id="doji"] button').trigger('click');
+    expect(wrapper.text()).toContain('TA-Lib 官方函式口徑');
+    expect(wrapper.text()).toContain('BodyDoji');
+    expect(wrapper.text()).toContain('相關型態');
+  });
+
+  it('keeps the TA-Lib and site matcher distinction visible outside the advanced gallery', () => {
+    const reusedCard = PATTERN_CARDS.find((card) => card.id === 'doji')!;
+    const wrapper = mount(PatternCard, { props: { card: reusedCard } });
+
+    expect(wrapper.text()).toContain('TA-Lib：CDLDOJI');
+    expect(wrapper.text()).toContain('教學用短窗規則');
+    expect(wrapper.text()).toContain('不是 TA-Lib 官方函式執行結果');
+  });
+
+  it('does not expose TA-Lib-only filters in the price structure gallery', () => {
+    const wrapper = mount(PatternCatalog, {
+      props: { collection: 'price-structure' },
+    });
+
+    expect(wrapper.find('select[name="bars"]').exists()).toBe(false);
+    expect(wrapper.find('select[name="direction"]').exists()).toBe(false);
+    expect(wrapper.find('select[name="purpose"]').exists()).toBe(false);
+    expect(wrapper.find('select[name="category"]').exists()).toBe(true);
+    expect(wrapper.find('select[name="match-support"]').exists()).toBe(true);
   });
 });

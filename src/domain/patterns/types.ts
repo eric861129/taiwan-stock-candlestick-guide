@@ -17,6 +17,18 @@ export const PATTERN_CARD_IDS = [
   'evening-star',
   'three-advancing-candles',
   'three-falling-candles',
+  'talib-two-crows',
+  'talib-three-inside',
+  'talib-three-line-strike',
+  'talib-three-outside',
+  'talib-three-stars-in-the-south',
+  'talib-abandoned-baby',
+  'talib-advance-block',
+  'talib-belt-hold',
+  'talib-breakaway',
+  'talib-closing-marubozu',
+  'talib-concealing-baby-swallow',
+  'talib-counterattack',
   'range',
   'triangle-consolidation',
   'flag-consolidation',
@@ -78,10 +90,20 @@ export type AutomationSupport =
 /** TA-Lib Pattern Recognition 的官方函式名稱格式。 */
 export type TalibPatternFunction = `CDL${string}`;
 
+/** 官方 TA-Lib 函式在本站的執行狀態；目前僅提供可查核教材，不執行原生函式。 */
+export type TalibImplementationSupport = 'teaching-only';
+
+/** 進階 K 棒卡使用的方向標籤；只描述函式輸出語意，不是未來預測。 */
+export type PatternDirection = 'bullish' | 'bearish' | 'both' | 'neutral';
+
+/** 進階 K 棒卡的教學用途。 */
+export type PatternPurpose = 'reversal' | 'continuation' | 'indecision' | 'weakening';
+
 /** 教材型態卡的閱讀分類。 */
 export type PatternCategory =
   | '單根與描述型'
   | '雙根與三根組合'
+  | '進階 K 棒組合'
   | '結構型態'
   | '量價、流動性與守門';
 
@@ -139,6 +161,15 @@ export interface PatternCardDefinition {
   kind: PatternKind;
   automationSupport: AutomationSupport;
   talibFunction?: TalibPatternFunction;
+  talibImplementationSupport?: TalibImplementationSupport;
+  talibObservableDefinition?: string;
+  talibDataRequirements?: readonly string[];
+  minimumBars?: number;
+  maximumBars?: number;
+  patternDirection?: PatternDirection;
+  patternPurpose?: PatternPurpose;
+  geometrySteps?: readonly string[];
+  relatedPatternIds?: readonly PatternCardId[];
   category: PatternCategory;
   matchSupport: MatchSupport;
   sourceRow: string;

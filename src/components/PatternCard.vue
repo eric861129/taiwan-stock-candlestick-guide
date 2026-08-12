@@ -1,15 +1,41 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { SITE_BASE } from '../domain/site/navigation';
-import type { PatternCardDefinition } from '../domain/patterns/types';
+import { getPatternCard } from '../domain/patterns/catalog';
+import type { PatternCardDefinition, PatternCollectionId } from '../domain/patterns/types';
 import PatternGlyph from './PatternGlyph.vue';
 
-const props = defineProps<{ card: PatternCardDefinition }>();
+const props = defineProps<{
+  card: PatternCardDefinition;
+  collection?: PatternCollectionId;
+}>();
 const isFlipped = ref(false);
 
 const cardContentId = computed(() => `pattern-card-${props.card.id}-content`);
+const isTalibContext = computed(() =>
+  props.collection === 'talib-advanced' && Boolean(props.card.talibFunction),
+);
+const displayedDefinition = computed(() =>
+  isTalibContext.value
+    ? props.card.talibObservableDefinition ?? props.card.observableDefinition
+    : props.card.observableDefinition,
+);
+const displayedDataRequirements = computed(() =>
+  isTalibContext.value
+    ? props.card.talibDataRequirements ?? props.card.dataRequirements
+    : props.card.dataRequirements,
+);
+const relatedCards = computed(() =>
+  (props.card.relatedPatternIds ?? []).map((id) => getPatternCard(id)),
+);
 
 const supportLabel = computed(() => {
+  if (isTalibContext.value) {
+    return props.card.matchSupport === 'mvp'
+      ? 'TA-Lib 官方函式只供教學查閱；本站另有短窗規則可比對，但不是官方函式執行結果'
+      : 'TA-Lib 官方函式只供教學查閱，第一版不執行此函式的自動辨識';
+  }
+
   switch (props.card.matchSupport) {
     case 'mvp':
       return '第一版可參與自動比對';
@@ -19,6 +45,11 @@ const supportLabel = computed(() => {
       return '教學卡：第一版不參與自動比對';
   }
 });
+const talibMatcherSeparationNotice = computed(() =>
+  props.card.talibFunction && props.card.matcher
+    ? '本站自動比對使用的是教學用短窗規則，不是 TA-Lib 官方函式執行結果。'
+    : undefined,
+);
 
 function lessonHref(path: string): string {
   return `${SITE_BASE.replace(/\/$/, '')}${path}`;
@@ -26,6 +57,24 @@ function lessonHref(path: string): string {
 
 function toggleCard(): void {
   isFlipped.value = !isFlipped.value;
+}
+
+function directionLabel(): string {
+  switch (props.card.patternDirection) {
+    case 'bullish': return '偏多版本';
+    case 'bearish': return '偏空版本';
+    case 'both': return '多空皆有';
+    default: return '中性／未決';
+  }
+}
+
+function purposeLabel(): string {
+  switch (props.card.patternPurpose) {
+    case 'reversal': return '反轉候選';
+    case 'continuation': return '延續候選';
+    case 'weakening': return '動能弱化';
+    default: return '猶豫／未決';
+  }
 }
 </script>
 
@@ -55,7 +104,31 @@ function toggleCard(): void {
         >
           TA-Lib：<code>{{ props.card.talibFunction }}</code>
         </p>
+        <p
+          v-if="talibMatcherSeparationNotice && !isTalibContext"
+          class="pattern-card__function-notice"
+        >
+          {{ talibMatcherSeparationNotice }}
+        </p>
         <p>{{ props.card.oneSentenceMeaning }}</p>
+        <dl
+          v-if="props.card.talibFunction && props.card.minimumBars"
+          class="pattern-card__matcher-summary"
+          aria-label="TA-Lib 型態摘要"
+        >
+          <div>
+            <dt>使用根數</dt>
+            <dd>{{ props.card.minimumBars === props.card.maximumBars ? `${props.card.minimumBars} 根` : `${props.card.minimumBars}～${props.card.maximumBars} 根` }}</dd>
+          </div>
+          <div>
+            <dt>函式方向</dt>
+            <dd>{{ directionLabel() }}</dd>
+          </div>
+          <div>
+            <dt>教學用途</dt>
+            <dd>{{ purposeLabel() }}</dd>
+          </div>
+        </dl>
         <p
           class="pattern-card__support"
           :data-support-label="props.card.matchSupport"
@@ -93,8 +166,8 @@ function toggleCard(): void {
         </p>
         <h3>{{ props.card.nameZhTw }}：核對細節</h3>
         <section>
-          <h4>可觀察定義</h4>
-          <p>{{ props.card.observableDefinition }}</p>
+          <h4>{{ isTalibContext ? 'TA-Lib 官方函式口徑' : '可觀察定義' }}</h4>
+          <p>{{ displayedDefinition }}</p>
         </section>
         <section>
           <h4>解釋前的背景</h4>
@@ -117,6 +190,17 @@ function toggleCard(): void {
               {{ item }}
             </li>
           </ul>
+        </section>
+        <section v-if="props.card.geometrySteps?.length">
+          <h4>逐根幾何</h4>
+          <ol>
+            <li
+              v-for="item in props.card.geometrySteps"
+              :key="item"
+            >
+              {{ item }}
+            </li>
+          </ol>
         </section>
         <section>
           <h4>常見誤讀</h4>
@@ -156,11 +240,22 @@ function toggleCard(): void {
           <p>{{ props.card.guardrail.whyNotInMvp }}</p>
           <p>{{ props.card.guardrail.readerAction }}</p>
         </section>
+        <section v-if="relatedCards.length">
+          <h4>相關型態</h4>
+          <ul>
+            <li
+              v-for="relatedCard in relatedCards"
+              :key="relatedCard.id"
+            >
+              {{ relatedCard.nameZhTw }}（{{ relatedCard.nameEn }}）
+            </li>
+          </ul>
+        </section>
         <section>
           <h4>資料與來源</h4>
           <ul>
             <li
-              v-for="item in props.card.dataRequirements"
+              v-for="item in displayedDataRequirements"
               :key="item"
             >
               需要：{{ item }}
@@ -231,6 +326,12 @@ function toggleCard(): void {
   font-size: 0.85rem;
 }
 
+.pattern-card__function-notice {
+  margin: 0.35rem 0 0;
+  color: var(--vp-c-text-2);
+  font-size: 0.85rem;
+}
+
 .pattern-card h3,
 .pattern-card h4 {
   color: var(--vp-c-brand-2);
@@ -279,7 +380,8 @@ function toggleCard(): void {
   font-weight: 700;
 }
 
-.pattern-card ul {
+.pattern-card ul,
+.pattern-card ol {
   padding-left: 1.2rem;
 }
 

@@ -15,6 +15,7 @@ import {
 } from './types';
 import { hasValidRuleBindingParameters } from './rule-parameters';
 import { ADDITIONAL_STRUCTURE_CARD_DEFINITIONS } from './structure-catalog';
+import { TALIB_BATCH_1_CARD_DEFINITIONS } from './talib-batch-1';
 export { PATTERN_COLLECTIONS } from './collections';
 
 const SINGLE_LESSON = ['/chapters/09-single-candlestick-signals'] as const;
@@ -36,6 +37,80 @@ const TALIB_FUNCTION_BY_CARD: Readonly<Partial<Record<PatternCardId, TalibPatter
   'evening-star': 'CDLEVENINGSTAR',
   'three-advancing-candles': 'CDL3WHITESOLDIERS',
   'three-falling-candles': 'CDL3BLACKCROWS',
+  'talib-two-crows': 'CDL2CROWS',
+  'talib-three-inside': 'CDL3INSIDE',
+  'talib-three-line-strike': 'CDL3LINESTRIKE',
+  'talib-three-outside': 'CDL3OUTSIDE',
+  'talib-three-stars-in-the-south': 'CDL3STARSINSOUTH',
+  'talib-abandoned-baby': 'CDLABANDONEDBABY',
+  'talib-advance-block': 'CDLADVANCEBLOCK',
+  'talib-belt-hold': 'CDLBELTHOLD',
+  'talib-breakaway': 'CDLBREAKAWAY',
+  'talib-closing-marubozu': 'CDLCLOSINGMARUBOZU',
+  'talib-concealing-baby-swallow': 'CDLCONCEALBABYSWALL',
+  'talib-counterattack': 'CDLCOUNTERATTACK',
+};
+
+type TalibTeachingMetadata = Pick<
+  PatternCardDefinition,
+  | 'minimumBars'
+  | 'maximumBars'
+  | 'patternDirection'
+  | 'patternPurpose'
+  | 'geometrySteps'
+  | 'relatedPatternIds'
+  | 'confirmationGuidance'
+  | 'talibObservableDefinition'
+  | 'talibDataRequirements'
+>;
+
+const TALIB_TEACHING_METADATA_BY_CARD: Readonly<
+  Partial<Record<PatternCardId, TalibTeachingMetadata>>
+> = {
+  doji: {
+    minimumBars: 1,
+    maximumBars: 1,
+    patternDirection: 'neutral',
+    patternPurpose: 'indecision',
+    geometrySteps: ['使用一根完成 K。', '開盤與收盤落在適用比較單位的近似相等範圍內。', '上下影線長度不決定是否為一般十字線。'],
+    relatedPatternIds: ['relative-small-body', 'talib-belt-hold'],
+    confirmationGuidance: ['先核對資料精度與價格升降單位，再判定開收是否近似。', '位置與後續條件另行記錄，不用十字外觀自行宣告反轉。'],
+    talibObservableDefinition: '一根完成 K 的開收差，小於或等於 TA-Lib BodyDoji CandleSettings 依近期 K 線計算的平均門檻。',
+    talibDataRequirements: ['一根目標完成 K', '足以計算 BodyDoji 近期平均的前置 K 線', '一致的 OHLC 價格模式與公司行動核對'],
+  },
+  'dark-cloud-cover': {
+    minimumBars: 2,
+    maximumBars: 2,
+    patternDirection: 'bearish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['第一根為相對長上漲實體。', '第二根下跌且開盤高於第一根最高價。', '第二根收進第一根實體並穿越指定百分比，預設為中點。'],
+    relatedPatternIds: ['piercing-line', 'talib-counterattack'],
+    confirmationGuidance: ['等待第二根完成收盤並核對穿越比例。', '前段上行背景與後續失效條件須分開列示。'],
+    talibObservableDefinition: '第一根為長上漲實體；第二根為下跌實體，開盤高於第一根最高價，收盤深入第一根實體且超過 penetration 門檻，但仍高於第一根開盤。',
+    talibDataRequirements: ['兩根目標完成 K', '足以計算 BodyLong 近期平均的前置 K 線', '呼叫端指定的 penetration 參數；TA-Lib 預設為 0.5'],
+  },
+  'three-advancing-candles': {
+    minimumBars: 3,
+    maximumBars: 3,
+    patternDirection: 'bullish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['三根皆為上漲實體且收盤依序提高。', '後兩根開盤位於前一根實體內或附近。', '實體不能過短，上影需相對短，後續實體不可明顯衰退。'],
+    relatedPatternIds: ['three-falling-candles', 'talib-advance-block'],
+    confirmationGuidance: ['核對三根實體、上影與開收順序均符合設定。', '完成只代表幾何候選，仍須檢查位置、量價與失效條件。'],
+    talibObservableDefinition: '三根上漲 K 的收盤依序提高；後兩根開在前根實體內或附近，實體不短、上影相對短，且後續實體不可明顯縮短。',
+    talibDataRequirements: ['三根目標完成 K', '足以計算 BodyShort、ShadowVeryShort、Near 與 Far CandleSettings 的前置 K 線', '一致的 OHLC 價格模式與公司行動核對'],
+  },
+  'three-falling-candles': {
+    minimumBars: 3,
+    maximumBars: 3,
+    patternDirection: 'bearish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['三根皆為下跌實體且收盤依序降低。', '後兩根開盤位於前一根實體內或附近。', '三根下影都相對短，實體不能短到失去推進意義。'],
+    relatedPatternIds: ['three-advancing-candles', 'talib-three-stars-in-the-south'],
+    confirmationGuidance: ['核對三根實體、下影與開收順序均符合設定。', '完成只代表幾何候選，仍須檢查位置、量價與失效條件。'],
+    talibObservableDefinition: '前一根為上漲 K，接著三根下跌 K 收盤依序降低；三根開盤位於前根實體內，且三根下影皆相對短。',
+    talibDataRequirements: ['前三黑鴉之前一根 K，加上三根目標完成 K', '足以計算 ShadowVeryShort CandleSettings 的前置 K 線', '一致的 OHLC 價格模式與公司行動核對'],
+  },
 };
 
 function kindFor(category: PatternCategory, support: MatchSupport): PatternKind {
@@ -105,13 +180,31 @@ function mvpMatcher(
 function card(definition: PatternCardInput): PatternCardDefinition {
   const kind = kindFor(definition.category, definition.matchSupport);
   const talibFunction = TALIB_FUNCTION_BY_CARD[definition.id];
+  const teachingMetadata = TALIB_TEACHING_METADATA_BY_CARD[definition.id];
+  const officialSources = talibFunction
+    ? [
+        `TA-Lib 官方 Pattern Recognition Functions｜${talibFunction}`,
+        `TA-Lib Core C 原始碼｜ta_${talibFunction}.c`,
+      ]
+    : [];
   return {
     ...definition,
+    ...teachingMetadata,
     slug: definition.slug ?? definition.id,
     kind,
     automationSupport: automationSupportFor(definition.matchSupport),
     collections: collectionsFor(kind, talibFunction),
-    ...(talibFunction ? { talibFunction } : {}),
+    sourceNotes: [...definition.sourceNotes, ...officialSources],
+    ...(talibFunction
+      ? {
+          talibFunction,
+          talibImplementationSupport: 'teaching-only' as const,
+          talibObservableDefinition:
+            teachingMetadata?.talibObservableDefinition ?? definition.observableDefinition,
+          talibDataRequirements:
+            teachingMetadata?.talibDataRequirements ?? definition.dataRequirements,
+        }
+      : {}),
   };
 }
 
@@ -588,6 +681,7 @@ export const PATTERN_CARDS: readonly PatternCardDefinition[] = [
       { ruleId: 'right-edge-or-unit-unavailable', teachingLabel: '右端資料或比較單位不足時不評分', parameters: { requiresComparisonUnit: true } },
     ),
   }),
+  ...TALIB_BATCH_1_CARD_DEFINITIONS.map(card),
   card({
     id: 'range',
     nameZhTw: '區間',
@@ -940,6 +1034,7 @@ export function getPatternCardsByCollection(
 export const PATTERN_CATEGORIES: readonly PatternCategory[] = [
   '單根與描述型',
   '雙根與三根組合',
+  '進階 K 棒組合',
   '結構型態',
   '量價、流動性與守門',
 ] as const;

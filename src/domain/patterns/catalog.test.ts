@@ -27,6 +27,18 @@ const CANONICAL_IDS = [
   'evening-star',
   'three-advancing-candles',
   'three-falling-candles',
+  'talib-two-crows',
+  'talib-three-inside',
+  'talib-three-line-strike',
+  'talib-three-outside',
+  'talib-three-stars-in-the-south',
+  'talib-abandoned-baby',
+  'talib-advance-block',
+  'talib-belt-hold',
+  'talib-breakaway',
+  'talib-closing-marubozu',
+  'talib-concealing-baby-swallow',
+  'talib-counterattack',
   'range',
   'triangle-consolidation',
   'flag-consolidation',
@@ -96,10 +108,10 @@ const MVP_IDS = [
 ] as const satisfies readonly PatternCardId[];
 
 describe('canonical Pattern Card catalog', () => {
-  it('contains the 46 approved IDs exactly once and 17 MVP matcher cards', () => {
-    expect(PATTERN_CARDS).toHaveLength(46);
+  it('contains the 58 approved IDs exactly once and 17 MVP matcher cards', () => {
+    expect(PATTERN_CARDS).toHaveLength(58);
     expect(PATTERN_CARDS.map((card) => card.id)).toEqual(CANONICAL_IDS);
-    expect(new Set(PATTERN_CARDS.map((card) => card.id)).size).toBe(46);
+    expect(new Set(PATTERN_CARDS.map((card) => card.id)).size).toBe(58);
     expect(PATTERN_CARDS.filter((card) => card.matchSupport === 'mvp').map((card) => card.id)).toEqual(
       MVP_IDS,
     );
