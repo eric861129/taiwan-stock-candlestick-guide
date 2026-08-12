@@ -36,6 +36,7 @@ from market_sources import (
     SUSPENSION_EVIDENCE_SCHEMA_VERSION,
     MarketSourceError,
     NoQuoteEvidence,
+    OfficialMarketClosedError,
     SuspensionInterval,
     TradingCalendar,
     apply_emergency_market_closures,
@@ -106,6 +107,43 @@ def fixture_build_input() -> SnapshotBuildInput:
             load_fixture("tpex-actions.json"),
             verified_at=date(2026, 8, 11),
         ),
+        calendar=calendar,
+    )
+
+
+def ten_year_fixture_build_input() -> SnapshotBuildInput:
+    """建立十年全市場日行情，驗證公開日／週／月各自保留 120 根。"""
+
+    base = fixture_build_input()
+    cutoff = date(2026, 8, 11)
+    start = date(cutoff.year - 10, cutoff.month, 1) - timedelta(days=1)
+    start = start.replace(day=1)
+    historical_holidays = tuple(date(year, 1, 1) for year in range(start.year, cutoff.year + 1))
+    calendar = TradingCalendar(
+        holiday_dates=historical_holidays,
+        source_url=base.calendar.source_url,
+        valid_through=date(cutoff.year, 12, 31),
+        timezone=base.calendar.timezone,
+    )
+    twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+    tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+    sessions: list[MarketSession] = []
+    session_date = start
+    while session_date <= cutoff:
+        if session_date.weekday() < 5 and session_date not in historical_holidays:
+            sessions.extend(
+                (
+                    MarketSession("TWSE", (replace(twse_quote, trading_date=session_date),)),
+                    MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)),
+                )
+            )
+        session_date += timedelta(days=1)
+    return SnapshotBuildInput(
+        source_commit="ten-year-fixture",
+        generated_at=datetime(2026, 8, 11, 18, 0, tzinfo=calendar.timezone),
+        symbols=base.symbols,
+        sessions=tuple(sessions),
+        corporate_actions=(),
         calendar=calendar,
     )
 
@@ -1267,6 +1305,34 @@ class SnapshotBuildTests(unittest.TestCase):
         self.assertEqual(120, stock["availableSessions"])
         self.assertIsNone(stock["shortHistoryReason"])
 
+    def test_ten_year_history_keeps_120_completed_bars_per_timeframe(self) -> None:
+        """十年基準不得因日 K 只留 120 根而讓月 K 或週 K 歷史不足。"""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, ten_year_fixture_build_input(), output)
+            stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+
+            self.assertEqual(120, len(raw_completed_bars(stock, "1d")))
+            self.assertEqual(120, len(raw_completed_bars(stock, "1w")))
+            self.assertEqual(120, len(raw_completed_bars(stock, "1m")))
+            self.assertEqual(manifest.snapshot_hash, validate_snapshot(output).snapshot_hash)
+
+    def test_published_artifact_limit_keeps_previous_snapshot_when_exceeded(self) -> None:
+        """達 400 MiB 門檻時，候選資料不可覆寫上一個可驗證快照。"""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            build_snapshot(None, fixture_build_input(), output)
+            manifest_before = (output / "manifest.json").read_bytes()
+
+            with patch("market_snapshot.MAX_PUBLISHED_ARTIFACT_BYTES", 1, create=True):
+                with self.assertRaisesRegex(SnapshotValidationError, "400 MiB"):
+                    build_snapshot(None, ten_year_fixture_build_input(), output)
+
+            self.assertEqual(manifest_before, (output / "manifest.json").read_bytes())
+            validate_snapshot(output)
+
     def test_rejects_an_old_stock_when_the_oldest_expected_market_session_is_missing(self) -> None:
         """舊股的 trailing 120 日少最早一天時，不能被縮短成看似完整的 119 日視窗。"""
 
@@ -1961,8 +2027,95 @@ class SnapshotBuildTests(unittest.TestCase):
 
             self.assertFalse(next_output.exists())
 
-    def test_bootstrap_fetches_120_sessions_and_resumes_from_the_daily_cache(self) -> None:
-        """若基準資料不滿 120 日或重跑又連線，歷史初始化會不完整且不具續跑性。"""
+    def test_ten_year_history_range_starts_at_the_calendar_boundary_and_only_requests_weekdays(self) -> None:
+        """十年基準要涵蓋完整首月，且不把週末誤當成官方盤後端點。"""
+
+        start = market_snapshot._ten_year_history_start(date(2026, 8, 11))
+        candidates = market_snapshot._historical_candidate_dates(start, date(2026, 8, 11))
+
+        self.assertEqual(date(2016, 7, 1), start)
+        self.assertEqual(start, candidates[0])
+        self.assertEqual(date(2026, 8, 11), candidates[-1])
+        self.assertTrue(all(candidate.weekday() < 5 for candidate in candidates))
+        self.assertGreater(len(candidates), 2_500)
+
+    def test_same_cutoff_rebuild_without_a_complete_history_cache_fails_closed(self) -> None:
+        """要求同截止日重封裝時，缺少十年快取必須回受控錯誤，不可落入空索引。"""
+
+        base = fixture_build_input()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            previous = root / "previous"
+            output = root / "output"
+            cache = root / "empty-cache"
+            build_snapshot(None, base, previous)
+            with patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar), patch(
+                "market_snapshot.fetch_supported_symbols", return_value=base.symbols
+            ), patch("market_snapshot._history_cache_is_complete", return_value=False), patch(
+                "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ):
+                with self.assertRaisesRegex(SnapshotValidationError, "同截止日.*十年歷史日期快取"):
+                    update_snapshot(
+                        previous,
+                        output,
+                        "next-source",
+                        cache,
+                        now=base.generated_at,
+                        rebuild_if_same_cutoff=True,
+                    )
+
+        self.assertFalse(output.exists())
+
+    def test_ten_year_snapshot_keeps_an_auditable_action_older_than_the_public_daily_window(self) -> None:
+        """公司行動位於已發布月 K 歷史內時，不可被公開 120 根日 K 的範圍排除。"""
+
+        base = ten_year_fixture_build_input()
+        action = parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            [],
+            twse_calculation_payload=load_fixture("twse-adjustment-results.json"),
+            tpex_calculation_payload=[],
+            verified_at=date(2026, 8, 11),
+        )[0]
+        historical_action = replace(
+            action,
+            action_date=date(2018, 8, 6),
+            previous_close=Decimal("100"),
+            reference_price=Decimal("95"),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(
+                None,
+                replace(base, corporate_actions=(historical_action,)),
+                output,
+            )
+            validate_snapshot(output)
+            entry = next(item for item in manifest.symbols if item.market == "TWSE")
+            stock = json.loads((output / entry.data_path).read_text(encoding="utf-8"))
+
+        self.assertEqual("2018-08-06", stock["corporateActions"][0]["date"])
+        self.assertEqual("2018-08-06", stock["adjustmentFactors"][0]["effectiveDate"])
+        self.assertGreater(raw_completed_bars(stock)[0]["date"], "2018-08-06")
+
+    def test_ten_year_snapshot_falls_back_to_raw_when_action_history_coverage_is_not_provable(self) -> None:
+        """官方 feed 未證明涵蓋完整十年時，不可把沒有列出的舊事件誤當成不存在。"""
+
+        base = replace(ten_year_fixture_build_input(), adjustment_evidence_complete=False)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, base, output)
+            validate_snapshot(output)
+            entry = next(item for item in manifest.symbols if item.market == "TWSE")
+            stock = json.loads((output / entry.data_path).read_text(encoding="utf-8"))
+
+        self.assertEqual("unavailable", stock["priceModes"]["adjusted"]["status"])
+        self.assertEqual(["missing-adjustment-evidence"], stock["priceModes"]["adjusted"]["reasonCodes"])
+        self.assertEqual([], stock["adjustmentFactors"])
+
+    def test_bootstrap_fetches_historical_sessions_and_resumes_from_the_daily_cache(self) -> None:
+        """若歷史資料重跑又連線，十年初始化就不具市場／日期級續跑性。"""
         base = fixture_build_input()
         twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
         tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
@@ -1983,6 +2136,9 @@ class SnapshotBuildTests(unittest.TestCase):
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions) as action_fetch, patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
             ), patch(
+                "market_snapshot._historical_candidate_dates",
+                return_value=official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar),
+            ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
             ) as twse_fetch, patch(
                 "market_snapshot.fetch_tpex_historical_daily", side_effect=tpex_history
@@ -1991,7 +2147,7 @@ class SnapshotBuildTests(unittest.TestCase):
 
             self.assertEqual(120, first.symbols[0].bar_count)
             action_fetch.assert_called_once_with(
-                start_date=official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)[0],
+                start_date=date(2016, 7, 1),
                 end_date=date(2026, 8, 11),
             )
             self.assertEqual(120, twse_fetch.call_count)
@@ -2002,6 +2158,9 @@ class SnapshotBuildTests(unittest.TestCase):
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
             ), patch(
+                "market_snapshot._historical_candidate_dates",
+                return_value=official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar),
+            ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=AssertionError("應使用快取")
             ), patch(
                 "market_snapshot.fetch_tpex_historical_daily", side_effect=AssertionError("應使用快取")
@@ -2009,6 +2168,64 @@ class SnapshotBuildTests(unittest.TestCase):
                 resumed = bootstrap_snapshot(root / "resumed", "fixture", cache, now=now)
 
             self.assertEqual(first.snapshot_hash, resumed.snapshot_hash)
+
+    def test_incremental_history_cache_matches_a_full_rebuild_at_the_same_cutoff(self) -> None:
+        """每日補齊後的公開結果必須與同一截止日完整重建位元一致。"""
+
+        base = fixture_build_input()
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        first_now = datetime(2026, 8, 11, 18, 0, tzinfo=base.calendar.timezone)
+        second_now = datetime(2026, 8, 12, 18, 0, tzinfo=base.calendar.timezone)
+
+        def candidate_dates(_: date, cutoff: date) -> tuple[date, ...]:
+            return official_fixture_sessions_ending_at(cutoff, 120, base.calendar)
+
+        def twse_history(session_date: date):
+            return (replace(twse_quote, trading_date=session_date),)
+
+        def tpex_history(session_date: date):
+            return (replace(tpex_quote, trading_date=session_date),)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            cache = root / "cache"
+            incremental_output = root / "incremental"
+            full_output = root / "full"
+            with patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar), patch(
+                "market_snapshot.fetch_supported_symbols", return_value=base.symbols
+            ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
+                "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch("market_snapshot._historical_candidate_dates", side_effect=candidate_dates), patch(
+                "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
+            ), patch("market_snapshot.fetch_tpex_historical_daily", side_effect=tpex_history), patch(
+                "market_snapshot.fetch_twse_daily",
+                return_value=(replace(twse_quote, trading_date=date(2026, 8, 12)),),
+            ), patch(
+                "market_snapshot.fetch_tpex_daily",
+                return_value=(replace(tpex_quote, trading_date=date(2026, 8, 12)),),
+            ), patch("market_snapshot._throttle_official_requests"):
+                bootstrap_snapshot(incremental_output, "fixture-history", cache, now=first_now)
+                incremental, updated = update_snapshot(
+                    incremental_output,
+                    incremental_output,
+                    "fixture-history",
+                    cache,
+                    now=second_now,
+                )
+                full = bootstrap_snapshot(full_output, "fixture-history", cache, now=second_now)
+
+            self.assertTrue(updated)
+            self.assertEqual(full.snapshot_hash, incremental.snapshot_hash)
+            self.assertEqual(
+                (full_output / "manifest.json").read_bytes(),
+                (incremental_output / "manifest.json").read_bytes(),
+            )
+            self.assertEqual(
+                (full_output / "provenance.json").read_bytes(),
+                (incremental_output / "provenance.json").read_bytes(),
+            )
+            self.assertEqual(full.snapshot_hash, validate_snapshot(incremental_output).snapshot_hash)
 
     def test_daily_cache_rejects_a_downloaded_quote_for_the_wrong_market_or_date(self) -> None:
         """若下載回應日期錯置仍寫入 cache，下一次 bootstrap 會重複使用錯誤基準。"""
@@ -2028,6 +2245,44 @@ class SnapshotBuildTests(unittest.TestCase):
                 )
 
             self.assertFalse((cache / "TWSE" / "2026-08-11.json").exists())
+
+    def test_historical_date_cache_reuses_an_official_closed_market_result(self) -> None:
+        """十年建置重跑時，官方已明示休市的市場日期不可再次連線。"""
+
+        requested_date = date(2025, 1, 1)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache = Path(temporary_directory) / "cache"
+            closed = OfficialMarketClosedError(
+                "TWSE",
+                requested_date,
+                "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX",
+            )
+            self.assertIsNone(
+                market_snapshot._fetch_cached_historical_daily(
+                    "TWSE",
+                    requested_date,
+                    cache,
+                    lambda _: (_ for _ in ()).throw(closed),
+                )
+            )
+            cache_path = cache / "TWSE" / "2025-01-01.json"
+            self.assertEqual(
+                {
+                    "date": "2025-01-01",
+                    "market": "TWSE",
+                    "sourceUrl": "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX",
+                    "status": "official-market-closed",
+                },
+                json.loads(cache_path.read_text(encoding="utf-8")),
+            )
+            self.assertIsNone(
+                market_snapshot._fetch_cached_historical_daily(
+                    "TWSE",
+                    requested_date,
+                    cache,
+                    lambda _: (_ for _ in ()).throw(AssertionError("應使用日期快取")),
+                )
+            )
 
     def test_validate_rejects_a_stock_file_digest_tamper_and_pack_recreates_a_verifiable_archive(self) -> None:
         """若 stock JSON 或 archive 被竄改卻仍通過，部署來源完整性會失效。"""

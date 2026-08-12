@@ -592,10 +592,28 @@ export const stockSnapshotSchema = z.object({
   sourceUrls: z.array(nonEmptyHttpsUrlSchema).min(1),
 }).strict().superRefine((snapshot, context) => {
   const dailyBars = snapshot.priceModes.raw.timeframes['1d'].completedBars;
-  const observedTradingDates = new Set([
-    ...dailyBars.map((bar) => bar.date),
-    ...snapshot.noQuoteEvidence.map((evidence) => evidence.date),
+  const publishedBars = Object.values(snapshot.priceModes.raw.timeframes).flatMap((series) => [
+    ...series.completedBars,
+    ...(series.formingBar ? [series.formingBar] : []),
   ]);
+  const publishedHistoryDates = [
+    ...publishedBars.map((bar) => bar.periodStart),
+    ...snapshot.noQuoteEvidence.map((evidence) => evidence.date),
+  ].sort();
+  const publishedObservationDates = [
+    ...publishedBars.map((bar) => bar.date),
+    ...snapshot.noQuoteEvidence.map((evidence) => evidence.date),
+  ].sort();
+  const publishedHistoryStart = publishedHistoryDates[0];
+  const publishedHistoryEnd = publishedObservationDates.at(-1);
+  const isPublishedHistorySession = (value: string) => (
+    publishedHistoryStart !== undefined
+    && publishedHistoryEnd !== undefined
+    && value >= snapshot.listingDate
+    && value >= publishedHistoryStart
+    && value <= publishedHistoryEnd
+    && isWeekday(value)
+  );
   if (snapshot.availableSessions !== dailyBars.length + snapshot.noQuoteEvidence.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -633,17 +651,17 @@ export const stockSnapshotSchema = z.object({
   }
   if (snapshot.corporateActions.some((action) => (
     !isApprovedOfficialHttpsUrl(action.sourceUrl, OFFICIAL_HOSTS_BY_MARKET[snapshot.market])
-    || !observedTradingDates.has(action.date)
+    || !isPublishedHistorySession(action.date)
   ))) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['corporateActions'],
-      message: '公司行動來源必須屬於對應市場的官方網域。',
+      message: '公司行動必須位於已發布歷史範圍，且來源屬於對應市場官方網域。',
     });
   }
   if (snapshot.adjustmentFactors.some((factor, index) => (
     (index > 0 && factor.effectiveDate <= snapshot.adjustmentFactors[index - 1]!.effectiveDate)
-    || !observedTradingDates.has(factor.effectiveDate)
+    || !isPublishedHistorySession(factor.effectiveDate)
     || !factor.sourceUrls.includes(ADJUSTMENT_CALCULATION_SOURCE_BY_MARKET[snapshot.market])
     || factor.sourceUrls.some((sourceUrl) => !snapshot.sourceUrls.includes(sourceUrl))
     || factor.sourceUrls.some((sourceUrl) => (

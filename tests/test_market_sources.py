@@ -20,12 +20,14 @@ import market_sources
 
 from market_sources import (
     EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+    OfficialMarketClosedError,
     SUSPENSION_EVIDENCE_SCHEMA_VERSION,
     apply_emergency_market_closures,
     comparison_unit_for_prices,
     compute_freshness,
     expected_cutoff_date,
     fetch_tpex_historical_daily,
+    fetch_twse_historical_daily,
     fetch_twse_daily,
     parse_corporate_actions,
     parse_emergency_market_closure_evidence,
@@ -310,6 +312,18 @@ class OfficialFetchBoundaryTests(unittest.TestCase):
         self.assertEqual(["115/08/11"], query["date"])
         self.assertEqual(["EW"], query["type"])
         self.assertEqual("6488", quotes[0].code)
+
+    def test_historical_fetch_marks_explicit_official_no_data_as_a_closed_market_date(self) -> None:
+        """十年基準遇到官方明示休市日要快取可重用狀態，不能重試成來源故障。"""
+
+        payload = {"stat": "很抱歉，沒有符合條件的資料!"}
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        with patch("market_sources._urlopen_official_market_source", return_value=FakeResponse(body)):
+            with self.assertRaises(OfficialMarketClosedError) as raised:
+                fetch_twse_historical_daily(date(2025, 1, 1))
+
+        self.assertEqual(("TWSE", date(2025, 1, 1)), (raised.exception.market, raised.exception.trading_date))
 
     def test_tls_compatibility_retry_only_allows_the_exact_official_ski_error(self) -> None:
         """若 TLS fallback 擴大到其他錯誤，CA 或主機驗證可能被意外弱化。"""

@@ -232,6 +232,34 @@ describe('market snapshot v4 schemas', () => {
       })),
       adjustmentFactors: [{ ...adjustmentFactor, effectiveDate: '2026-08-12' }],
     }).success).toBe(false);
+    const historicalMonth = {
+      ...completedBar('2018-08-31'),
+      periodStart: '2018-08-01',
+      periodEnd: '2018-08-31',
+    };
+    const historicalActionDate = '2018-08-06';
+    const historicalRawTimeframes = {
+      ...adjustedAvailable.priceModes.raw.timeframes,
+      '1m': timeframe([historicalMonth, completedBar()]),
+    };
+    expect(stockSnapshotSchema.safeParse({
+      ...adjustedAvailable,
+      corporateActions: adjustedAvailable.corporateActions.map((action) => ({
+        ...action,
+        date: historicalActionDate,
+      })),
+      adjustmentFactors: [{ ...adjustmentFactor, effectiveDate: historicalActionDate }],
+      priceModes: {
+        raw: {
+          ...adjustedAvailable.priceModes.raw,
+          timeframes: historicalRawTimeframes,
+        },
+        adjusted: {
+          ...adjustedAvailable.priceModes.adjusted,
+          timeframes: historicalRawTimeframes,
+        },
+      },
+    }).success).toBe(true);
     expect(stockSnapshotSchema.safeParse({
       ...adjustedAvailable,
       priceModes: {

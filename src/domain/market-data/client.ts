@@ -402,6 +402,41 @@ function assertStockTimeframeAggregates(
   }
 }
 
+/** 歷史公司行動與調整因子必須落在已發布範圍內的官方交易日。 */
+function assertAdjustmentEvidenceSessions(
+  manifest: MarketDataManifest,
+  snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
+): void {
+  const publishedBars = Object.values(snapshot.priceModes.raw.timeframes).flatMap((series) => [
+    ...series.completedBars,
+    ...(series.formingBar ? [series.formingBar] : []),
+  ]);
+  const publishedHistoryStart = [
+    ...publishedBars.map((bar) => bar.periodStart),
+    ...snapshot.noQuoteEvidence.map((evidence) => evidence.date),
+  ].sort()[0];
+  const publishedHistoryEnd = manifest.markets[snapshot.market].cutoffDate;
+  const calendarCoverageStart = `${manifest.calendar.holidayDates[0]!.slice(0, 4)}-01-01`;
+  const holidays = new Set(manifest.calendar.holidayDates);
+  const evidenceDates = [
+    ...snapshot.corporateActions.map((action) => action.date),
+    ...snapshot.adjustmentFactors.map((factor) => factor.effectiveDate),
+  ];
+  const hasInvalidDate = publishedHistoryStart === undefined || evidenceDates.some((value) => {
+    const weekday = parseIsoDate(value).getUTCDay();
+    return value < snapshot.listingDate
+      || value < publishedHistoryStart
+      || value < calendarCoverageStart
+      || value > publishedHistoryEnd
+      || weekday === 0
+      || weekday === 6
+      || holidays.has(value);
+  });
+  if (hasInvalidDate) {
+    throw new MarketDataError('schema-error', '公司行動或調整因子日期不是已發布範圍內的官方交易日。');
+  }
+}
+
 function almostEqual(actual: number, expected: number): boolean {
   const tolerance = Math.max(1e-8, Math.abs(expected) * 1e-10);
   return Math.abs(actual - expected) <= tolerance;
@@ -568,6 +603,7 @@ export async function loadStockSnapshot(
   assertStockMatchesIndex(entry, parsed.data);
   assertStockMatchesMarketSessions(manifest, parsed.data);
   assertStockMatchesSuspensionEvidence(manifest, parsed.data);
+  assertAdjustmentEvidenceSessions(manifest, parsed.data);
   assertAdjustedDailySeries(parsed.data);
   assertStockTimeframeAggregates(manifest, parsed.data);
   return toStockSnapshot(parsed.data);

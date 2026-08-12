@@ -18,6 +18,13 @@ from market_data import _OfficialMarketRedirectHandler, _is_official_https_url
 
 Market = Literal["TWSE", "TPEx"]
 _MISSING_PRICE_MARKERS = frozenset({"", "-", "--", "---", "----", "N/A", "NA", "無", "—"})
+_EXPLICIT_NO_HISTORICAL_DATA_STATUSES = frozenset(
+    {
+        "很抱歉，沒有符合條件的資料!",
+        "很抱歉，沒有符合條件的資料！",
+        "查無資料",
+    }
+)
 USER_AGENT = "taiwan-stock-candlestick-guide/1.0 (official snapshot adapter)"
 
 TWSE_DAILY_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
@@ -210,6 +217,16 @@ class MarketSourceError(RuntimeError):
     """官方來源、TLS 或回應契約未通過時提供繁體中文可追蹤錯誤。"""
 
 
+class OfficialMarketClosedError(MarketSourceError):
+    """官方歷史端點明示該市場日期沒有收盤行情，可安全寫入日期快取。"""
+
+    def __init__(self, market: Market, trading_date: date, source_url: str) -> None:
+        self.market = market
+        self.trading_date = trading_date
+        self.source_url = source_url
+        super().__init__(f"{market} {trading_date.isoformat()} 官方歷史日行情明示沒有資料。")
+
+
 def fetch_twse_daily(requested_date: date) -> DailyMarketResponse:
     """取得指定交易日的 TWSE 上市日行情，回應日期不符即拒絕使用。"""
     quotes = parse_twse_daily(_fetch_official_json("twse-daily"))
@@ -223,29 +240,31 @@ def fetch_tpex_daily(requested_date: date) -> DailyMarketResponse:
 
 
 def fetch_twse_historical_daily(requested_date: date) -> DailyMarketResponse:
-    """取得 TWSE 全市場歷史日行情，供 120 個交易日基準快照使用。"""
-    quotes = parse_twse_historical_daily(
-        _fetch_official_json(
-            "twse-historical-daily",
-            {
-                "date": requested_date.strftime("%Y%m%d"),
-                "type": "ALLBUT0999",
-                "response": "json",
-            },
-        )
+    """取得 TWSE 全市場歷史日行情，供可續跑的十年基準快照使用。"""
+    payload = _fetch_official_json(
+        "twse-historical-daily",
+        {
+            "date": requested_date.strftime("%Y%m%d"),
+            "type": "ALLBUT0999",
+            "response": "json",
+        },
     )
+    if _is_explicit_historical_market_closure(payload):
+        raise OfficialMarketClosedError("TWSE", requested_date, TWSE_HISTORICAL_DAILY_URL)
+    quotes = parse_twse_historical_daily(payload)
     return _require_requested_date(quotes, requested_date, "TWSE")
 
 
 def fetch_tpex_historical_daily(requested_date: date) -> DailyMarketResponse:
     """取得 TPEx 上櫃普通股歷史日行情，限定官方 EW 市場分類。"""
     roc_date = f"{requested_date.year - 1911:03d}/{requested_date:%m/%d}"
-    quotes = parse_tpex_historical_daily(
-        _fetch_official_json(
-            "tpex-historical-daily",
-            {"date": roc_date, "type": "EW", "response": "json"},
-        )
+    payload = _fetch_official_json(
+        "tpex-historical-daily",
+        {"date": roc_date, "type": "EW", "response": "json"},
     )
+    if _is_explicit_historical_market_closure(payload):
+        raise OfficialMarketClosedError("TPEx", requested_date, TPEX_HISTORICAL_DAILY_URL)
+    quotes = parse_tpex_historical_daily(payload)
     return _require_requested_date(quotes, requested_date, "TPEx")
 
 
@@ -799,6 +818,16 @@ def _official_tick_size(price: Decimal) -> Decimal:
     if price < Decimal("1000"):
         return Decimal("1")
     return Decimal("5")
+
+
+def _is_explicit_historical_market_closure(payload: object) -> bool:
+    """只接受官方固定無資料狀態，其他歷史回應異常仍必須 fail closed。"""
+
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("stat"), str)
+        and payload["stat"].strip() in _EXPLICIT_NO_HISTORICAL_DATA_STATUSES
+    )
 
 
 def _historical_rows(

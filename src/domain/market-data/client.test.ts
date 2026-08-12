@@ -515,6 +515,68 @@ describe('browser snapshot client', () => {
     });
   });
 
+  it('rejects historical adjustment evidence dated on an official market holiday', async () => {
+    const actionDate = '2018-08-06';
+    const actionSource = 'https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL';
+    const calculationSource = 'https://www.twse.com.tw/rwd/zh/exRight/TWT49U';
+    const historicalMonth = {
+      ...rawDailyBars(stockSnapshotFixture)[0],
+      date: '2018-08-31',
+      periodStart: '2018-08-01',
+      periodEnd: '2018-08-31',
+    };
+    const rawTimeframes = stockSnapshotFixture.priceModes.raw.timeframes;
+    const timeframes = {
+      ...rawTimeframes,
+      '1m': { completedBars: [historicalMonth], formingBar: null },
+    };
+    const stock = {
+      ...stockSnapshotFixture,
+      priceModes: {
+        raw: { ...stockSnapshotFixture.priceModes.raw, timeframes },
+        adjusted: {
+          status: 'available' as const,
+          reasonCodes: [],
+          warnings: [],
+          timeframes,
+        },
+      },
+      corporateActions: [{
+        date: actionDate,
+        type: 'cash-dividend',
+        affectsPriceContinuity: true,
+        sourceUrl: actionSource,
+        verifiedAt: '2026-08-11',
+      }],
+      adjustmentFactors: [{
+        effectiveDate: actionDate,
+        actionTypes: ['cash-dividend'],
+        priceFactor: 0.95,
+        volumeFactor: 1,
+        stockDividendRatio: null,
+        basis: 'official-reference-price',
+        previousClose: 100,
+        referencePrice: 95,
+        sourceUrls: [actionSource, calculationSource],
+        verifiedAt: '2026-08-11',
+      }],
+      sourceUrls: [...stockSnapshotFixture.sourceUrls, actionSource, calculationSource],
+    };
+    const bytes = utf8Bytes(JSON.stringify(stock));
+    const baseManifest = await manifestFixture(stock, bytes);
+    const manifest = marketManifestSchema.parse({
+      ...baseManifest,
+      calendar: {
+        ...baseManifest.calendar,
+        holidayDates: ['2018-01-01', actionDate, '2026-01-01'],
+      },
+    });
+
+    await expect(loadStockSnapshot(manifest, '2330', async () => bytesResponse(bytes))).rejects.toMatchObject({
+      reason: 'schema-error',
+    });
+  });
+
   it('accepts only stock suspension evidence that exactly matches the manifest interval', async () => {
     const announcementUrl = 'https://www.twse.com.tw/zh/announcement/announcement/detail.html?3B707CC9422511F199A2F6A8670AFEDB';
     const stock = {

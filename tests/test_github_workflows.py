@@ -22,6 +22,8 @@ ACTION_PINS = {
     "actions/checkout": "11bd71901bbe5b1630ceea73d27597364c9af683",  # v4.2.2
     "actions/setup-python": "a26af69be951a213d495a4c3e4e4022e16d87065",  # v5.6.0
     "actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",  # v4.4.0
+    "actions/cache/restore": "5a3ec84eff668545956fd18022155c47e93e2684",  # v4.2.3
+    "actions/cache/save": "5a3ec84eff668545956fd18022155c47e93e2684",  # v4.2.3
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",  # v4.6.2
     "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",  # v4.3.0
     "actions/configure-pages": "983d7736d9b0ae728b81ab479565c72886d7745b",  # v5.0.0
@@ -353,7 +355,7 @@ class GitHubWorkflowContractTests(unittest.TestCase):
 
     def test_workflow_shells_receive_dynamic_values_only_through_environment(self) -> None:
         """若把 inputs、needs 或 API output 直接展開到 shell，動態字串可改變 shell 語意。"""
-        for name in ("verify.yml", "deploy-pages.yml", "update-market-data.yml"):
+        for name in ("verify.yml", "deploy-pages.yml", "update-market-data.yml", "bootstrap-market-history.yml"):
             for shell_body in shell_run_blocks(read_workflow(name)):
                 self.assertNotRegex(
                     shell_body,
@@ -403,8 +405,9 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("rollback_run_id", text)
         self.assertIn("artifact_run_id", text)
         self.assertGreaterEqual(text.count("run-id:"), 3)
-        self.assertIn("python tools/market_snapshot.py bootstrap", text)
         self.assertIn("python tools/market_snapshot.py update", text)
+        self.assertIn("--rebuild-if-same-cutoff", text)
+        self.assertIn("bootstrap-market-history.yml", text)
         self.assertIn("python tools/market_snapshot.py validate", text)
         self.assertIn(
             'cp "$VERIFIED_SNAPSHOT/manifest.json" public/data/manifest.json',
@@ -447,6 +450,8 @@ class GitHubWorkflowContractTests(unittest.TestCase):
             "actions/checkout",
             "actions/setup-python",
             "actions/setup-node",
+            "actions/cache/restore",
+            "actions/cache/save",
             "actions/upload-artifact",
             "actions/download-artifact",
             "actions/configure-pages",
@@ -464,10 +469,16 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("--max-pages 10", find_previous)
         self.assertNotIn("actions/artifacts?per_page=100", find_previous)
 
-        same_cutoff_start = text.index('if [[ "$SKIP_IF_SAME_CUTOFF" == "true" ]]')
+        source_rebuild = text.index("--rebuild-if-same-cutoff")
+        update_call = text.index("python tools/market_snapshot.py update")
+        same_cutoff_start = text.index('if [[ "$SKIP_IF_SAME_CUTOFF" == "true" ]]', update_call)
         same_cutoff_exit = text.index("exit 0", same_cutoff_start)
-        fallback_bootstrap = text.index("重建 source-bound 基準快照", same_cutoff_start)
-        self.assertLess(same_cutoff_exit, fallback_bootstrap)
+        self.assertLess(source_rebuild, update_call)
+        self.assertLess(update_call, same_cutoff_start)
+        self.assertIn(
+            'if [[ "$SKIP_IF_SAME_CUTOFF" != "true" ]]',
+            text[source_rebuild - 700:update_call],
+        )
         self.assertIn('echo "should_deploy=false"', text[same_cutoff_start:same_cutoff_exit])
         self.assertIn("if: ${{ needs.source-snapshot.outputs.should_deploy == 'true' }}", text)
         self.assertIn("needs.source-snapshot.outputs.should_deploy == 'true'", text)
@@ -497,6 +508,32 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("skip_if_same_cutoff: true", text)
         self.assertRegex(text, r"git ls-remote[^\n]*refs/heads/main")
         self.assertIn("同一日期", text)
+
+    def test_history_bootstrap_is_separate_and_pages_artifact_has_a_hard_size_gate(self) -> None:
+        """十年下載不可落入日常 Pages job，且最終 artifact 到門檻時不得上傳。"""
+
+        deploy = read_workflow("deploy-pages.yml")
+        bootstrap = read_workflow("bootstrap-market-history.yml")
+
+        self.assertIn("actions/cache/restore@", deploy)
+        self.assertIn("$RUNNER_TEMP/market-snapshot-cache", deploy)
+        self.assertIn("bootstrap-market-history.yml", deploy)
+        self.assertIn("400 MiB", deploy)
+        self.assertIn("400 * 1024 * 1024", deploy)
+        self.assertIn("workflow_dispatch:", bootstrap)
+        self.assertIn("python tools/market_snapshot.py bootstrap", bootstrap)
+        self.assertIn("actions/cache/save@", bootstrap)
+        self.assertIn("if: ${{ always() }}", bootstrap)
+        self.assertIn("retention-days: 30", bootstrap)
+        self.assert_pinned_actions(deploy, "actions/cache/restore", "actions/cache/save")
+        self.assert_pinned_actions(
+            bootstrap,
+            "actions/checkout",
+            "actions/setup-python",
+            "actions/cache/restore",
+            "actions/cache/save",
+            "actions/upload-artifact",
+        )
 
     def test_readme_documents_local_gates_public_site_and_manual_rollback(self) -> None:
         """若公開說明遺漏驗證或 rollback，維護者容易跳過原子發布流程。"""

@@ -46,6 +46,7 @@ from market_sources import (
     fetch_twse_historical_daily,
     load_suspension_interval_evidence,
     MarketSourceError,
+    OfficialMarketClosedError,
     parse_corporate_actions,
     parse_emergency_market_closure_evidence,
     parse_suspension_interval_evidence,
@@ -69,6 +70,8 @@ HISTORY_METADATA_SNAPSHOT_VERSIONS = frozenset(
 )
 NO_QUOTE_EVIDENCE_SNAPSHOT_VERSIONS = frozenset({V3_SNAPSHOT_VERSION, SNAPSHOT_VERSION})
 RETENTION_SESSIONS = 120
+HISTORY_YEARS = 10
+MAX_PUBLISHED_ARTIFACT_BYTES = 400 * 1024 * 1024
 PRICE_UNIT = "TWD"
 COMPARISON_UNIT_POLICY_URL = "https://www.twse.com.tw/zh/trading/trading-rule.html"
 DEFAULT_OVERRIDES_PATH = Path(__file__).resolve().parents[1] / "data" / "company-action-overrides.json"
@@ -105,6 +108,7 @@ class SnapshotBuildInput:
     sessions: tuple[MarketSession, ...]
     corporate_actions: tuple[CorporateAction, ...]
     calendar: TradingCalendar
+    adjustment_evidence_complete: bool = True
     retired_symbols: tuple[tuple[Market, str, str], ...] = ()
     suspension_intervals: tuple[SuspensionInterval, ...] = ()
 
@@ -267,6 +271,8 @@ def _validate_build_input(build: SnapshotBuildInput) -> None:
         raise SnapshotValidationError("generatedAt 必須含有時區。")
     if not build.symbols:
         raise SnapshotValidationError("沒有可支援的上市或上櫃普通股。")
+    if not isinstance(build.adjustment_evidence_complete, bool):
+        raise SnapshotValidationError("公司行動歷史覆蓋狀態必須是布林值。")
     symbol_keys: set[tuple[Market, str]] = set()
     for symbol in build.symbols:
         key = (symbol.market, symbol.code)
@@ -369,7 +375,11 @@ def _build_stock_documents(
     previous_manifest: SnapshotManifest | None,
 ) -> tuple[dict[tuple[Market, str], dict[str, Any]], dict[str, MarketCutoff]]:
     symbols = {(symbol.market, symbol.code): symbol for symbol in build.symbols}
-    available_sessions_by_market = _available_market_sessions(build, previous, previous_manifest)
+    available_sessions_by_market, history_sessions_by_market = _available_market_sessions(
+        build,
+        previous,
+        previous_manifest,
+    )
     (
         bars_by_symbol,
         no_quote_by_symbol,
@@ -446,19 +456,28 @@ def _build_stock_documents(
         _validate_bars(symbol, bars)
         retained_session_dates = set(available_sessions_by_market[symbol.market])
         retained_bars = tuple(bar for bar in bars if bar.trading_date in retained_session_dates)
+        history_no_quote_evidence = tuple(
+            sorted(no_quote_by_symbol.get(key, ()), key=lambda item: item.trading_date)
+        )
         retained_no_quote_evidence = tuple(
             evidence
-            for evidence in sorted(no_quote_by_symbol.get(key, ()), key=lambda item: item.trading_date)
+            for evidence in history_no_quote_evidence
             if evidence.trading_date in retained_session_dates
         )
         _validate_suspension_evidence_for_history(
             market=symbol.market,
             code=symbol.code,
             listing_date=symbol.listing_date,
-            bar_dates=tuple(bar.trading_date for bar in retained_bars),
-            no_quote_evidence=retained_no_quote_evidence,
-            market_sessions=available_sessions_by_market[symbol.market],
+            bar_dates=tuple(bar.trading_date for bar in bars),
+            no_quote_evidence=history_no_quote_evidence,
+            market_sessions=history_sessions_by_market[symbol.market],
             suspension_intervals=build.suspension_intervals,
+        )
+        _validate_history_availability(
+            symbol,
+            bars,
+            history_no_quote_evidence,
+            history_sessions_by_market[symbol.market],
         )
         available_sessions, short_history_reason = _validate_history_availability(
             symbol,
@@ -466,35 +485,48 @@ def _build_stock_documents(
             retained_no_quote_evidence,
             available_sessions_by_market[symbol.market],
         )
+        history_observed_dates = tuple(
+            sorted(
+                tuple(bar.trading_date for bar in bars)
+                + tuple(evidence.trading_date for evidence in history_no_quote_evidence)
+            )
+        )
+        raw_timeframes = _build_raw_timeframes(
+            bars=bars,
+            no_quote_evidence=history_no_quote_evidence,
+            market_sessions=history_sessions_by_market[symbol.market],
+            listing_date=symbol.listing_date,
+            calendar=build.calendar,
+        )
+        published_history_start, published_history_end = _published_price_history_bounds(
+            raw_timeframes,
+            fallback_dates=history_observed_dates,
+        )
         actions = _actions_for_stock(
             build.corporate_actions,
             symbol,
-            tuple(
-                sorted(
-                    tuple(bar.trading_date for bar in retained_bars)
-                    + tuple(evidence.trading_date for evidence in retained_no_quote_evidence)
-                )
-            ),
+            history_observed_dates,
+            published_history_start,
+            published_history_end,
         )
         corporate_actions = _merge_corporate_action_json(
             previous_adjustment.corporate_actions,
             actions,
+            published_history_start,
+            published_history_end,
         )
         sources = set(sources_by_symbol[key])
         sources.update(action["sourceUrl"] for action in corporate_actions)
         sources.update(source_url for factor in previous_adjustment.factors for source_url in factor.source_urls)
-        raw_timeframes = _build_raw_timeframes(
-            bars=retained_bars,
-            no_quote_evidence=retained_no_quote_evidence,
-            market_sessions=available_sessions_by_market[symbol.market],
-            listing_date=symbol.listing_date,
-            calendar=build.calendar,
-        )
-        adjustment_factors = _merge_adjustment_factors(
-            previous_adjustment.factors,
-            actions,
-            retained_bars,
-            corporate_actions,
+        adjustment_factors = (
+            _merge_adjustment_factors(
+                previous_adjustment.factors,
+                actions,
+                bars,
+                corporate_actions,
+            )
+            if build.adjustment_evidence_complete
+            else None
         )
         if adjustment_factors is not None:
             sources.update(source_url for factor in adjustment_factors for source_url in factor.source_urls)
@@ -506,15 +538,15 @@ def _build_stock_documents(
             }
             adjustment_factor_json: list[dict[str, Any]] = []
         else:
-            adjusted_bars = _backward_adjust_bars(retained_bars, adjustment_factors)
+            adjusted_bars = _backward_adjust_bars(bars, adjustment_factors)
             adjusted_mode = {
                 "status": "available",
                 "reasonCodes": [],
                 "warnings": [],
                 "timeframes": _build_raw_timeframes(
                     bars=adjusted_bars,
-                    no_quote_evidence=retained_no_quote_evidence,
-                    market_sessions=available_sessions_by_market[symbol.market],
+                    no_quote_evidence=history_no_quote_evidence,
+                    market_sessions=history_sessions_by_market[symbol.market],
                     listing_date=symbol.listing_date,
                     calendar=build.calendar,
                 ),
@@ -603,6 +635,34 @@ def _build_raw_timeframes(
     }
 
 
+def _published_price_history_bounds(
+    timeframes: Mapping[str, Mapping[str, Any]],
+    *,
+    fallback_dates: Sequence[date] = (),
+) -> tuple[date, date]:
+    """回傳公開日／週／月資料共同涵蓋的最早期間與最後觀察日。"""
+
+    bars = [
+        bar
+        for series in timeframes.values()
+        for bar in (
+            *series.get("completedBars", ()),
+            *((series["formingBar"],) if series.get("formingBar") is not None else ()),
+        )
+    ]
+    if bars:
+        try:
+            return (
+                min(date.fromisoformat(bar["periodStart"]) for bar in bars),
+                max(date.fromisoformat(bar["date"]) for bar in bars),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SnapshotValidationError("公開價格歷史期間無效。") from error
+    if fallback_dates:
+        return min(fallback_dates), max(fallback_dates)
+    raise SnapshotValidationError("股票沒有可發布的價格或未報價歷史。")
+
+
 def _build_adjustment_factors(
     actions: Sequence[CorporateAction],
     bars: Sequence[_NormalizedBar],
@@ -683,6 +743,8 @@ def _build_adjustment_factors(
 def _merge_corporate_action_json(
     previous_actions: Sequence[dict[str, Any]],
     current_actions: Sequence[CorporateAction],
+    published_history_start: date,
+    published_history_end: date,
 ) -> list[dict[str, Any]]:
     """以日期、類型與官方來源去重，讓增量快照保留已驗證的歷史公司行動。"""
 
@@ -698,6 +760,8 @@ def _merge_corporate_action_json(
                 raise ValueError
         except (KeyError, TypeError, ValueError, SnapshotValidationError) as error:
             raise SnapshotValidationError("增量快照的公司行動證據無效。") from error
+        if action_date < published_history_start or action_date > published_history_end:
+            continue
         key = (action_date.isoformat(), action_type, source_url)
         existing = merged.get(key)
         if existing is not None and existing["affectsPriceContinuity"] != affects_price_continuity:
@@ -724,7 +788,12 @@ def _merge_adjustment_factors(
 ) -> tuple[_AdjustmentFactor, ...] | None:
     """把已驗證舊因子與本次新證據合併；缺證據時不把舊還原誤標成可用。"""
 
-    previous_by_date = {factor.effective_date: factor for factor in previous_factors}
+    grouped_actions = _group_corporate_action_metadata(corporate_actions)
+    previous_by_date = {
+        factor.effective_date: factor
+        for factor in previous_factors
+        if factor.effective_date in grouped_actions
+    }
     if len(previous_by_date) != len(previous_factors):
         raise SnapshotValidationError("前一快照有重複調整生效日。")
     current_by_date: dict[date, _AdjustmentFactor] = {}
@@ -753,7 +822,6 @@ def _merge_adjustment_factors(
         if not current_types.issubset(set(existing.action_types)):
             return None
 
-    grouped_actions = _group_corporate_action_metadata(corporate_actions)
     if set(merged) != set(grouped_actions):
         return None
     normalized: list[_AdjustmentFactor] = []
@@ -896,6 +964,7 @@ def _aggregate_timeframe(
     cutoff = market_sessions[-1]
     market_session_dates = set(market_sessions)
     first_market_session = market_sessions[0]
+    retained_daily_start = market_sessions[-RETENTION_SESSIONS]
     bars_by_period: dict[tuple[int, int], list[_NormalizedBar]] = {}
     for bar in bars:
         bars_by_period.setdefault(_timeframe_key(timeframe, bar.trading_date), []).append(bar)
@@ -912,6 +981,9 @@ def _aggregate_timeframe(
             listing_date=listing_date,
         )
         if not expected_sessions:
+            continue
+        if expected_sessions[0] < retained_daily_start <= expected_sessions[-1]:
+            # 公開日 K 的 120 日切點落在週／月中間時，不發布無法由公開日 K 完整驗證的過渡棒。
             continue
         observed_expected_sessions = tuple(session for session in expected_sessions if session <= cutoff)
         if any(session < first_market_session for session in observed_expected_sessions):
@@ -1038,8 +1110,8 @@ def _available_market_sessions(
     build: SnapshotBuildInput,
     previous: Path | SnapshotManifest | None,
     previous_manifest: SnapshotManifest | None,
-) -> dict[Market, tuple[date, ...]]:
-    """以官方行事曆驗證市場交易日，拒絕共同遺漏日與非交易日。"""
+) -> tuple[dict[Market, tuple[date, ...]], dict[Market, tuple[date, ...]]]:
+    """分別回傳公開 120 日與可供週月聚合的完整交易日歷史。"""
 
     observed_sessions = _current_market_session_dates(build)
     claimed_sessions: dict[Market, set[date]] = {
@@ -1050,9 +1122,11 @@ def _available_market_sessions(
         for market, cutoff in previous_manifest.markets.items():
             claimed_sessions[market].update(date.fromisoformat(session) for session in cutoff.trading_sessions)
 
-    verified_sessions: dict[Market, tuple[date, ...]] = {}
+    published_sessions: dict[Market, tuple[date, ...]] = {}
+    history_sessions: dict[Market, tuple[date, ...]] = {}
     for market, dates in claimed_sessions.items():
-        retained_dates = tuple(sorted(dates)[-RETENTION_SESSIONS:])
+        all_dates = tuple(sorted(dates))
+        retained_dates = all_dates[-RETENTION_SESSIONS:]
         if not retained_dates:
             raise SnapshotValidationError(f"缺少 {market} 官方交易日行情。")
         expected_sessions = _official_trading_sessions_ending_at(
@@ -1069,8 +1143,9 @@ def _available_market_sessions(
             if unexpected:
                 details.append("非預期 " + ", ".join(session.isoformat() for session in unexpected))
             raise SnapshotValidationError(f"{market} 官方交易日缺漏或不在官方交易視窗：{'；'.join(details)}。")
-        verified_sessions[market] = expected_sessions
-    return verified_sessions
+        published_sessions[market] = expected_sessions
+        history_sessions[market] = all_dates
+    return published_sessions, history_sessions
 
 
 def _current_market_session_dates(build: SnapshotBuildInput) -> dict[Market, set[date]]:
@@ -1311,16 +1386,18 @@ def _actions_for_stock(
     actions: Sequence[CorporateAction],
     symbol: SupportedSymbol,
     observed_dates: Sequence[date],
+    published_history_start: date,
+    published_history_end: date,
 ) -> tuple[CorporateAction, ...]:
     if not observed_dates:
         raise SnapshotValidationError(f"{symbol.market} {symbol.code} 沒有可稽核交易日。")
-    first_date = min(observed_dates)
-    last_date = max(observed_dates)
+    observed_date_set = set(observed_dates)
     matching = [
         action
         for action in actions
         if (action.market, action.code) == (symbol.market, symbol.code)
-        and first_date <= action.action_date <= last_date
+        and published_history_start <= action.action_date <= published_history_end
+        and action.action_date in observed_date_set
     ]
     for action in matching:
         if not action.source_url.startswith("https://"):
@@ -1535,6 +1612,7 @@ def _write_snapshot_atomically(
         _write_bytes(temporary / "provenance.json", _canonical_json_bytes(provenance_document))
         _write_deterministic_tar(temporary)
         _write_sha256sums(temporary)
+        _validate_published_artifact_size(temporary)
         validate_snapshot(temporary)
         _replace_output_directory(temporary, output)
     except Exception:
@@ -1589,6 +1667,20 @@ def _write_bytes(path: Path, payload: bytes) -> None:
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _validate_published_artifact_size(snapshot: Path) -> None:
+    """GitHub Pages 行情資料超過 400 MiB 時拒絕原子切換。"""
+
+    published_paths = [snapshot / "manifest.json", snapshot / "provenance.json"]
+    data_directory = snapshot / "data"
+    if data_directory.is_dir():
+        published_paths.extend(path for path in data_directory.rglob("*") if path.is_file())
+    size = sum(path.stat().st_size for path in published_paths if path.is_file())
+    if size >= MAX_PUBLISHED_ARTIFACT_BYTES:
+        raise SnapshotValidationError(
+            "發布行情資料超過 400 MiB 門檻，拒絕覆寫上一個成功快照；請先評估壓縮、拆分或替代託管。"
+        )
 
 
 def _write_deterministic_tar(root: Path) -> None:
@@ -2010,14 +2102,6 @@ def _validate_v4_stock_document(
     _validate_comparison_unit_policy(stock["comparisonUnitPolicy"], entry)
     source_urls = _stock_source_urls(stock, entry)
     no_quote_evidence = _parse_no_quote_evidence(stock["noQuoteEvidence"], entry, source_urls)
-    _validate_corporate_actions(stock["corporateActions"], market_sessions)
-    adjustment_factors = _parse_adjustment_factors(
-        stock["adjustmentFactors"],
-        entry,
-        source_urls,
-        stock["corporateActions"],
-        market_sessions,
-    )
     price_modes = stock["priceModes"]
     if not isinstance(price_modes, dict) or set(price_modes) != {"raw", "adjusted"}:
         raise SnapshotValidationError("v4 價格模式欄位無效。")
@@ -2032,29 +2116,6 @@ def _validate_v4_stock_document(
         or set(raw["timeframes"]) != {"1d", "1w", "1m"}
     ):
         raise SnapshotValidationError("v4 原始價格模式欄位無效。")
-    adjusted_available = False
-    if not isinstance(adjusted, dict):
-        raise SnapshotValidationError("v4 還原價格模式欄位無效。")
-    if adjusted.get("status") == "available":
-        if (
-            set(adjusted) != {"status", "reasonCodes", "warnings", "timeframes"}
-            or adjusted["reasonCodes"] != []
-            or adjusted["warnings"] != []
-            or not isinstance(adjusted["timeframes"], dict)
-            or set(adjusted["timeframes"]) != {"1d", "1w", "1m"}
-        ):
-            raise SnapshotValidationError("v4 還原價格模式欄位無效。")
-        _validate_adjustment_factor_coverage(adjustment_factors, stock["corporateActions"])
-        adjusted_available = True
-    elif (
-        set(adjusted) != {"status", "reasonCodes", "warnings"}
-        or adjusted["status"] != "unavailable"
-        or adjusted["reasonCodes"] != [MISSING_ADJUSTMENT_EVIDENCE_REASON]
-        or adjusted["warnings"] != [MISSING_ADJUSTMENT_EVIDENCE_WARNING]
-        or adjustment_factors
-    ):
-        raise SnapshotValidationError("v4 還原價格模式欄位無效。")
-
     timeframes = raw["timeframes"]
     daily_bars = _validate_v4_timeframe(
         value=timeframes["1d"],
@@ -2078,6 +2139,46 @@ def _validate_v4_stock_document(
     monthly_forming = _validate_v4_forming_bar(timeframes["1m"], "1m", entry)
     if timeframes["1d"].get("formingBar") is not None:
         raise SnapshotValidationError("v4 日 K 不可保存形成中 K 棒。")
+
+    published_history_start, published_history_end = _published_price_history_bounds(
+        timeframes,
+        fallback_dates=tuple(evidence.trading_date for evidence in no_quote_evidence),
+    )
+    historical_market_sessions = _official_trading_sessions_between(
+        calendar,
+        max(listing_date, published_history_start),
+        min(market_sessions[-1], published_history_end),
+    )
+    _validate_corporate_actions(stock["corporateActions"], historical_market_sessions)
+    adjustment_factors = _parse_adjustment_factors(
+        stock["adjustmentFactors"],
+        entry,
+        source_urls,
+        stock["corporateActions"],
+        historical_market_sessions,
+    )
+    adjusted_available = False
+    if not isinstance(adjusted, dict):
+        raise SnapshotValidationError("v4 還原價格模式欄位無效。")
+    if adjusted.get("status") == "available":
+        if (
+            set(adjusted) != {"status", "reasonCodes", "warnings", "timeframes"}
+            or adjusted["reasonCodes"] != []
+            or adjusted["warnings"] != []
+            or not isinstance(adjusted["timeframes"], dict)
+            or set(adjusted["timeframes"]) != {"1d", "1w", "1m"}
+        ):
+            raise SnapshotValidationError("v4 還原價格模式欄位無效。")
+        _validate_adjustment_factor_coverage(adjustment_factors, stock["corporateActions"])
+        adjusted_available = True
+    elif (
+        set(adjusted) != {"status", "reasonCodes", "warnings"}
+        or adjusted["status"] != "unavailable"
+        or adjusted["reasonCodes"] != [MISSING_ADJUSTMENT_EVIDENCE_REASON]
+        or adjusted["warnings"] != [MISSING_ADJUSTMENT_EVIDENCE_WARNING]
+        or adjustment_factors
+    ):
+        raise SnapshotValidationError("v4 還原價格模式欄位無效。")
 
     daily_dates = tuple(item["parsedDate"] for item in daily_bars)
     no_quote_dates = tuple(evidence.trading_date for evidence in no_quote_evidence)
@@ -3225,20 +3326,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     pack = commands.add_parser("pack", help="重新產生可重現的 snapshot.tar.gz 與 SHA256SUMS")
     pack.add_argument("--snapshot", type=Path, required=True, help="快照目錄")
 
-    bootstrap = commands.add_parser("bootstrap", help="以 120 個官方交易日建立基準快照")
+    bootstrap = commands.add_parser("bootstrap", help="以十年官方全市場日行情建立可續跑基準快照")
     bootstrap.add_argument("--output", type=Path, required=True, help="輸出目錄")
     bootstrap.add_argument("--source-commit", required=True, help="對應的完整 source commit")
     bootstrap.add_argument("--cache", type=Path, default=Path(".cache/market-snapshot"), help="可續跑快取目錄")
     bootstrap.add_argument("--overrides", type=Path, default=DEFAULT_OVERRIDES_PATH, help="公司行動與下市證據覆寫檔")
     bootstrap.add_argument("--suspensions", type=Path, default=DEFAULT_SUSPENSION_INTERVALS_PATH, help="官方停止買賣區間佐證檔")
 
-    update = commands.add_parser("update", help="從前一成功快照追加一個官方交易日")
+    update = commands.add_parser("update", help="補齊缺少官方交易日並由完整歷史快取重建")
     update.add_argument("--previous", type=Path, required=True, help="前一成功快照目錄")
     update.add_argument("--output", type=Path, required=True, help="輸出目錄")
     update.add_argument("--source-commit", required=True, help="對應的完整 source commit")
     update.add_argument("--cache", type=Path, default=Path(".cache/market-snapshot"), help="可續跑快取目錄")
     update.add_argument("--overrides", type=Path, default=DEFAULT_OVERRIDES_PATH, help="公司行動與下市證據覆寫檔")
     update.add_argument("--suspensions", type=Path, default=DEFAULT_SUSPENSION_INTERVALS_PATH, help="官方停止買賣區間佐證檔")
+    update.add_argument(
+        "--require-history-cache",
+        action="store_true",
+        help="拒絕在缺少完整十年日期快取時降級成公開 120 日增量。",
+    )
+    update.add_argument(
+        "--rebuild-if-same-cutoff",
+        action="store_true",
+        help="同 cutoff 時仍以完整十年日期快取重建，供 source commit 變更後重新封裝。",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -3256,7 +3367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "bootstrap":
             manifest = bootstrap_snapshot(args.output, args.source_commit, args.cache, args.overrides, args.suspensions)
-            print(f"已建立 120 交易日基準快照：{manifest.snapshot_hash}。")
+            print(f"已建立十年全市場基準快照：{manifest.snapshot_hash}。")
             return 0
         if args.command == "update":
             manifest, updated = update_snapshot(
@@ -3266,6 +3377,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.cache,
                 args.overrides,
                 args.suspensions,
+                require_history_cache=args.require_history_cache,
+                rebuild_if_same_cutoff=args.rebuild_if_same_cutoff,
             )
             if updated:
                 print(f"已追加官方交易日快照：{manifest.snapshot_hash}。")
@@ -3471,41 +3584,189 @@ def bootstrap_snapshot(
     *,
     now: datetime | None = None,
 ) -> SnapshotManifest:
-    """以最近 120 個官方交易日建立基準快照，快取成功回應以便安全續跑。"""
+    """以十年全市場官方日行情建立基準快照，依市場／日期快取以便安全續跑。"""
     calendar = fetch_trading_calendar()
     generated_at = now or datetime.now(calendar.timezone)
-    sessions = _recent_trading_sessions(calendar, generated_at, RETENTION_SESSIONS)
+    cutoff = expected_cutoff_date(calendar, generated_at)
+    if cutoff is None:
+        raise SnapshotValidationError("官方交易日曆未涵蓋目前日期，不能建立十年基準快照。")
+    history_start = _ten_year_history_start(cutoff)
     symbols = fetch_supported_symbols()
-    actions = fetch_corporate_actions(start_date=sessions[0], end_date=sessions[-1])
+    actions = fetch_corporate_actions(start_date=history_start, end_date=cutoff)
     override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
     suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
-    market_sessions: list[MarketSession] = []
-    for session_date in sessions:
-        market_sessions.append(
-            _market_session_from_response(
-                "TWSE",
-                _fetch_cached_daily("TWSE", session_date, cache_directory, fetch_twse_historical_daily),
-            )
-        )
-        _throttle_official_requests()
-        market_sessions.append(
-            _market_session_from_response(
-                "TPEx",
-                _fetch_cached_daily("TPEx", session_date, cache_directory, fetch_tpex_historical_daily),
-            )
-        )
-        _throttle_official_requests()
+    market_sessions, closed_market_dates = _collect_historical_market_sessions(
+        history_start,
+        cutoff,
+        cache_directory,
+    )
+    history_calendar = _calendar_with_historical_market_closures(
+        calendar,
+        history_start,
+        cutoff,
+        closed_market_dates,
+    )
     build_input = SnapshotBuildInput(
         source_commit=source_commit,
         generated_at=generated_at,
         symbols=symbols,
-        sessions=tuple(market_sessions),
+        sessions=market_sessions,
         corporate_actions=(*actions, *override_actions),
-        calendar=calendar,
+        calendar=history_calendar,
+        adjustment_evidence_complete=False,
         retired_symbols=retired_symbols,
         suspension_intervals=suspension_intervals,
     )
     return build_snapshot(None, build_input, output)
+
+
+def _ten_year_history_start(cutoff: date) -> date:
+    """回傳足以產生 120 根完整月 K 的十年基準起點。"""
+
+    first_target_month = date(cutoff.year - HISTORY_YEARS, cutoff.month, 1)
+    return (first_target_month - timedelta(days=1)).replace(day=1)
+
+
+def _historical_candidate_dates(history_start: date, cutoff: date) -> tuple[date, ...]:
+    """歷史端點只查平日；週末不具有交易日與來源失敗兩種意義。"""
+
+    if history_start > cutoff:
+        raise SnapshotValidationError("十年基準起點晚於官方資料截止日。")
+    candidates: list[date] = []
+    candidate = history_start
+    while candidate <= cutoff:
+        if candidate.weekday() < 5:
+            candidates.append(candidate)
+        candidate += timedelta(days=1)
+    if not candidates:
+        raise SnapshotValidationError("十年基準沒有任何可查詢的平日。")
+    return tuple(candidates)
+
+
+def _collect_historical_market_sessions(
+    history_start: date,
+    cutoff: date,
+    cache_directory: Path,
+) -> tuple[tuple[MarketSession, ...], tuple[date, ...]]:
+    """逐市場日期補齊十年快取；兩市場狀態不一致時拒絕猜測共用日曆。"""
+
+    market_sessions: list[MarketSession] = []
+    closed_market_dates: list[date] = []
+    for session_date in _historical_candidate_dates(history_start, cutoff):
+        twse_response = _fetch_cached_historical_daily(
+            "TWSE",
+            session_date,
+            cache_directory,
+            fetch_twse_historical_daily,
+        )
+        _throttle_official_requests()
+        tpex_response = _fetch_cached_historical_daily(
+            "TPEx",
+            session_date,
+            cache_directory,
+            fetch_tpex_historical_daily,
+        )
+        _throttle_official_requests()
+        if (twse_response is None) != (tpex_response is None):
+            raise SnapshotValidationError(
+                f"兩市場官方歷史日行情狀態不一致：{session_date.isoformat()}；拒絕猜測共用交易日。"
+            )
+        if twse_response is None:
+            closed_market_dates.append(session_date)
+            continue
+        market_sessions.extend(
+            (
+                _market_session_from_response("TWSE", twse_response),
+                _market_session_from_response("TPEx", tpex_response),
+            )
+        )
+    if not market_sessions:
+        raise SnapshotValidationError("十年基準沒有任何可發布的官方市場交易日。")
+    return tuple(market_sessions), tuple(closed_market_dates)
+
+
+def _calendar_with_historical_market_closures(
+    calendar: TradingCalendar,
+    history_start: date,
+    cutoff: date,
+    closed_market_dates: Sequence[date],
+) -> TradingCalendar:
+    """將官方日期端點明示的休市結果併入日曆，供完整週／月邊界驗證。"""
+
+    if any(closed_date.weekday() >= 5 for closed_date in closed_market_dates):
+        raise SnapshotValidationError("歷史休市快取不可將週末寫入交易日曆。")
+    if any(closed_date < history_start or closed_date > cutoff for closed_date in closed_market_dates):
+        raise SnapshotValidationError("歷史休市快取超出十年基準範圍。")
+    # 每年元旦是台灣法定休市日，作為完整日曆資料的年份涵蓋錨點；其餘平日皆由官方端點結果決定。
+    coverage_anchors = {date(year, 1, 1) for year in range(history_start.year, cutoff.year + 1)}
+    return TradingCalendar(
+        holiday_dates=tuple(sorted({*calendar.holiday_dates, *closed_market_dates, *coverage_anchors})),
+        source_url=calendar.source_url,
+        valid_through=max(calendar.valid_through, cutoff),
+        timezone=calendar.timezone,
+        emergency_closures=calendar.emergency_closures,
+    )
+
+
+def _history_cache_is_complete(
+    history_start: date,
+    cutoff: date,
+    cache_directory: Path,
+) -> bool:
+    """辨識可重建十年快照的完整快取；部分快取必須 fail closed。"""
+
+    candidate_dates = _historical_candidate_dates(history_start, cutoff)
+    paths = tuple(
+        cache_directory / market / f"{session_date.isoformat()}.json"
+        for market in ("TWSE", "TPEx")
+        for session_date in candidate_dates
+    )
+    existing = tuple(path for path in paths if path.is_file())
+    if not existing:
+        return False
+    missing = tuple(path for path in paths if not path.is_file())
+    if missing:
+        first_missing = missing[0]
+        raise SnapshotValidationError(
+            f"十年歷史日期快取不完整：缺少 {first_missing.parent.name} {first_missing.stem}；請以 bootstrap 續跑完成。"
+        )
+    return True
+
+
+def _load_cached_historical_market_sessions(
+    history_start: date,
+    cutoff: date,
+    cache_directory: Path,
+) -> tuple[tuple[MarketSession, ...], tuple[date, ...]]:
+    """只從完整日期快取重建十年輸入，避免增量混入前一份公開裁切資料。"""
+
+    market_sessions: list[MarketSession] = []
+    closed_market_dates: list[date] = []
+    for session_date in _historical_candidate_dates(history_start, cutoff):
+        twse_path = cache_directory / "TWSE" / f"{session_date.isoformat()}.json"
+        tpex_path = cache_directory / "TPEx" / f"{session_date.isoformat()}.json"
+        if not twse_path.is_file() or not tpex_path.is_file():
+            raise SnapshotValidationError(
+                f"十年歷史日期快取不完整：{session_date.isoformat()}；拒絕以裁切快照重建。"
+            )
+        twse_response = _historical_daily_response_from_cache(twse_path, "TWSE", session_date)
+        tpex_response = _historical_daily_response_from_cache(tpex_path, "TPEx", session_date)
+        if (twse_response is None) != (tpex_response is None):
+            raise SnapshotValidationError(
+                f"兩市場歷史日期快取狀態不一致：{session_date.isoformat()}；拒絕重建。"
+            )
+        if twse_response is None:
+            closed_market_dates.append(session_date)
+            continue
+        market_sessions.extend(
+            (
+                _market_session_from_response("TWSE", twse_response),
+                _market_session_from_response("TPEx", tpex_response),
+            )
+        )
+    if not market_sessions:
+        raise SnapshotValidationError("十年歷史日期快取沒有任何可發布的市場交易日。")
+    return tuple(market_sessions), tuple(closed_market_dates)
 
 
 def update_snapshot(
@@ -3517,8 +3778,10 @@ def update_snapshot(
     suspension_intervals_path: Path = DEFAULT_SUSPENSION_INTERVALS_PATH,
     *,
     now: datetime | None = None,
+    require_history_cache: bool = False,
+    rebuild_if_same_cutoff: bool = False,
 ) -> tuple[SnapshotManifest, bool]:
-    """只在兩市場都有一個新官方截止日時追加，既有截止日則不改寫。"""
+    """取得缺少日行情後，以完整十年快取重建；同截止日則維持冪等。"""
     previous_directory, is_temporary = _previous_snapshot_directory(previous)
     previous_manifest: SnapshotManifest | None = None
     try:
@@ -3531,7 +3794,8 @@ def update_snapshot(
         if expected is None:
             raise SnapshotValidationError("官方交易日曆未涵蓋目前日期，不能安全更新快照。")
         expected_text = expected.isoformat()
-        if all(cutoff.cutoff_date == expected_text for cutoff in previous_manifest.markets.values()):
+        same_cutoff = all(cutoff.cutoff_date == expected_text for cutoff in previous_manifest.markets.values())
+        if same_cutoff and not rebuild_if_same_cutoff:
             return previous_manifest, False
         if any(cutoff.cutoff_date > expected_text for cutoff in previous_manifest.markets.values()):
             raise SnapshotValidationError("前一快照截止日比官方預期交易日更新，拒絕覆寫。")
@@ -3539,12 +3803,18 @@ def update_snapshot(
         previous_cutoff_dates = {date.fromisoformat(cutoff.cutoff_date) for cutoff in previous_manifest.markets.values()}
         if len(previous_cutoff_dates) != 1:
             raise SnapshotValidationError("前一快照兩市場截止日不一致，不能安全補齊。")
-        missing_sessions = _trading_sessions_after(calendar, previous_cutoff_dates.pop(), expected)
-        if not missing_sessions:
+        previous_cutoff = previous_cutoff_dates.pop()
+        history_start = _ten_year_history_start(expected)
+        history_cache_complete = _history_cache_is_complete(history_start, previous_cutoff, cache_directory)
+        if require_history_cache and not history_cache_complete:
+            raise SnapshotValidationError(
+                "找不到完整十年歷史日期快取；請先執行 bootstrap-market-history.yml 完成獨立基準工作。"
+            )
+        missing_sessions = () if same_cutoff else _trading_sessions_after(calendar, previous_cutoff, expected)
+        if not missing_sessions and not same_cutoff:
             raise SnapshotValidationError("前一快照與官方預期交易日的缺口無法辨識。")
 
         symbols = fetch_supported_symbols()
-        actions = fetch_corporate_actions(start_date=missing_sessions[0], end_date=expected)
         override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
         suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
         if len(missing_sessions) == 1:
@@ -3555,24 +3825,87 @@ def update_snapshot(
                 _market_session_from_response("TWSE", twse_response),
                 _market_session_from_response("TPEx", tpex_response),
             )
-        else:
+        elif missing_sessions:
             market_sessions_list: list[MarketSession] = []
             for session_date in missing_sessions:
-                market_sessions_list.append(
-                    _market_session_from_response(
+                if history_cache_complete:
+                    twse_response = _fetch_cached_historical_daily(
                         "TWSE",
-                        _fetch_cached_daily("TWSE", session_date, cache_directory, fetch_twse_historical_daily),
+                        session_date,
+                        cache_directory,
+                        fetch_twse_historical_daily,
                     )
+                    if twse_response is None:
+                        raise SnapshotValidationError(
+                            f"官方交易日曆與 TWSE 歷史端點休市結果衝突：{session_date.isoformat()}。"
+                        )
+                else:
+                    twse_response = _fetch_cached_daily(
+                        "TWSE",
+                        session_date,
+                        cache_directory,
+                        fetch_twse_historical_daily,
+                    )
+                market_sessions_list.append(
+                    _market_session_from_response("TWSE", twse_response)
                 )
                 _throttle_official_requests()
-                market_sessions_list.append(
-                    _market_session_from_response(
+                if history_cache_complete:
+                    tpex_response = _fetch_cached_historical_daily(
                         "TPEx",
-                        _fetch_cached_daily("TPEx", session_date, cache_directory, fetch_tpex_historical_daily),
+                        session_date,
+                        cache_directory,
+                        fetch_tpex_historical_daily,
                     )
+                    if tpex_response is None:
+                        raise SnapshotValidationError(
+                            f"官方交易日曆與 TPEx 歷史端點休市結果衝突：{session_date.isoformat()}。"
+                        )
+                else:
+                    tpex_response = _fetch_cached_daily(
+                        "TPEx",
+                        session_date,
+                        cache_directory,
+                        fetch_tpex_historical_daily,
+                    )
+                market_sessions_list.append(
+                    _market_session_from_response("TPEx", tpex_response)
                 )
                 _throttle_official_requests()
             market_sessions = tuple(market_sessions_list)
+        else:
+            market_sessions = ()
+        if history_cache_complete:
+            history_sessions, closed_market_dates = _load_cached_historical_market_sessions(
+                history_start,
+                expected,
+                cache_directory,
+            )
+            history_calendar = _calendar_with_historical_market_closures(
+                calendar,
+                history_start,
+                expected,
+                closed_market_dates,
+            )
+            full_actions = fetch_corporate_actions(start_date=history_start, end_date=expected)
+            build_input = SnapshotBuildInput(
+                source_commit=source_commit,
+                generated_at=generated_at,
+                symbols=symbols,
+                sessions=history_sessions,
+                corporate_actions=(*full_actions, *override_actions),
+                calendar=history_calendar,
+                adjustment_evidence_complete=False,
+                retired_symbols=retired_symbols,
+                suspension_intervals=suspension_intervals,
+            )
+            # 只交 manifest 給 build，阻止公開 120 日輸出重新混入十年候選輸入。
+            return build_snapshot(previous_manifest, build_input, output), True
+        if same_cutoff:
+            raise SnapshotValidationError(
+                "同截止日重封裝需要完整十年歷史日期快取；請先執行 bootstrap-market-history.yml。"
+            )
+        actions = fetch_corporate_actions(start_date=missing_sessions[0], end_date=expected)
         build_input = SnapshotBuildInput(
             source_commit=source_commit,
             generated_at=generated_at,
@@ -3779,8 +4112,7 @@ def _fetch_cached_daily(
         )
     ):
         raise SnapshotValidationError(f"下載日行情市場或交易日不符：{market} {session_date.isoformat()}。")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write_bytes(
+    _write_cache_bytes_atomically(
         path,
         _canonical_json_bytes(
             {
@@ -3792,6 +4124,116 @@ def _fetch_cached_daily(
     return response
 
 
+def _fetch_cached_historical_daily(
+    market: Market,
+    session_date: date,
+    cache_directory: Path,
+    fetcher: Any,
+) -> DailyMarketResponse | None:
+    """讀取十年日期快取；官方明示休市則保存可重用的關閉狀態。"""
+
+    path = cache_directory / market / f"{session_date.isoformat()}.json"
+    if path.is_file():
+        return _historical_daily_response_from_cache(path, market, session_date)
+    try:
+        response = _fetch_with_retries(market, session_date, fetcher)
+    except OfficialMarketClosedError as error:
+        if error.market != market or error.trading_date != session_date:
+            raise SnapshotValidationError(f"官方休市回應市場或交易日不符：{market} {session_date.isoformat()}。") from error
+        _write_cache_bytes_atomically(
+            path,
+            _canonical_json_bytes(
+                {
+                    "date": session_date.isoformat(),
+                    "market": market,
+                    "sourceUrl": error.source_url,
+                    "status": "official-market-closed",
+                }
+            ),
+        )
+        return None
+    _validate_cached_daily_response(response, market, session_date, downloaded=True)
+    _write_cache_bytes_atomically(
+        path,
+        _canonical_json_bytes(
+            {
+                "quotes": [_quote_cache_json(quote) for quote in response.quotes],
+                "noQuoteEvidence": [_no_quote_evidence_json(evidence) for evidence in response.no_quote_evidence],
+            }
+        ),
+    )
+    return response
+
+
+def _historical_daily_response_from_cache(
+    path: Path,
+    market: Market,
+    session_date: date,
+) -> DailyMarketResponse | None:
+    """驗證單日歷史快取；未知狀態一律拒絕，避免把來源故障視為休市。"""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        raise SnapshotValidationError(f"快取資料無效：{path}。") from error
+    if isinstance(payload, dict) and "status" in payload:
+        if payload != {
+            "date": session_date.isoformat(),
+            "market": market,
+            "sourceUrl": payload.get("sourceUrl"),
+            "status": "official-market-closed",
+        }:
+            raise SnapshotValidationError(f"歷史休市快取市場、交易日或狀態不符：{path}。")
+        try:
+            _official_evidence_url(payload["sourceUrl"])
+        except (KeyError, TypeError, SnapshotValidationError) as error:
+            raise SnapshotValidationError(f"歷史休市快取官方來源無效：{path}。") from error
+        return None
+    try:
+        response = _daily_response_from_cache(payload)
+    except (ValueError, TypeError, KeyError) as error:
+        raise SnapshotValidationError(f"快取資料無效：{path}。") from error
+    _validate_cached_daily_response(response, market, session_date, downloaded=False, path=path)
+    return response
+
+
+def _validate_cached_daily_response(
+    response: DailyMarketResponse,
+    market: Market,
+    session_date: date,
+    *,
+    downloaded: bool,
+    path: Path | None = None,
+) -> None:
+    """共用下載與快取的市場／日期邊界驗證。"""
+
+    if (
+        not response.quotes and not response.no_quote_evidence
+        or any(quote.market != market or quote.trading_date != session_date for quote in response.quotes)
+        or any(
+            evidence.market != market or evidence.trading_date != session_date
+            for evidence in response.no_quote_evidence
+        )
+    ):
+        if downloaded:
+            raise SnapshotValidationError(f"下載日行情市場或交易日不符：{market} {session_date.isoformat()}。")
+        raise SnapshotValidationError(f"快取資料市場或交易日不符：{path}。")
+
+
+def _write_cache_bytes_atomically(path: Path, payload: bytes) -> None:
+    """單一日期快取以同目錄 replace 寫入，續跑不會讀到半份 JSON。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.tmp-{uuid4().hex}"
+    try:
+        _write_bytes(temporary, payload)
+        temporary.replace(path)
+    except Exception:
+        if temporary.is_file():
+            temporary.unlink()
+        raise
+
+
 def _fetch_with_retries(market: Market, session_date: date, fetcher: Any) -> DailyMarketResponse:
     last_error: Exception | None = None
     for attempt in range(1, 4):
@@ -3800,6 +4242,8 @@ def _fetch_with_retries(market: Market, session_date: date, fetcher: Any) -> Dai
             if not response.quotes and not response.no_quote_evidence:
                 raise SnapshotValidationError(f"{market} 官方日行情不可為空。")
             return response
+        except OfficialMarketClosedError:
+            raise
         except (MarketSourceError, OSError, SnapshotValidationError) as error:
             last_error = error
             if attempt < 3:
