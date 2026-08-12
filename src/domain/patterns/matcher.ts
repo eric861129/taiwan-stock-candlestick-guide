@@ -57,6 +57,7 @@ const FRESHNESS_VALUES = new Set([
   'unknown',
 ]);
 const TIMEFRAME_VALUES = new Set(['1d', '1w', '1m']);
+const PRICE_MODE_VALUES = new Set(['raw', 'adjusted']);
 const BAR_EVIDENCE_STATUS_VALUES = new Set(['complete', 'incomplete']);
 
 const GEOMETRY_BAR_COUNTS: Readonly<Record<RuleFamilyId, number>> = {
@@ -225,7 +226,7 @@ function hasValidSnapshotShape(snapshot: StockSnapshot): boolean {
     typeof snapshot.securityType === 'string'
     && snapshot.securityType.trim().length > 0
     && typeof snapshot.priceMode === 'string'
-    && snapshot.priceMode.trim().length > 0
+    && PRICE_MODE_VALUES.has(snapshot.priceMode)
     && Array.isArray(snapshot.bars)
     && Array.isArray(snapshot.noQuoteEvidence)
     && snapshot.bars.length + snapshot.noQuoteEvidence.length > 0
@@ -270,11 +271,16 @@ function unavailable(reason: UnavailableReason, message: string): AnalysisResult
 function analysisWarnings(
   cutoffDate: string,
   freshness: AnalysisContext['freshness'],
+  priceMode: StockSnapshot['priceMode'],
   actions: readonly CorporateAction[],
   noQuoteEvidence: readonly NoQuoteEvidence[],
   bars: readonly OhlcvBar[],
 ): string[] {
   const warnings: string[] = [];
+
+  if (priceMode === 'adjusted') {
+    warnings.push('已使用可稽核的向後還原價格；公司行動仍保留於結果供對照。');
+  }
 
   if (freshness === 'one-session-behind') {
     warnings.push(`資料截至 ${cutoffDate}，落後一個交易日。`);
@@ -285,7 +291,7 @@ function analysisWarnings(
   if (freshness === 'unknown') {
     warnings.push(`無法確認資料截至 ${cutoffDate} 的新鮮度。`);
   }
-  if (actions.some((action) => action.affectsPriceContinuity)) {
+  if (priceMode === 'raw' && actions.some((action) => action.affectsPriceContinuity)) {
     warnings.push('分析窗內有影響價格連續性的公司行動；候選窗交疊時，相關規則不參與計分。');
   }
   if (noQuoteEvidence.some((evidence) => evidence.reason === 'official-no-quote')) {
@@ -322,6 +328,7 @@ function buildContext(
     market: snapshot.market,
     cutoffDate: snapshot.cutoffDate ?? analyzedTo,
     freshness,
+    priceMode: snapshot.priceMode,
     timeframe: snapshot.timeframe ?? '1d',
     analyzedFrom,
     analyzedTo,
@@ -333,7 +340,14 @@ function buildContext(
     affectedRuleIds: suppressedRules,
     suppressedRules,
     corporateActions: actions,
-    warnings: analysisWarnings(snapshot.cutoffDate ?? analyzedTo, freshness, actions, snapshot.noQuoteEvidence, snapshot.bars),
+    warnings: analysisWarnings(
+      snapshot.cutoffDate ?? analyzedTo,
+      freshness,
+      snapshot.priceMode,
+      actions,
+      snapshot.noQuoteEvidence,
+      snapshot.bars,
+    ),
   };
 }
 
@@ -396,11 +410,12 @@ function evaluateCard(
   }
 
   const family = RULE_FAMILIES[matcher.ruleFamilyId];
-  const baseFeatures = extractCandlestickFeatures(analysisBars, snapshot.corporateActions);
+  const continuityActions = snapshot.priceMode === 'raw' ? snapshot.corporateActions : [];
+  const baseFeatures = extractCandlestickFeatures(analysisBars, continuityActions);
   const features = withAnalysisWindow(
     baseFeatures,
     GEOMETRY_BAR_COUNTS[matcher.ruleFamilyId],
-    snapshot.corporateActions,
+    continuityActions,
   );
   const evaluations = matcher.rules.map((binding) => family.evaluate(features, binding));
   const required = evaluations.filter((evaluation) => evaluation.group === 'required');
@@ -477,7 +492,7 @@ export function evaluateAllMvpCardsForTesting(
   if (!isSnapshotRecord(snapshot) || !hasValidSnapshotShape(snapshot)) {
     return [];
   }
-  if (snapshot.securityType !== 'common-stock' || snapshot.priceMode !== 'raw') {
+  if (snapshot.securityType !== 'common-stock' || !PRICE_MODE_VALUES.has(snapshot.priceMode)) {
     return [];
   }
 
@@ -526,8 +541,8 @@ export function analyzePatterns(
   if (snapshot.securityType !== 'common-stock') {
     return unavailable('unsupported-security', '此證券不在第一版支援的普通股範圍內。');
   }
-  if (snapshot.priceMode !== 'raw') {
-    return unavailable('schema-error', '快照價格模式不符合原始盤後日 K 資料契約。');
+  if (!PRICE_MODE_VALUES.has(snapshot.priceMode)) {
+    return unavailable('schema-error', '快照價格模式不符合可支援的價格資料契約。');
   }
   const analysisBarLimit = resolveAnalysisBarLimit(options);
   if (analysisBarLimit === undefined) {

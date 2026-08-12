@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import type { CorporateAction, Market, NoQuoteEvidence, OhlcvBar, StockSnapshot } from './types';
+import type {
+  AdjustmentFactor,
+  CorporateAction,
+  Market,
+  NoQuoteEvidence,
+  OhlcvBar,
+  StockSnapshot,
+} from './types';
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -27,6 +34,10 @@ const OFFICIAL_MARKET_HOSTS = new Set([
   ...OFFICIAL_HOSTS_BY_MARKET.TWSE,
   ...OFFICIAL_HOSTS_BY_MARKET.TPEx,
 ]);
+const ADJUSTMENT_CALCULATION_SOURCE_BY_MARKET = {
+  TWSE: 'https://www.twse.com.tw/rwd/zh/exRight/TWT49U',
+  TPEx: 'https://www.tpex.org.tw/openapi/v1/tpex_exright_daily',
+} as const;
 const EMERGENCY_CLOSURE_EVIDENCE_HOSTS = new Set([
   ...OFFICIAL_MARKET_HOSTS,
   'eoc.gov.taipei',
@@ -475,7 +486,7 @@ const timeframeSeriesSchema = z.object({
   }
 });
 
-const rawPriceModeSchema = z.object({
+const availablePriceModeSchema = z.object({
   status: z.literal('available'),
   reasonCodes: z.array(z.string()).length(0),
   warnings: z.array(z.string()).length(0),
@@ -496,9 +507,46 @@ const rawPriceModeSchema = z.object({
 
 const adjustedUnavailablePriceModeSchema = z.object({
   status: z.literal('unavailable'),
-  reasonCodes: z.tuple([z.literal('adjustment-series-not-built')]),
+  reasonCodes: z.tuple([z.literal('missing-adjustment-evidence')]),
   warnings: z.array(z.string().trim().regex(/[\u3400-\u9fff]/, '還原價格警告必須使用繁體中文')).min(1),
 }).strict();
+
+const adjustmentFactorSchema = z.object({
+  effectiveDate: isoDateSchema,
+  actionTypes: z.array(z.enum(['cash-dividend', 'stock-dividend', 'capital-reduction', 'split', 'other'])).min(1),
+  priceFactor: z.number().finite().positive(),
+  volumeFactor: z.number().finite().positive(),
+  stockDividendRatio: z.number().finite().positive().nullable(),
+  basis: z.enum(['official-reference-price', 'official-distribution-formula', 'official-ratio']),
+  previousClose: z.number().finite().positive(),
+  referencePrice: z.number().finite().positive(),
+  sourceUrls: z.array(nonEmptyHttpsUrlSchema).min(1),
+  verifiedAt: isoDateSchema,
+}).strict().superRefine((factor, context) => {
+  if (new Set(factor.actionTypes).size !== factor.actionTypes.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['actionTypes'],
+      message: '調整因子的公司行動類型不可重複。',
+    });
+  }
+  if (new Set(factor.sourceUrls).size !== factor.sourceUrls.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceUrls'],
+      message: '調整因子的官方來源網址不可重複。',
+    });
+  }
+  const recomputedPriceFactor = factor.referencePrice / factor.previousClose;
+  const tolerance = Math.max(1e-10, Math.abs(recomputedPriceFactor) * 1e-10);
+  if (Math.abs(factor.priceFactor - recomputedPriceFactor) > tolerance) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['priceFactor'],
+      message: '價格調整因子必須可由官方前收與參考價重算。',
+    });
+  }
+});
 
 const corporateActionSchema = z.object({
   date: isoDateSchema,
@@ -535,14 +583,19 @@ export const stockSnapshotSchema = z.object({
     sourceUrl: twseOfficialHttpsUrlSchema,
   }).strict(),
   priceModes: z.object({
-    raw: rawPriceModeSchema,
-    adjusted: adjustedUnavailablePriceModeSchema,
+    raw: availablePriceModeSchema,
+    adjusted: z.union([availablePriceModeSchema, adjustedUnavailablePriceModeSchema]),
   }).strict(),
+  adjustmentFactors: z.array(adjustmentFactorSchema),
   noQuoteEvidence: z.array(noQuoteEvidenceSchema).max(120),
   corporateActions: z.array(corporateActionSchema),
   sourceUrls: z.array(nonEmptyHttpsUrlSchema).min(1),
 }).strict().superRefine((snapshot, context) => {
   const dailyBars = snapshot.priceModes.raw.timeframes['1d'].completedBars;
+  const observedTradingDates = new Set([
+    ...dailyBars.map((bar) => bar.date),
+    ...snapshot.noQuoteEvidence.map((evidence) => evidence.date),
+  ]);
   if (snapshot.availableSessions !== dailyBars.length + snapshot.noQuoteEvidence.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -580,12 +633,107 @@ export const stockSnapshotSchema = z.object({
   }
   if (snapshot.corporateActions.some((action) => (
     !isApprovedOfficialHttpsUrl(action.sourceUrl, OFFICIAL_HOSTS_BY_MARKET[snapshot.market])
+    || !observedTradingDates.has(action.date)
   ))) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['corporateActions'],
       message: '公司行動來源必須屬於對應市場的官方網域。',
     });
+  }
+  if (snapshot.adjustmentFactors.some((factor, index) => (
+    (index > 0 && factor.effectiveDate <= snapshot.adjustmentFactors[index - 1]!.effectiveDate)
+    || !observedTradingDates.has(factor.effectiveDate)
+    || !factor.sourceUrls.includes(ADJUSTMENT_CALCULATION_SOURCE_BY_MARKET[snapshot.market])
+    || factor.sourceUrls.some((sourceUrl) => !snapshot.sourceUrls.includes(sourceUrl))
+    || factor.sourceUrls.some((sourceUrl) => (
+      !isApprovedOfficialHttpsUrl(sourceUrl, OFFICIAL_HOSTS_BY_MARKET[snapshot.market])
+    ))
+  ))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['adjustmentFactors'],
+      message: '調整因子必須依生效日遞增、不可重複，且來源屬於對應市場官方網域。',
+    });
+  }
+  if (snapshot.adjustmentFactors.some((factor) => {
+    const actionsOnDate = snapshot.corporateActions.filter((action) => action.date === factor.effectiveDate);
+    return factor.actionTypes.some((type) => !actionsOnDate.some((action) => action.type === type))
+      || actionsOnDate.some((action) => (
+        factor.actionTypes.includes(action.type) && !factor.sourceUrls.includes(action.sourceUrl)
+      ));
+  })) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['adjustmentFactors'],
+      message: '每筆調整因子都必須對應同日公司行動，並包含該公告來源。',
+    });
+  }
+  if (snapshot.adjustmentFactors.some((factor) => {
+    const includesStockDividend = factor.actionTypes.includes('stock-dividend');
+    if (includesStockDividend !== (factor.stockDividendRatio !== null)) {
+      return true;
+    }
+    const expectedVolumeFactor = factor.stockDividendRatio === null
+      ? 1
+      : 1 + factor.stockDividendRatio;
+    return Math.abs(factor.volumeFactor - expectedVolumeFactor) > 1e-10;
+  })) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['adjustmentFactors'],
+      message: '股票股利比率必須對應股票股利事件，成交量調整因子也必須可由該比率重算。',
+    });
+  }
+  const continuityActions = snapshot.corporateActions.filter((action) => action.affectsPriceContinuity);
+  if (snapshot.priceModes.adjusted.status === 'unavailable' && continuityActions.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['priceModes', 'adjusted'],
+      message: '沒有影響價格連續性的公司行動時，向後還原價格必須可用且與原始序列同尺度。',
+    });
+  }
+  if (snapshot.priceModes.adjusted.status === 'available') {
+    const factorByDate = new Map(snapshot.adjustmentFactors.map((factor) => [factor.effectiveDate, factor]));
+    if (continuityActions.some((action) => (
+      !factorByDate.get(action.date)?.actionTypes.includes(action.type)
+    ))) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['priceModes', 'adjusted'],
+        message: '向後還原價格可用時，每筆影響連續性的公司行動都必須有可重算因子。',
+      });
+    }
+    for (const timeframe of ['1d', '1w', '1m'] as const) {
+      const rawSeries = snapshot.priceModes.raw.timeframes[timeframe];
+      const adjustedSeries = snapshot.priceModes.adjusted.timeframes[timeframe];
+      const rawBars = [...rawSeries.completedBars, ...(rawSeries.formingBar ? [rawSeries.formingBar] : [])];
+      const adjustedBars = [
+        ...adjustedSeries.completedBars,
+        ...(adjustedSeries.formingBar ? [adjustedSeries.formingBar] : []),
+      ];
+      const sameObservationLayout = rawBars.length === adjustedBars.length
+        && rawBars.every((rawBar, index) => {
+          const adjustedBar = adjustedBars[index];
+          return adjustedBar !== undefined
+            && rawBar.date === adjustedBar.date
+            && rawBar.periodStart === adjustedBar.periodStart
+            && rawBar.periodEnd === adjustedBar.periodEnd
+            && rawBar.completed === adjustedBar.completed
+            && rawBar.evidenceStatus === adjustedBar.evidenceStatus
+            && rawBar.missingSessionDates.length === adjustedBar.missingSessionDates.length
+            && rawBar.missingSessionDates.every((date, missingIndex) => (
+              date === adjustedBar.missingSessionDates[missingIndex]
+            ));
+        });
+      if (!sameObservationLayout) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['priceModes', 'adjusted', 'timeframes', timeframe],
+          message: '原始與向後還原價格必須保留相同的週期、日期及完整性證據。',
+        });
+      }
+    }
   }
   const barDates = new Set(dailyBars.map((bar) => bar.date));
   if (snapshot.noQuoteEvidence.some((evidence) => barDates.has(evidence.date))) {
@@ -613,6 +761,12 @@ export function toStockSnapshot(value: z.infer<typeof stockSnapshotSchema>): Sto
     throw new Error('非普通股不可轉換為型態比對快照。');
   }
 
+  let priceMode: StockSnapshot['priceMode'] = 'raw';
+  let selectedMode = value.priceModes.raw;
+  if (value.priceModes.adjusted.status === 'available') {
+    priceMode = 'adjusted';
+    selectedMode = value.priceModes.adjusted;
+  }
   return {
     schemaVersion: value.schemaVersion,
     snapshotVersion: value.snapshotVersion,
@@ -620,14 +774,15 @@ export function toStockSnapshot(value: z.infer<typeof stockSnapshotSchema>): Sto
     name: value.name,
     market: value.market as Market,
     securityType: 'common-stock',
-    priceMode: 'raw',
+    priceMode,
     timeframe: '1d',
     priceModes: value.priceModes,
+    adjustmentFactors: value.adjustmentFactors as readonly AdjustmentFactor[],
     currency: value.currency,
     comparisonUnitPolicy: value.comparisonUnitPolicy,
     bars: [
-      ...value.priceModes.raw.timeframes['1d'].completedBars,
-      ...(value.priceModes.raw.timeframes['1d'].formingBar ? [value.priceModes.raw.timeframes['1d'].formingBar] : []),
+      ...selectedMode.timeframes['1d'].completedBars,
+      ...(selectedMode.timeframes['1d'].formingBar ? [selectedMode.timeframes['1d'].formingBar] : []),
     ] as readonly OhlcvBar[],
     noQuoteEvidence: value.noQuoteEvidence as readonly NoQuoteEvidence[],
     corporateActions: value.corporateActions as readonly CorporateAction[],

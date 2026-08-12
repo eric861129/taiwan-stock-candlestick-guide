@@ -28,6 +28,8 @@ TWSE_COMPANIES_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 TPEX_COMPANIES_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
 TWSE_ACTIONS_URL = "https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL"
 TPEX_ACTIONS_URL = "https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost"
+TWSE_ACTION_CALCULATION_URL = "https://www.twse.com.tw/rwd/zh/exRight/TWT49U"
+TPEX_ACTION_CALCULATION_URL = "https://www.tpex.org.tw/openapi/v1/tpex_exright_daily"
 HOLIDAY_CALENDAR_URL = "https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule"
 EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION = 1
 DEFAULT_EMERGENCY_CLOSURES_PATH = Path(__file__).resolve().parents[1] / "data" / "emergency-market-closures.json"
@@ -61,6 +63,8 @@ _OFFICIAL_ENDPOINTS = {
     "tpex-companies": TPEX_COMPANIES_URL,
     "twse-actions": TWSE_ACTIONS_URL,
     "tpex-actions": TPEX_ACTIONS_URL,
+    "twse-action-calculations": TWSE_ACTION_CALCULATION_URL,
+    "tpex-action-calculations": TPEX_ACTION_CALCULATION_URL,
     "holiday-calendar": HOLIDAY_CALENDAR_URL,
 }
 
@@ -141,6 +145,25 @@ class CorporateAction:
     affects_price_continuity: bool
     source_url: str
     verified_at: date
+    cash_dividend: Decimal | None = None
+    stock_dividend_ratio: Decimal | None = None
+    subscription_price: Decimal | None = None
+    subscription_ratio: Decimal | None = None
+    previous_close: Decimal | None = None
+    reference_price: Decimal | None = None
+    calculation_source_url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _OfficialCalculationResult:
+    """除權息計算結果表中可與預告資料交叉核對的官方價格。"""
+
+    market: Market
+    code: str
+    action_date: date
+    previous_close: Decimal
+    reference_price: Decimal
+    source_url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,11 +257,28 @@ def fetch_supported_symbols() -> tuple[SupportedSymbol, ...]:
     )
 
 
-def fetch_corporate_actions() -> tuple[CorporateAction, ...]:
-    """取得兩市場的官方公司行動資料。"""
+def fetch_corporate_actions(
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> tuple[CorporateAction, ...]:
+    """取得公司行動與官方計算結果；TWSE 以明確日期區間查詢，避免舊端點只回單期資料。"""
+    calculation_end = end_date or date.today()
+    calculation_start = start_date or calculation_end - timedelta(days=400)
+    if calculation_start > calculation_end:
+        raise ValueError("公司行動計算結果的開始日期不可晚於結束日期。")
     return parse_corporate_actions(
         _fetch_official_json("twse-actions"),
         _fetch_official_json("tpex-actions"),
+        twse_calculation_payload=_fetch_official_json(
+            "twse-action-calculations",
+            {
+                "response": "json",
+                "startDate": calculation_start.strftime("%Y%m%d"),
+                "endDate": calculation_end.strftime("%Y%m%d"),
+            },
+        ),
+        tpex_calculation_payload=_fetch_official_json("tpex-action-calculations"),
     )
 
 
@@ -848,9 +888,11 @@ def parse_corporate_actions(
     twse_payload: object,
     tpex_payload: object,
     *,
+    twse_calculation_payload: object | None = None,
+    tpex_calculation_payload: object | None = None,
     verified_at: date | None = None,
 ) -> tuple[CorporateAction, ...]:
-    """正規化兩市場的公司行動，並保留官方端點與查核日期。"""
+    """正規化兩市場公司行動，並在有官方計算結果時保留可重算價格證據。"""
     checked_on = verified_at or date.today()
     twse = _parse_action_rows(
         twse_payload,
@@ -858,6 +900,9 @@ def parse_corporate_actions(
         code_field="Code",
         date_field="Date",
         marker_field="Exdividend",
+        stock_dividend_ratio_field="StockDividendRatio",
+        subscription_price_field="SubscriptionPricePerShare",
+        subscription_ratio_field="SubscriptionRatio",
         source_url="https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL",
         verified_at=checked_on,
     )
@@ -867,13 +912,21 @@ def parse_corporate_actions(
         code_field="SecuritiesCompanyCode",
         date_field="ExRrightsExDividendDate",
         marker_field="ExRrightsExDividend",
+        stock_dividend_ratio_field="StockDividendRatio",
+        subscription_price_field="SubscriptionPricePerShare",
+        subscription_ratio_field="SubscriptionRatioToNewSharesIssued",
         source_url="https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost",
         verified_at=checked_on,
     )
+    calculations = {
+        **_parse_twse_calculation_results(twse_calculation_payload),
+        **_parse_tpex_calculation_results(tpex_calculation_payload),
+    }
+    actions = _attach_calculation_results((*twse, *tpex), calculations)
     market_order = {"TWSE": 0, "TPEx": 1}
     return tuple(
         sorted(
-            (*twse, *tpex),
+            actions,
             key=lambda action: (market_order[action.market], action.code, action.action_date, action.action_type),
         )
     )
@@ -886,6 +939,9 @@ def _parse_action_rows(
     code_field: str,
     date_field: str,
     marker_field: str,
+    stock_dividend_ratio_field: str,
+    subscription_price_field: str,
+    subscription_ratio_field: str,
     source_url: str,
     verified_at: date,
 ) -> tuple[CorporateAction, ...]:
@@ -901,7 +957,11 @@ def _parse_action_rows(
         action_date = _parse_official_date(_required_text(row, date_field))
         marker = _required_text(row, marker_field).strip()
         cash_dividend = _positive_decimal(row.get("CashDividend"))
-        stock_dividend = _positive_decimal(row.get("StockDividendRatio"))
+        stock_dividend = _positive_decimal(row.get(stock_dividend_ratio_field))
+        cash_dividend_value = _optional_non_negative_decimal(row.get("CashDividend"))
+        stock_dividend_ratio = _optional_non_negative_decimal(row.get(stock_dividend_ratio_field))
+        subscription_price = _optional_non_negative_decimal(row.get(subscription_price_field))
+        subscription_ratio = _optional_non_negative_decimal(row.get(subscription_ratio_field))
         action_types: list[Literal["cash-dividend", "stock-dividend", "capital-reduction", "split", "other"]] = []
         if cash_dividend:
             action_types.append("cash-dividend")
@@ -923,6 +983,10 @@ def _parse_action_rows(
                     affects_price_continuity=True,
                     source_url=source_url,
                     verified_at=verified_at,
+                    cash_dividend=cash_dividend_value,
+                    stock_dividend_ratio=stock_dividend_ratio,
+                    subscription_price=subscription_price,
+                    subscription_ratio=subscription_ratio,
                 )
             )
     return tuple(actions)
@@ -939,6 +1003,164 @@ def _positive_decimal(value: object) -> bool:
         return Decimal(text) > 0
     except InvalidOperation as error:
         raise ValueError(f"官方公司行動數值格式無效：{value!r}。") from error
+
+
+def _optional_non_negative_decimal(value: object) -> Decimal | None:
+    """保留官方數值；未公告或非數值時視為不可用證據而不虛構零值。"""
+
+    if not isinstance(value, str):
+        return None
+    text = value.strip().replace(",", "")
+    if not text or text == "尚未公告":
+        return None
+    try:
+        parsed = Decimal(text)
+    except InvalidOperation:
+        return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
+
+
+def _attach_calculation_results(
+    actions: tuple[CorporateAction, ...],
+    calculations: dict[tuple[Market, str, date], _OfficialCalculationResult],
+) -> tuple[CorporateAction, ...]:
+    """將計算結果表的前收與參考價附到同一市場、代碼與生效日的公司行動。"""
+
+    return tuple(
+        replace(
+            action,
+            previous_close=calculation.previous_close,
+            reference_price=calculation.reference_price,
+            calculation_source_url=calculation.source_url,
+        )
+        if (calculation := calculations.get((action.market, action.code, action.action_date))) is not None
+        else action
+        for action in actions
+    )
+
+
+def _parse_twse_calculation_results(
+    payload: object | None,
+) -> dict[tuple[Market, str, date], _OfficialCalculationResult]:
+    """解析 TWSE TWT49U 結果表；不完整列只代表無法建立還原證據。"""
+
+    if not isinstance(payload, dict):
+        return {}
+    fields = payload.get("fields")
+    rows = payload.get("data")
+    if not isinstance(fields, list) or not isinstance(rows, list) or not all(isinstance(item, str) for item in fields):
+        return {}
+    indexes = {field: index for index, field in enumerate(fields)}
+    required = ("資料日期", "股票代號", "除權息前收盤價", "除權息參考價")
+    if any(field not in indexes for field in required):
+        return {}
+    results: dict[tuple[Market, str, date], _OfficialCalculationResult] = {}
+    conflicts: set[tuple[Market, str, date]] = set()
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        try:
+            action_date = _parse_official_date(_result_text(row, indexes["資料日期"]))
+            code = _result_text(row, indexes["股票代號"]).strip()
+            previous_close = _positive_calculation_price(_result_text(row, indexes["除權息前收盤價"]))
+            reference_price = _positive_calculation_price(_result_text(row, indexes["除權息參考價"]))
+        except ValueError:
+            continue
+        if not code:
+            continue
+        result = _OfficialCalculationResult(
+            market="TWSE",
+            code=code,
+            action_date=action_date,
+            previous_close=previous_close,
+            reference_price=reference_price,
+            source_url=TWSE_ACTION_CALCULATION_URL,
+        )
+        _insert_calculation_result(results, conflicts, result)
+    return results
+
+
+def _parse_tpex_calculation_results(
+    payload: object | None,
+) -> dict[tuple[Market, str, date], _OfficialCalculationResult]:
+    """解析 TPEx `tpex_exright_daily` 結果表；僅採用完整的官方價格列。"""
+
+    if not isinstance(payload, list):
+        return {}
+    results: dict[tuple[Market, str, date], _OfficialCalculationResult] = {}
+    conflicts: set[tuple[Market, str, date]] = set()
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        try:
+            action_date = _parse_official_date(_result_mapping_text(row, "Date"))
+            code = _result_mapping_text(row, "SecuritiesCompanyCode").strip()
+            previous_close = _positive_calculation_price(
+                _result_mapping_text(
+                    row,
+                    "ClosePriceBeforeExRightsDiviend",
+                    "ClosePriceBeforeExRightsDividend",
+                )
+            )
+            reference_price = _positive_calculation_price(
+                _result_mapping_text(row, "ExRightsDiviendQuote", "ExRightsDividendQuote")
+            )
+        except ValueError:
+            continue
+        if not code:
+            continue
+        result = _OfficialCalculationResult(
+            market="TPEx",
+            code=code,
+            action_date=action_date,
+            previous_close=previous_close,
+            reference_price=reference_price,
+            source_url=TPEX_ACTION_CALCULATION_URL,
+        )
+        _insert_calculation_result(results, conflicts, result)
+    return results
+
+
+def _result_text(row: list[object], index: int) -> str:
+    if index >= len(row) or not isinstance(row[index], str):
+        raise ValueError("官方除權息計算結果欄位無效。")
+    return row[index]
+
+
+def _result_mapping_text(row: dict[object, object], *fields: str) -> str:
+    for field in fields:
+        value = row.get(field)
+        if isinstance(value, str):
+            return value
+    raise ValueError("官方除權息計算結果欄位無效。")
+
+
+def _positive_calculation_price(value: str) -> Decimal:
+    parsed = _optional_non_negative_decimal(value)
+    if parsed is None or parsed <= 0:
+        raise ValueError("官方除權息計算結果價格無效。")
+    return parsed
+
+
+def _insert_calculation_result(
+    results: dict[tuple[Market, str, date], _OfficialCalculationResult],
+    conflicts: set[tuple[Market, str, date]],
+    result: _OfficialCalculationResult,
+) -> None:
+    key = (result.market, result.code, result.action_date)
+    if key in conflicts:
+        return
+    existing = results.get(key)
+    if existing is not None and (
+        existing.previous_close != result.previous_close or existing.reference_price != result.reference_price
+    ):
+        # 同一官方結果表互相矛盾時，不能任選一列產生調整因子。
+        results.pop(key)
+        conflicts.add(key)
+        return
+    results[key] = result
 
 
 def _parse_company_rows(
@@ -1058,7 +1280,14 @@ def _required_text(row: dict[object, object], field: str) -> str:
 
 
 def _parse_official_date(value: str) -> date:
-    compact = value.strip().replace("/", "").replace("-", "")
+    compact = (
+        value.strip()
+        .replace("/", "")
+        .replace("-", "")
+        .replace("年", "")
+        .replace("月", "")
+        .replace("日", "")
+    )
     if len(compact) != 7 and len(compact) != 8 or not compact.isdigit():
         raise ValueError(f"官方日期格式無法辨識：{value!r}。")
     if len(compact) == 7:

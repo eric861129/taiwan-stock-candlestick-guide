@@ -97,6 +97,14 @@ function resultTitle(value: AnalysisContext): string {
     : `${value.cutoffDate} 的型態相似度分析`;
 }
 
+function timeframeLabel(value: AnalysisContext['timeframe']): string {
+  return ({ '1d': '日 K', '1w': '週 K', '1m': '月 K' } as const)[value];
+}
+
+function priceModeLabel(value: AnalysisContext['priceMode']): string {
+  return value === 'adjusted' ? '向後還原價格' : '官方原始價格';
+}
+
 function ruleStateLabel(evaluation: RuleEvaluation): string {
   if (evaluation.group === 'invalidating' && evaluation.state === 'met') {
     return '失效條件成立';
@@ -167,7 +175,11 @@ function actionLabel(type: AnalysisContext['corporateActions'][number]['type']):
         </div>
         <div>
           <dt>時間週期</dt>
-          <dd>日 K（{{ context.timeframe }}）</dd>
+          <dd>{{ timeframeLabel(context.timeframe) }}（{{ context.timeframe }}）</dd>
+        </div>
+        <div>
+          <dt>價格口徑</dt>
+          <dd>{{ priceModeLabel(context.priceMode) }}</dd>
         </div>
         <div>
           <dt>分析區間</dt>

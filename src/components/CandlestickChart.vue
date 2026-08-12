@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import type { CorporateAction, OhlcvBar, StockSnapshot, Timeframe } from '../domain/market-data/types';
+import type { CorporateAction, OhlcvBar, PriceMode, StockSnapshot, Timeframe } from '../domain/market-data/types';
 
 const props = withDefaults(defineProps<{
   snapshot: StockSnapshot;
@@ -46,6 +46,10 @@ const timeframeLabels: Readonly<Record<Timeframe, string>> = {
 
 function timeframeLabel(value: Timeframe): string {
   return timeframeLabels[value];
+}
+
+function priceModeLabel(value: PriceMode): string {
+  return value === 'adjusted' ? '向後還原價格' : '官方原始價格';
 }
 
 watch(bars, (nextBars) => {
@@ -109,7 +113,9 @@ function formatPrice(value: number): string {
 }
 
 function formatNumber(value: number): string {
-  return new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(value);
+  return new Intl.NumberFormat('zh-TW', {
+    maximumFractionDigits: props.snapshot.priceMode === 'adjusted' ? 4 : 0,
+  }).format(value);
 }
 
 function actionLabel(action: CorporateAction): string {
@@ -123,8 +129,12 @@ function actionLabel(action: CorporateAction): string {
   return labels[action.type];
 }
 
-function actionsFor(date: string): readonly CorporateAction[] {
-  return props.snapshot.corporateActions.filter((action) => action.date === date);
+function actionsFor(bar: OhlcvBar): readonly CorporateAction[] {
+  const periodStart = bar.periodStart ?? bar.date;
+  const periodEnd = bar.periodEnd ?? bar.date;
+  return props.snapshot.corporateActions.filter((action) => (
+    action.date >= periodStart && action.date <= periodEnd
+  ));
 }
 
 async function selectCandle(index: number, moveFocus = false): Promise<void> {
@@ -164,10 +174,10 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
     <div class="candlestick-chart__heading-row">
       <div>
         <h3 id="candlestick-chart-heading">
-          {{ snapshot.name }}（{{ snapshot.code }}）最近 {{ completedBars.slice(-maxBars).length }} 根{{ timeframeLabel(timeframe) }}
+          {{ snapshot.name }}（{{ snapshot.code }}）{{ priceModeLabel(snapshot.priceMode) }}最近 {{ completedBars.slice(-maxBars).length }} 根{{ timeframeLabel(timeframe) }}
           <span v-if="formingBar">，另有 1 根形成中{{ timeframeLabel(timeframe) }}</span>
         </h3>
-        <p>價格單位為 TWD、成交量單位為股。紅綠之外，圖上也使用實心上箭頭、空心下箭頭與菱形記號；可用左右方向鍵逐根查看。</p>
+        <p>價格單位為 TWD；成交量在原始模式是實際股數，在還原模式是依官方因子換算的等值股數。紅綠之外，圖上也使用實心上箭頭、空心下箭頭與菱形記號；可用左右方向鍵逐根查看。</p>
       </div>
       <button
         type="button"
@@ -187,8 +197,8 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
         role="img"
         :aria-labelledby="`${chartTitleId} ${chartDescriptionId}`"
       >
-        <title :id="chartTitleId">{{ snapshot.name }}最近 {{ bars.length }} 根原始盤後{{ timeframeLabel(timeframe) }}與成交量</title>
-        <desc :id="chartDescriptionId">顯示 {{ bars.length }} 根{{ timeframeLabel(timeframe) }}、成交量與公司行動標記。形成中或證據不完整的 K 棒不納入型態比對。使用左右方向鍵可逐根取得繁體中文 OHLCV 摘要。</desc>
+        <title :id="chartTitleId">{{ snapshot.name }}最近 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }}與成交量</title>
+        <desc :id="chartDescriptionId">顯示 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }}、成交量與公司行動標記。形成中或證據不完整的 K 棒不納入型態比對。使用左右方向鍵可逐根取得繁體中文 OHLCV 摘要。</desc>
         <line
           x1="40"
           :y1="priceBottom"
@@ -257,7 +267,7 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
             class="candlestick-chart__volume"
           />
           <g
-            v-for="action in actionsFor(bar.date)"
+            v-for="action in actionsFor(bar)"
             :key="`${action.type}-${action.date}`"
             data-corporate-action
             :aria-label="`${bar.date} 公司行動：${actionLabel(action)}`"
@@ -279,7 +289,7 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
       aria-atomic="true"
     >
       {{ candleAriaLabel(selectedBar) }}
-      <span v-if="actionsFor(selectedBar.date).length > 0">公司行動：{{ actionsFor(selectedBar.date).map(actionLabel).join('、') }}。</span>
+      <span v-if="actionsFor(selectedBar).length > 0">公司行動：{{ actionsFor(selectedBar).map(actionLabel).join('、') }}。</span>
     </output>
 
     <div
@@ -289,7 +299,7 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
       tabindex="-1"
     >
       <table>
-        <caption>最近 {{ bars.length }} 根原始盤後{{ timeframeLabel(timeframe) }} OHLCV 資料</caption>
+        <caption>最近 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }} OHLCV 資料</caption>
         <thead>
           <tr>
             <th scope="col">
@@ -332,7 +342,7 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
             <td>{{ formatPrice(bar.low) }}</td>
             <td>{{ formatPrice(bar.close) }}</td>
             <td>{{ formatNumber(bar.volumeShares) }}</td>
-            <td>{{ actionsFor(bar.date).map(actionLabel).join('、') || '—' }}</td>
+            <td>{{ actionsFor(bar).map(actionLabel).join('、') || '—' }}</td>
           </tr>
         </tbody>
       </table>

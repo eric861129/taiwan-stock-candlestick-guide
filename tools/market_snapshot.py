@@ -32,6 +32,8 @@ from market_sources import (
     SupportedSymbol,
     SuspensionInterval,
     TradingCalendar,
+    TPEX_ACTION_CALCULATION_URL,
+    TWSE_ACTION_CALCULATION_URL,
     comparison_unit_for_prices,
     compute_freshness,
     expected_cutoff_date,
@@ -70,7 +72,14 @@ RETENTION_SESSIONS = 120
 PRICE_UNIT = "TWD"
 COMPARISON_UNIT_POLICY_URL = "https://www.twse.com.tw/zh/trading/trading-rule.html"
 DEFAULT_OVERRIDES_PATH = Path(__file__).resolve().parents[1] / "data" / "company-action-overrides.json"
-ADJUSTMENT_SERIES_NOT_BUILT_WARNING = "向後還原價格序列尚未建立，請使用官方原始價格。"
+MISSING_ADJUSTMENT_EVIDENCE_REASON = "missing-adjustment-evidence"
+MISSING_ADJUSTMENT_EVIDENCE_WARNING = "公司行動缺少可重算的官方前收或參考價，請使用官方原始價格。"
+_ADJUSTMENT_FACTOR_BASES = frozenset(
+    {"official-reference-price", "official-distribution-formula", "official-ratio"}
+)
+_ADJUSTMENT_ACTION_TYPES = frozenset(
+    {"cash-dividend", "stock-dividend", "capital-reduction", "split", "other"}
+)
 
 
 class SnapshotValidationError(ValueError):
@@ -164,11 +173,35 @@ class _NormalizedBar:
     high: Decimal
     low: Decimal
     close: Decimal
-    volume_shares: int
+    volume_shares: int | Decimal
     transaction_count: int | None
     source_precision: Decimal
     comparison_unit: Decimal
     source_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AdjustmentFactor:
+    """一個生效日的可稽核向後還原因子，所有同日公司行動只合併一次。"""
+
+    effective_date: date
+    action_types: tuple[str, ...]
+    price_factor: Decimal
+    volume_factor: Decimal
+    stock_dividend_ratio: Decimal | None
+    basis: Literal["official-reference-price", "official-distribution-formula", "official-ratio"]
+    previous_close: Decimal
+    reference_price: Decimal
+    source_urls: tuple[str, ...]
+    verified_at: date
+
+
+@dataclass(frozen=True, slots=True)
+class _PreviousAdjustmentContext:
+    """增量建置時從已驗證 v4 快照帶回的公司行動與調整因子。"""
+
+    corporate_actions: tuple[dict[str, Any], ...]
+    factors: tuple[_AdjustmentFactor, ...]
 
 
 def build_snapshot(
@@ -337,7 +370,12 @@ def _build_stock_documents(
 ) -> tuple[dict[tuple[Market, str], dict[str, Any]], dict[str, MarketCutoff]]:
     symbols = {(symbol.market, symbol.code): symbol for symbol in build.symbols}
     available_sessions_by_market = _available_market_sessions(build, previous, previous_manifest)
-    bars_by_symbol, no_quote_by_symbol, previous_sources_by_symbol = _load_previous_bars(previous)
+    (
+        bars_by_symbol,
+        no_quote_by_symbol,
+        previous_sources_by_symbol,
+        previous_adjustments_by_symbol,
+    ) = _load_previous_bars(previous)
     sources_by_symbol: dict[tuple[Market, str], set[str]] = {
         key: {symbol.source_url} for key, symbol in symbols.items()
     }
@@ -400,6 +438,10 @@ def _build_stock_documents(
         raise SnapshotValidationError(f"官方普通股日行情覆蓋率 {coverage:.2%} 低於 98% 發布門檻。")
 
     for key, symbol in symbols.items():
+        previous_adjustment = previous_adjustments_by_symbol.get(
+            key,
+            _PreviousAdjustmentContext(corporate_actions=(), factors=()),
+        )
         bars = sorted(bars_by_symbol.get(key, []), key=lambda item: item.trading_date)
         _validate_bars(symbol, bars)
         retained_session_dates = set(available_sessions_by_market[symbol.market])
@@ -434,8 +476,13 @@ def _build_stock_documents(
                 )
             ),
         )
+        corporate_actions = _merge_corporate_action_json(
+            previous_adjustment.corporate_actions,
+            actions,
+        )
         sources = set(sources_by_symbol[key])
-        sources.update(action.source_url for action in actions)
+        sources.update(action["sourceUrl"] for action in corporate_actions)
+        sources.update(source_url for factor in previous_adjustment.factors for source_url in factor.source_urls)
         raw_timeframes = _build_raw_timeframes(
             bars=retained_bars,
             no_quote_evidence=retained_no_quote_evidence,
@@ -443,6 +490,36 @@ def _build_stock_documents(
             listing_date=symbol.listing_date,
             calendar=build.calendar,
         )
+        adjustment_factors = _merge_adjustment_factors(
+            previous_adjustment.factors,
+            actions,
+            retained_bars,
+            corporate_actions,
+        )
+        if adjustment_factors is not None:
+            sources.update(source_url for factor in adjustment_factors for source_url in factor.source_urls)
+        if adjustment_factors is None:
+            adjusted_mode: dict[str, Any] = {
+                "status": "unavailable",
+                "reasonCodes": [MISSING_ADJUSTMENT_EVIDENCE_REASON],
+                "warnings": [MISSING_ADJUSTMENT_EVIDENCE_WARNING],
+            }
+            adjustment_factor_json: list[dict[str, Any]] = []
+        else:
+            adjusted_bars = _backward_adjust_bars(retained_bars, adjustment_factors)
+            adjusted_mode = {
+                "status": "available",
+                "reasonCodes": [],
+                "warnings": [],
+                "timeframes": _build_raw_timeframes(
+                    bars=adjusted_bars,
+                    no_quote_evidence=retained_no_quote_evidence,
+                    market_sessions=available_sessions_by_market[symbol.market],
+                    listing_date=symbol.listing_date,
+                    calendar=build.calendar,
+                ),
+            }
+            adjustment_factor_json = [_adjustment_factor_json(factor) for factor in adjustment_factors]
         documents[key] = {
             "schemaVersion": SCHEMA_VERSION,
             "snapshotVersion": SNAPSHOT_VERSION,
@@ -467,14 +544,11 @@ def _build_stock_documents(
                     "warnings": [],
                     "timeframes": raw_timeframes,
                 },
-                "adjusted": {
-                    "status": "unavailable",
-                    "reasonCodes": ["adjustment-series-not-built"],
-                    "warnings": [ADJUSTMENT_SERIES_NOT_BUILT_WARNING],
-                },
+                "adjusted": adjusted_mode,
             },
+            "adjustmentFactors": adjustment_factor_json,
             "noQuoteEvidence": [_no_quote_evidence_json(evidence) for evidence in retained_no_quote_evidence],
-            "corporateActions": [_action_json(action) for action in actions],
+            "corporateActions": corporate_actions,
             "sourceUrls": sorted(sources),
         }
 
@@ -527,6 +601,285 @@ def _build_raw_timeframes(
             calendar=calendar,
         ),
     }
+
+
+def _build_adjustment_factors(
+    actions: Sequence[CorporateAction],
+    bars: Sequence[_NormalizedBar],
+) -> tuple[_AdjustmentFactor, ...] | None:
+    """以官方計算結果合併同日事件；任何必要證據不足時整個還原模式降級。"""
+
+    if not actions:
+        return ()
+    grouped: dict[date, list[CorporateAction]] = {}
+    for action in actions:
+        grouped.setdefault(action.action_date, []).append(action)
+
+    factors: list[_AdjustmentFactor] = []
+    for effective_date, same_day_actions in sorted(grouped.items()):
+        if any(
+            action.previous_close is None
+            or action.reference_price is None
+            or action.calculation_source_url is None
+            for action in same_day_actions
+        ):
+            return None
+        previous_closes = {action.previous_close for action in same_day_actions}
+        reference_prices = {action.reference_price for action in same_day_actions}
+        if len(previous_closes) != 1 or len(reference_prices) != 1:
+            return None
+        previous_close = _json_decimal(next(iter(previous_closes)))
+        reference_price = _json_decimal(next(iter(reference_prices)))
+        if previous_close <= 0 or reference_price <= 0:
+            return None
+        action_types = tuple(sorted({action.action_type for action in same_day_actions}))
+        if not action_types or any(action_type not in _ADJUSTMENT_ACTION_TYPES for action_type in action_types):
+            return None
+        source_urls = tuple(
+            sorted(
+                {
+                    action.source_url
+                    for action in same_day_actions
+                }
+                | {
+                    action.calculation_source_url
+                    for action in same_day_actions
+                    if action.calculation_source_url is not None
+                }
+            )
+        )
+        try:
+            if not source_urls:
+                return None
+            for source_url in source_urls:
+                _official_evidence_url(source_url)
+        except SnapshotValidationError:
+            return None
+        factor = _json_decimal(reference_price / previous_close)
+        if factor <= 0:
+            return None
+        volume_evidence = _stock_volume_evidence(same_day_actions)
+        if volume_evidence is None:
+            return None
+        volume_factor, stock_dividend_ratio = volume_evidence
+        factors.append(
+            _AdjustmentFactor(
+                effective_date=effective_date,
+                action_types=action_types,
+                price_factor=factor,
+                volume_factor=volume_factor,
+                stock_dividend_ratio=stock_dividend_ratio,
+                basis="official-reference-price",
+                previous_close=previous_close,
+                reference_price=reference_price,
+                source_urls=source_urls,
+                verified_at=max(action.verified_at for action in same_day_actions),
+            )
+        )
+
+    return tuple(factors)
+
+
+def _merge_corporate_action_json(
+    previous_actions: Sequence[dict[str, Any]],
+    current_actions: Sequence[CorporateAction],
+) -> list[dict[str, Any]]:
+    """以日期、類型與官方來源去重，讓增量快照保留已驗證的歷史公司行動。"""
+
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for action in (*previous_actions, *(_action_json(item) for item in current_actions)):
+        try:
+            action_date = date.fromisoformat(action["date"])
+            action_type = action["type"]
+            source_url = _official_evidence_url(action["sourceUrl"])
+            verified_at = date.fromisoformat(action["verifiedAt"])
+            affects_price_continuity = action["affectsPriceContinuity"]
+            if action_type not in _ADJUSTMENT_ACTION_TYPES or not isinstance(affects_price_continuity, bool):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, SnapshotValidationError) as error:
+            raise SnapshotValidationError("增量快照的公司行動證據無效。") from error
+        key = (action_date.isoformat(), action_type, source_url)
+        existing = merged.get(key)
+        if existing is not None and existing["affectsPriceContinuity"] != affects_price_continuity:
+            raise SnapshotValidationError("增量快照的公司行動連續性標記衝突。")
+        if existing is None or verified_at > date.fromisoformat(existing["verifiedAt"]):
+            merged[key] = {
+                "date": action_date.isoformat(),
+                "type": action_type,
+                "affectsPriceContinuity": affects_price_continuity,
+                "sourceUrl": source_url,
+                "verifiedAt": verified_at.isoformat(),
+            }
+    return [
+        merged[key]
+        for key in sorted(merged, key=lambda item: (item[0], item[1], item[2]))
+    ]
+
+
+def _merge_adjustment_factors(
+    previous_factors: Sequence[_AdjustmentFactor],
+    current_actions: Sequence[CorporateAction],
+    bars: Sequence[_NormalizedBar],
+    corporate_actions: Sequence[dict[str, Any]],
+) -> tuple[_AdjustmentFactor, ...] | None:
+    """把已驗證舊因子與本次新證據合併；缺證據時不把舊還原誤標成可用。"""
+
+    previous_by_date = {factor.effective_date: factor for factor in previous_factors}
+    if len(previous_by_date) != len(previous_factors):
+        raise SnapshotValidationError("前一快照有重複調整生效日。")
+    current_by_date: dict[date, _AdjustmentFactor] = {}
+    incomplete_current_dates: set[date] = set()
+    grouped_current_actions: dict[date, list[CorporateAction]] = {}
+    for action in current_actions:
+        grouped_current_actions.setdefault(action.action_date, []).append(action)
+    for effective_date, same_day_actions in grouped_current_actions.items():
+        candidate = _build_adjustment_factors(same_day_actions, bars)
+        if candidate is None:
+            incomplete_current_dates.add(effective_date)
+        else:
+            current_by_date[effective_date] = candidate[0]
+
+    merged: dict[date, _AdjustmentFactor] = dict(previous_by_date)
+    for effective_date, candidate in current_by_date.items():
+        existing = merged.get(effective_date)
+        if existing is not None and not _same_adjustment_math(existing, candidate):
+            return None
+        merged[effective_date] = candidate if existing is None else _merge_factor_metadata(existing, candidate)
+    for effective_date in incomplete_current_dates:
+        existing = previous_by_date.get(effective_date)
+        if existing is None:
+            return None
+        current_types = {action.action_type for action in grouped_current_actions[effective_date]}
+        if not current_types.issubset(set(existing.action_types)):
+            return None
+
+    grouped_actions = _group_corporate_action_metadata(corporate_actions)
+    if set(merged) != set(grouped_actions):
+        return None
+    normalized: list[_AdjustmentFactor] = []
+    for effective_date, factor in sorted(merged.items()):
+        action_types, action_sources, action_verified_at = grouped_actions[effective_date]
+        normalized.append(
+            replace(
+                factor,
+                action_types=tuple(sorted(action_types)),
+                source_urls=tuple(sorted(set(factor.source_urls) | action_sources)),
+                verified_at=max(factor.verified_at, action_verified_at),
+            )
+        )
+    return tuple(normalized)
+
+
+def _same_adjustment_math(left: _AdjustmentFactor, right: _AdjustmentFactor) -> bool:
+    return (
+        left.price_factor == right.price_factor
+        and left.volume_factor == right.volume_factor
+        and left.stock_dividend_ratio == right.stock_dividend_ratio
+        and left.basis == right.basis
+        and left.previous_close == right.previous_close
+        and left.reference_price == right.reference_price
+    )
+
+
+def _merge_factor_metadata(
+    left: _AdjustmentFactor,
+    right: _AdjustmentFactor,
+) -> _AdjustmentFactor:
+    return replace(
+        right,
+        action_types=tuple(sorted(set(left.action_types) | set(right.action_types))),
+        source_urls=tuple(sorted(set(left.source_urls) | set(right.source_urls))),
+        verified_at=max(left.verified_at, right.verified_at),
+    )
+
+
+def _group_corporate_action_metadata(
+    actions: Sequence[dict[str, Any]],
+) -> dict[date, tuple[set[str], set[str], date]]:
+    result: dict[date, tuple[set[str], set[str], date]] = {}
+    for action in actions:
+        try:
+            action_date = date.fromisoformat(action["date"])
+            action_type = action["type"]
+            source_url = _official_evidence_url(action["sourceUrl"])
+            verified_at = date.fromisoformat(action["verifiedAt"])
+            if action_type not in _ADJUSTMENT_ACTION_TYPES:
+                raise ValueError
+        except (KeyError, TypeError, ValueError, SnapshotValidationError) as error:
+            raise SnapshotValidationError("增量快照的公司行動證據無效。") from error
+        types, sources, previous_verified_at = result.get(action_date, (set(), set(), verified_at))
+        types.add(action_type)
+        sources.add(source_url)
+        result[action_date] = (types, sources, max(previous_verified_at, verified_at))
+    return result
+
+
+def _stock_volume_evidence(
+    actions: Sequence[CorporateAction],
+) -> tuple[Decimal, Decimal | None] | None:
+    """沒有股票股利時不調量；有股票股利時，比率必須唯一且完整。"""
+
+    stock_actions = [action for action in actions if action.action_type == "stock-dividend"]
+    if not stock_actions:
+        return Decimal(1), None
+    ratios = {action.stock_dividend_ratio for action in stock_actions}
+    if len(ratios) != 1:
+        return None
+    ratio = next(iter(ratios))
+    if ratio is None or ratio <= 0:
+        return None
+    normalized_ratio = _json_decimal(ratio)
+    return _json_decimal(Decimal(1) + normalized_ratio), normalized_ratio
+
+
+def _backward_adjust_bars(
+    bars: Sequence[_NormalizedBar],
+    factors: Sequence[_AdjustmentFactor],
+) -> tuple[_NormalizedBar, ...]:
+    """生效日前套用其後累積因子；原始 K 線物件不被修改。"""
+
+    adjusted: list[_NormalizedBar] = []
+    for bar in bars:
+        price_factor, volume_factor = _cumulative_adjustment_for_date(bar.trading_date, factors)
+        prices = tuple(
+            _json_decimal(price * price_factor)
+            for price in (bar.open, bar.high, bar.low, bar.close)
+        )
+        adjusted_volume = _json_decimal(Decimal(bar.volume_shares) * volume_factor)
+        source_precision = min(bar.source_precision, _minimum_source_precision(prices))
+        adjusted.append(
+            _NormalizedBar(
+                trading_date=bar.trading_date,
+                open=prices[0],
+                high=prices[1],
+                low=prices[2],
+                close=prices[3],
+                volume_shares=adjusted_volume,
+                transaction_count=bar.transaction_count,
+                source_precision=source_precision,
+                comparison_unit=comparison_unit_for_prices(prices, source_precision),
+                source_url=bar.source_url,
+            )
+        )
+    return tuple(adjusted)
+
+
+def _cumulative_adjustment_for_date(
+    trading_date: date,
+    factors: Sequence[_AdjustmentFactor],
+) -> tuple[Decimal, Decimal]:
+    price_factor = Decimal(1)
+    volume_factor = Decimal(1)
+    for factor in factors:
+        if trading_date < factor.effective_date:
+            price_factor *= factor.price_factor
+            volume_factor *= factor.volume_factor
+    return _json_decimal(price_factor), _json_decimal(volume_factor)
+
+
+def _minimum_source_precision(values: Sequence[Decimal]) -> Decimal:
+    decimal_places = max(max(-value.as_tuple().exponent, 0) for value in values)
+    return Decimal(1).scaleb(-decimal_places)
 
 
 def _aggregate_timeframe(
@@ -665,7 +1018,7 @@ def _aggregate_period_bar(
         "high": _json_number(high_price),
         "low": _json_number(low_price),
         "close": _json_number(close_price),
-        "volumeShares": sum(bar.volume_shares for bar in ordered_bars),
+        "volumeShares": _json_volume_number(sum(bar.volume_shares for bar in ordered_bars)),
         "priceUnit": PRICE_UNIT,
         "sourcePrecision": _json_number(source_precision),
         "comparisonUnit": _json_number(comparison_unit),
@@ -1620,6 +1973,7 @@ def _validate_v4_stock_document(
         "shortHistoryReason",
         "comparisonUnitPolicy",
         "priceModes",
+        "adjustmentFactors",
         "noQuoteEvidence",
         "corporateActions",
         "sourceUrls",
@@ -1656,6 +2010,14 @@ def _validate_v4_stock_document(
     _validate_comparison_unit_policy(stock["comparisonUnitPolicy"], entry)
     source_urls = _stock_source_urls(stock, entry)
     no_quote_evidence = _parse_no_quote_evidence(stock["noQuoteEvidence"], entry, source_urls)
+    _validate_corporate_actions(stock["corporateActions"], market_sessions)
+    adjustment_factors = _parse_adjustment_factors(
+        stock["adjustmentFactors"],
+        entry,
+        source_urls,
+        stock["corporateActions"],
+        market_sessions,
+    )
     price_modes = stock["priceModes"]
     if not isinstance(price_modes, dict) or set(price_modes) != {"raw", "adjusted"}:
         raise SnapshotValidationError("v4 價格模式欄位無效。")
@@ -1670,12 +2032,26 @@ def _validate_v4_stock_document(
         or set(raw["timeframes"]) != {"1d", "1w", "1m"}
     ):
         raise SnapshotValidationError("v4 原始價格模式欄位無效。")
-    if (
-        not isinstance(adjusted, dict)
-        or set(adjusted) != {"status", "reasonCodes", "warnings"}
+    adjusted_available = False
+    if not isinstance(adjusted, dict):
+        raise SnapshotValidationError("v4 還原價格模式欄位無效。")
+    if adjusted.get("status") == "available":
+        if (
+            set(adjusted) != {"status", "reasonCodes", "warnings", "timeframes"}
+            or adjusted["reasonCodes"] != []
+            or adjusted["warnings"] != []
+            or not isinstance(adjusted["timeframes"], dict)
+            or set(adjusted["timeframes"]) != {"1d", "1w", "1m"}
+        ):
+            raise SnapshotValidationError("v4 還原價格模式欄位無效。")
+        _validate_adjustment_factor_coverage(adjustment_factors, stock["corporateActions"])
+        adjusted_available = True
+    elif (
+        set(adjusted) != {"status", "reasonCodes", "warnings"}
         or adjusted["status"] != "unavailable"
-        or adjusted["reasonCodes"] != ["adjustment-series-not-built"]
-        or adjusted["warnings"] != [ADJUSTMENT_SERIES_NOT_BUILT_WARNING]
+        or adjusted["reasonCodes"] != [MISSING_ADJUSTMENT_EVIDENCE_REASON]
+        or adjusted["warnings"] != [MISSING_ADJUSTMENT_EVIDENCE_WARNING]
+        or adjustment_factors
     ):
         raise SnapshotValidationError("v4 還原價格模式欄位無效。")
 
@@ -1758,7 +2134,55 @@ def _validate_v4_stock_document(
         calendar=calendar,
         cutoff=market_sessions[-1],
     )
-    _validate_corporate_actions(stock["corporateActions"])
+    if not adjusted_available:
+        return
+
+    adjusted_timeframes = adjusted["timeframes"]
+    adjusted_daily_bars = _validate_v4_timeframe(
+        value=adjusted_timeframes["1d"],
+        timeframe="1d",
+        expected_completed=True,
+        entry=entry,
+    )
+    adjusted_weekly_bars = _validate_v4_timeframe(
+        value=adjusted_timeframes["1w"],
+        timeframe="1w",
+        expected_completed=True,
+        entry=entry,
+    )
+    adjusted_monthly_bars = _validate_v4_timeframe(
+        value=adjusted_timeframes["1m"],
+        timeframe="1m",
+        expected_completed=True,
+        entry=entry,
+    )
+    adjusted_weekly_forming = _validate_v4_forming_bar(adjusted_timeframes["1w"], "1w", entry)
+    adjusted_monthly_forming = _validate_v4_forming_bar(adjusted_timeframes["1m"], "1m", entry)
+    if adjusted_timeframes["1d"].get("formingBar") is not None:
+        raise SnapshotValidationError("v4 還原日 K 不可保存形成中 K 棒。")
+    _validate_adjusted_daily_bars(daily_bars, adjusted_daily_bars, adjustment_factors)
+    _validate_v4_aggregate_timeframe(
+        bars=adjusted_weekly_bars,
+        forming_bar=adjusted_weekly_forming,
+        timeframe="1w",
+        daily_bars=adjusted_daily_bars,
+        no_quote_evidence=no_quote_evidence,
+        market_sessions=market_sessions,
+        listing_date=listing_date,
+        calendar=calendar,
+        cutoff=market_sessions[-1],
+    )
+    _validate_v4_aggregate_timeframe(
+        bars=adjusted_monthly_bars,
+        forming_bar=adjusted_monthly_forming,
+        timeframe="1m",
+        daily_bars=adjusted_daily_bars,
+        no_quote_evidence=no_quote_evidence,
+        market_sessions=market_sessions,
+        listing_date=listing_date,
+        calendar=calendar,
+        cutoff=market_sessions[-1],
+    )
 
 
 def _validate_comparison_unit_policy(policy: object, entry: StockIndexEntry) -> None:
@@ -1860,7 +2284,9 @@ def _parse_v4_bar(
         period_start = date.fromisoformat(value["periodStart"])
         period_end = date.fromisoformat(value["periodEnd"])
         prices = {name: Decimal(str(value[name])) for name in ("open", "high", "low", "close")}
-        volume = int(value["volumeShares"])
+        if isinstance(value["volumeShares"], bool) or not isinstance(value["volumeShares"], (int, float)):
+            raise ValueError
+        volume = Decimal(str(value["volumeShares"]))
         source_precision = Decimal(str(value["sourcePrecision"]))
         comparison_unit = Decimal(str(value["comparisonUnit"]))
         missing_dates = tuple(date.fromisoformat(item) for item in value["missingSessionDates"])
@@ -1871,6 +2297,7 @@ def _parse_v4_bar(
         or min(prices.values()) < 0
         or prices["high"] < max(prices.values())
         or prices["low"] > min(prices.values())
+        or not volume.is_finite()
         or volume < 0
         or source_precision <= 0
         or comparison_unit < source_precision
@@ -1906,6 +2333,7 @@ def _parse_v4_bar(
         "parsedPeriodStart": period_start,
         "parsedPeriodEnd": period_end,
         "parsedPrices": prices,
+        "parsedVolume": volume,
         "parsedMissingDates": missing_dates,
     }
 
@@ -1983,7 +2411,7 @@ def _validate_v4_aggregate_timeframe(
             or prices["high"] != max(item["high"] for item in constituent_prices)
             or prices["low"] != min(item["low"] for item in constituent_prices)
             or prices["close"] != constituent_prices[-1]["close"]
-            or bar["volumeShares"] != sum(item["volumeShares"] for item in constituents)
+            or bar["parsedVolume"] != sum(item["parsedVolume"] for item in constituents)
             or bar["parsedDate"] != constituents[-1]["parsedDate"]
         ):
             raise SnapshotValidationError(f"v4 {timeframe} OHLCV 聚合結果無效。")
@@ -2004,28 +2432,220 @@ def _validate_v4_aggregate_timeframe(
             raise SnapshotValidationError(f"v4 {timeframe} 精度或比較單位聚合結果無效。")
 
 
-def _validate_corporate_actions(actions: object) -> None:
+def _validate_corporate_actions(actions: object, market_sessions: Sequence[date]) -> None:
+    allowed_sessions = set(market_sessions)
     if not isinstance(actions, list):
         raise SnapshotValidationError("股票快照公司行動欄位無效。")
     for action in actions:
         if not isinstance(action, dict):
             raise SnapshotValidationError("股票快照公司行動缺少官方來源。")
         try:
-            date.fromisoformat(action["date"])
+            action_date = date.fromisoformat(action["date"])
             date.fromisoformat(action["verifiedAt"])
-            if action["type"] not in {
-                "cash-dividend",
-                "stock-dividend",
-                "capital-reduction",
-                "split",
-                "other",
-            }:
+            if action["type"] not in _ADJUSTMENT_ACTION_TYPES:
                 raise ValueError
             if not isinstance(action["affectsPriceContinuity"], bool):
                 raise ValueError
             _official_evidence_url(action["sourceUrl"])
+            if action_date not in allowed_sessions:
+                raise ValueError
         except (KeyError, TypeError, ValueError) as error:
             raise SnapshotValidationError("股票快照公司行動日期無效。") from error
+
+
+def _parse_adjustment_factors(
+    value: object,
+    entry: StockIndexEntry,
+    stock_source_urls: set[str],
+    actions: object,
+    market_sessions: Sequence[date] | None = None,
+) -> tuple[_AdjustmentFactor, ...]:
+    """驗證公開因子可由同筆前收與參考價重算，且來源留在股票快照證據集合。"""
+
+    if not isinstance(value, list):
+        raise SnapshotValidationError(f"v4 調整因子欄位無效：{entry.market} {entry.code}。")
+    factors: list[_AdjustmentFactor] = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "effectiveDate",
+            "actionTypes",
+            "priceFactor",
+            "volumeFactor",
+            "stockDividendRatio",
+            "basis",
+            "previousClose",
+            "referencePrice",
+            "sourceUrls",
+            "verifiedAt",
+        }:
+            raise SnapshotValidationError("v4 調整因子欄位無效。")
+        try:
+            effective_date = date.fromisoformat(item["effectiveDate"])
+            verified_at = date.fromisoformat(item["verifiedAt"])
+            action_values = item["actionTypes"]
+            if (
+                not isinstance(action_values, list)
+                or not action_values
+                or any(not isinstance(action_type, str) for action_type in action_values)
+                or tuple(action_values) != tuple(sorted(set(action_values)))
+                or any(action_type not in _ADJUSTMENT_ACTION_TYPES for action_type in action_values)
+            ):
+                raise ValueError
+            price_factor = _positive_json_decimal(item["priceFactor"])
+            volume_factor = _positive_json_decimal(item["volumeFactor"])
+            stock_dividend_ratio = item["stockDividendRatio"]
+            if stock_dividend_ratio is not None:
+                stock_dividend_ratio = _positive_json_decimal(stock_dividend_ratio)
+            previous_close = _positive_json_decimal(item["previousClose"])
+            reference_price = _positive_json_decimal(item["referencePrice"])
+            basis = item["basis"]
+            if basis not in _ADJUSTMENT_FACTOR_BASES:
+                raise ValueError
+            source_values = item["sourceUrls"]
+            if (
+                not isinstance(source_values, list)
+                or not source_values
+                or any(not isinstance(source_url, str) for source_url in source_values)
+            ):
+                raise ValueError
+            source_urls = tuple(sorted({_official_evidence_url(source_url) for source_url in source_values}))
+            if tuple(source_values) != source_urls or not set(source_urls).issubset(stock_source_urls):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, SnapshotValidationError) as error:
+            raise SnapshotValidationError("v4 調整因子內容無效。") from error
+        expected_price_factor = _json_decimal(reference_price / previous_close)
+        if price_factor != expected_price_factor:
+            raise SnapshotValidationError("v4 調整因子無法由官方前收與參考價重算。")
+        if ("stock-dividend" in action_values) != (stock_dividend_ratio is not None):
+            raise SnapshotValidationError("v4 股票股利比率必須對應股票股利事件。")
+        expected_calculation_source = (
+            TWSE_ACTION_CALCULATION_URL if entry.market == "TWSE" else TPEX_ACTION_CALCULATION_URL
+        )
+        if expected_calculation_source not in source_urls:
+            raise SnapshotValidationError("v4 調整因子缺少官方前收與參考價計算來源。")
+        if market_sessions is not None and effective_date not in set(market_sessions):
+            raise SnapshotValidationError("v4 調整因子生效日不是快照保留的官方交易日。")
+        expected_volume_factor = (
+            Decimal(1)
+            if stock_dividend_ratio is None
+            else _json_decimal(Decimal(1) + stock_dividend_ratio)
+        )
+        if volume_factor != expected_volume_factor:
+            raise SnapshotValidationError("v4 成交量調整因子無法由官方股票股利比率重算。")
+        factors.append(
+            _AdjustmentFactor(
+                effective_date=effective_date,
+                action_types=tuple(action_values),
+                price_factor=price_factor,
+                volume_factor=volume_factor,
+                stock_dividend_ratio=stock_dividend_ratio,
+                basis=basis,
+                previous_close=previous_close,
+                reference_price=reference_price,
+                source_urls=source_urls,
+                verified_at=verified_at,
+            )
+        )
+    ordered = tuple(sorted(factors, key=lambda factor: factor.effective_date))
+    if tuple(factor.effective_date for factor in factors) != tuple(factor.effective_date for factor in ordered):
+        raise SnapshotValidationError("v4 調整因子生效日必須遞增。")
+    if len({factor.effective_date for factor in factors}) != len(factors):
+        raise SnapshotValidationError("v4 同一生效日不可重複套用調整因子。")
+    if not isinstance(actions, list):
+        raise SnapshotValidationError("股票快照公司行動欄位無效。")
+    return ordered
+
+
+def _positive_json_decimal(value: object) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError
+    parsed = Decimal(str(value))
+    if not parsed.is_finite() or parsed <= 0:
+        raise ValueError
+    return parsed
+
+
+def _validate_adjustment_factor_coverage(
+    factors: Sequence[_AdjustmentFactor],
+    actions: object,
+) -> None:
+    """可用的還原序列必須剛好涵蓋每一個已發布公司行動，不容許漏套或重套。"""
+
+    if not isinstance(actions, list):
+        raise SnapshotValidationError("股票快照公司行動欄位無效。")
+    grouped_types: dict[date, set[str]] = {}
+    grouped_sources: dict[date, set[str]] = {}
+    grouped_verified_at: dict[date, date] = {}
+    for action in actions:
+        if not isinstance(action, dict):
+            raise SnapshotValidationError("股票快照公司行動欄位無效。")
+        try:
+            action_date = date.fromisoformat(action["date"])
+            action_type = action["type"]
+            source_url = _official_evidence_url(action["sourceUrl"])
+            verified_at = date.fromisoformat(action["verifiedAt"])
+            if action_type not in _ADJUSTMENT_ACTION_TYPES:
+                raise ValueError
+        except (KeyError, TypeError, ValueError, SnapshotValidationError) as error:
+            raise SnapshotValidationError("股票快照公司行動欄位無效。") from error
+        grouped_types.setdefault(action_date, set()).add(action_type)
+        grouped_sources.setdefault(action_date, set()).add(source_url)
+        existing_verified_at = grouped_verified_at.get(action_date)
+        grouped_verified_at[action_date] = max(verified_at, existing_verified_at or verified_at)
+    factors_by_date = {factor.effective_date: factor for factor in factors}
+    if set(factors_by_date) != set(grouped_types):
+        raise SnapshotValidationError("v4 調整因子未完整對應公司行動。")
+    for effective_date, action_types in grouped_types.items():
+        factor = factors_by_date[effective_date]
+        if (
+            factor.action_types != tuple(sorted(action_types))
+            or not grouped_sources[effective_date].issubset(set(factor.source_urls))
+            or factor.verified_at != grouped_verified_at[effective_date]
+        ):
+            raise SnapshotValidationError("v4 調整因子與公司行動證據不一致。")
+
+
+def _validate_adjusted_daily_bars(
+    raw_bars: Sequence[dict[str, Any]],
+    adjusted_bars: Sequence[dict[str, Any]],
+    factors: Sequence[_AdjustmentFactor],
+) -> None:
+    """檢查還原日 K 的每一格皆由原始日 K 與生效日因子得出，不修改原始資料。"""
+
+    if len(raw_bars) != len(adjusted_bars):
+        raise SnapshotValidationError("v4 還原日 K 與原始日 K 筆數不一致。")
+    for raw, adjusted in zip(raw_bars, adjusted_bars, strict=True):
+        if any(
+            raw[field] != adjusted[field]
+            for field in ("date", "periodStart", "periodEnd", "completed", "evidenceStatus", "missingSessionDates")
+        ):
+            raise SnapshotValidationError("v4 還原日 K 的期間證據不可與原始資料分離。")
+        price_factor, volume_factor = _cumulative_adjustment_for_date(raw["parsedDate"], factors)
+        expected_prices = {
+            name: _json_decimal(raw["parsedPrices"][name] * price_factor)
+            for name in ("open", "high", "low", "close")
+        }
+        if adjusted["parsedPrices"] != expected_prices:
+            raise SnapshotValidationError("v4 還原日 K 無法由調整因子重算。")
+        expected_volume = raw["parsedVolume"] * volume_factor
+        if (
+            adjusted["parsedVolume"] != _json_decimal(expected_volume)
+            or adjusted.get("transactionCount") != raw.get("transactionCount")
+        ):
+            raise SnapshotValidationError("v4 還原日 K 成交量或成交筆數無法重算。")
+        expected_precision = min(
+            Decimal(str(raw["sourcePrecision"])),
+            _minimum_source_precision(tuple(expected_prices.values())),
+        )
+        expected_unit = comparison_unit_for_prices(
+            tuple(expected_prices.values()),
+            expected_precision,
+        )
+        if (
+            Decimal(str(adjusted["sourcePrecision"])) != expected_precision
+            or Decimal(str(adjusted["comparisonUnit"])) != expected_unit
+        ):
+            raise SnapshotValidationError("v4 還原日 K 精度或比較單位無法重算。")
 
 
 def _stock_source_urls(stock: Mapping[str, Any], entry: StockIndexEntry) -> set[str]:
@@ -2336,13 +2956,15 @@ def _load_previous_bars(
     dict[tuple[Market, str], list[_NormalizedBar]],
     dict[tuple[Market, str], list[NoQuoteEvidence]],
     dict[tuple[Market, str], set[str]],
+    dict[tuple[Market, str], _PreviousAdjustmentContext],
 ]:
     if previous is None or isinstance(previous, SnapshotManifest):
-        return {}, {}, {}
+        return {}, {}, {}, {}
     manifest = validate_snapshot(previous)
     bars_by_symbol: dict[tuple[Market, str], list[_NormalizedBar]] = {}
     no_quote_by_symbol: dict[tuple[Market, str], list[NoQuoteEvidence]] = {}
     sources_by_symbol: dict[tuple[Market, str], set[str]] = {}
+    adjustments_by_symbol: dict[tuple[Market, str], _PreviousAdjustmentContext] = {}
     for entry in manifest.symbols:
         stock = json.loads((previous / entry.data_path).read_text(encoding="utf-8"))
         source_urls = _stock_source_urls(stock, entry)
@@ -2377,7 +2999,19 @@ def _load_previous_bars(
                 )
                 for value in stock["noQuoteEvidence"]
             ]
-    return bars_by_symbol, no_quote_by_symbol, sources_by_symbol
+        if manifest.snapshot_version == SNAPSHOT_VERSION:
+            actions = stock["corporateActions"]
+            factors = _parse_adjustment_factors(
+                stock["adjustmentFactors"],
+                entry,
+                source_urls,
+                actions,
+            )
+            adjustments_by_symbol[(entry.market, entry.code)] = _PreviousAdjustmentContext(
+                corporate_actions=tuple(dict(action) for action in actions),
+                factors=factors,
+            )
+    return bars_by_symbol, no_quote_by_symbol, sources_by_symbol, adjustments_by_symbol
 
 
 def _bar_json(bar: _NormalizedBar) -> dict[str, Any]:
@@ -2387,7 +3021,7 @@ def _bar_json(bar: _NormalizedBar) -> dict[str, Any]:
         "high": _json_number(bar.high),
         "low": _json_number(bar.low),
         "close": _json_number(bar.close),
-        "volumeShares": bar.volume_shares,
+        "volumeShares": _json_volume_number(bar.volume_shares),
         "priceUnit": PRICE_UNIT,
         "sourcePrecision": _json_number(bar.source_precision),
         "comparisonUnit": _json_number(bar.comparison_unit),
@@ -2424,6 +3058,23 @@ def _action_json(action: CorporateAction) -> dict[str, Any]:
         "affectsPriceContinuity": action.affects_price_continuity,
         "sourceUrl": action.source_url,
         "verifiedAt": action.verified_at.isoformat(),
+    }
+
+
+def _adjustment_factor_json(factor: _AdjustmentFactor) -> dict[str, Any]:
+    return {
+        "effectiveDate": factor.effective_date.isoformat(),
+        "actionTypes": list(factor.action_types),
+        "priceFactor": _json_number(factor.price_factor),
+        "volumeFactor": _json_number(factor.volume_factor),
+        "stockDividendRatio": (
+            None if factor.stock_dividend_ratio is None else _json_number(factor.stock_dividend_ratio)
+        ),
+        "basis": factor.basis,
+        "previousClose": _json_number(factor.previous_close),
+        "referencePrice": _json_number(factor.reference_price),
+        "sourceUrls": list(factor.source_urls),
+        "verifiedAt": factor.verified_at.isoformat(),
     }
 
 
@@ -2531,6 +3182,18 @@ def _json_number(value: Decimal) -> int | float:
     if value == value.to_integral_value():
         return int(value)
     return float(value)
+
+
+def _json_volume_number(value: int | Decimal) -> int | float:
+    """原始成交量保留整股；還原序列可用小數表達等值股數且不截斷。"""
+
+    return value if isinstance(value, int) else _json_number(value)
+
+
+def _json_decimal(value: Decimal) -> Decimal:
+    """讓工作期 Decimal 與公開 JSON number 使用同一可驗證精度。"""
+
+    return Decimal(str(_json_number(value)))
 
 
 def _iso_datetime(value: datetime) -> str:
@@ -2813,7 +3476,7 @@ def bootstrap_snapshot(
     generated_at = now or datetime.now(calendar.timezone)
     sessions = _recent_trading_sessions(calendar, generated_at, RETENTION_SESSIONS)
     symbols = fetch_supported_symbols()
-    actions = fetch_corporate_actions()
+    actions = fetch_corporate_actions(start_date=sessions[0], end_date=sessions[-1])
     override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
     suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
     market_sessions: list[MarketSession] = []
@@ -2881,7 +3544,7 @@ def update_snapshot(
             raise SnapshotValidationError("前一快照與官方預期交易日的缺口無法辨識。")
 
         symbols = fetch_supported_symbols()
-        actions = fetch_corporate_actions()
+        actions = fetch_corporate_actions(start_date=missing_sessions[0], end_date=expected)
         override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
         suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
         if len(missing_sessions) == 1:

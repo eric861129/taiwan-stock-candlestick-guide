@@ -122,6 +122,18 @@ def raw_completed_bars(stock: dict[str, object], timeframe: str = "1d") -> list[
     return raw_timeframe(stock, timeframe)["completedBars"]
 
 
+def adjusted_timeframe(stock: dict[str, object], timeframe: str = "1d") -> dict[str, object]:
+    """取得 v4 向後還原價格指定週期，維持測試在公開 JSON 契約。"""
+
+    return stock["priceModes"]["adjusted"]["timeframes"][timeframe]
+
+
+def adjusted_completed_bars(stock: dict[str, object], timeframe: str = "1d") -> list[dict[str, object]]:
+    """取得 v4 向後還原價格指定週期的已完成 K 棒。"""
+
+    return adjusted_timeframe(stock, timeframe)["completedBars"]
+
+
 def downgrade_snapshot_to_v1(output: Path) -> None:
     """將測試產出的 v4 或 v3 快照轉成舊版 v1 格式。"""
 
@@ -369,8 +381,8 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertEqual(
                 {
                     "status": "unavailable",
-                    "reasonCodes": ["adjustment-series-not-built"],
-                    "warnings": ["向後還原價格序列尚未建立，請使用官方原始價格。"],
+                    "reasonCodes": ["missing-adjustment-evidence"],
+                    "warnings": ["公司行動缺少可重算的官方前收或參考價，請使用官方原始價格。"],
                 },
                 stock["priceModes"]["adjusted"],
             )
@@ -388,6 +400,308 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertEqual("fresh", document["markets"]["TWSE"]["freshness"])
             self.assertTrue((output / "snapshot.tar.gz").is_file())
             self.assertTrue((output / "SHA256SUMS").is_file())
+
+    def test_builds_auditable_cash_dividend_adjustment_and_keeps_raw_unchanged(self) -> None:
+        """純現金股利僅調整生效日前價格，因子可由官方前收與參考價重算。"""
+        base = fixture_build_input()
+        evidenced_actions = parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            load_fixture("tpex-actions.json"),
+            twse_calculation_payload=load_fixture("twse-adjustment-results.json"),
+            tpex_calculation_payload=load_fixture("tpex-adjustment-results.json"),
+            verified_at=date(2026, 8, 11),
+        )
+        build_input = replace(base, corporate_actions=evidenced_actions)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            raw_output = root / "raw"
+            adjusted_output = root / "adjusted"
+            raw_manifest = build_snapshot(None, base, raw_output)
+            adjusted_manifest = build_snapshot(None, build_input, adjusted_output)
+            raw_stock = json.loads((raw_output / raw_manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            stock = json.loads((adjusted_output / adjusted_manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            validate_snapshot(adjusted_output)
+
+        self.assertEqual(raw_timeframe(raw_stock), raw_timeframe(stock))
+        self.assertEqual(
+            [
+                {
+                    "effectiveDate": "2026-08-11",
+                    "actionTypes": ["cash-dividend"],
+                    "priceFactor": 0.95,
+                    "volumeFactor": 1,
+                    "stockDividendRatio": None,
+                    "basis": "official-reference-price",
+                    "previousClose": 100,
+                    "referencePrice": 95,
+                    "sourceUrls": [
+                        "https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL",
+                        "https://www.twse.com.tw/rwd/zh/exRight/TWT49U",
+                    ],
+                    "verifiedAt": "2026-08-11",
+                }
+            ],
+            stock["adjustmentFactors"],
+        )
+        self.assertEqual("available", stock["priceModes"]["adjusted"]["status"])
+        self.assertEqual([], stock["priceModes"]["adjusted"]["reasonCodes"])
+        self.assertEqual([], stock["priceModes"]["adjusted"]["warnings"])
+        self.assertEqual({"1d", "1w", "1m"}, set(stock["priceModes"]["adjusted"]["timeframes"]))
+
+        raw_by_date = {bar["date"]: bar for bar in raw_completed_bars(stock)}
+        adjusted_by_date = {bar["date"]: bar for bar in adjusted_completed_bars(stock)}
+        self.assertEqual(raw_by_date["2026-08-10"]["close"] * 0.95, adjusted_by_date["2026-08-10"]["close"])
+        self.assertEqual(raw_by_date["2026-08-11"]["close"], adjusted_by_date["2026-08-11"]["close"])
+        self.assertEqual(raw_by_date["2026-08-10"]["volumeShares"], adjusted_by_date["2026-08-10"]["volumeShares"])
+
+    def test_adjusts_daily_bars_before_a_week_with_a_midweek_company_action_is_aggregated(self) -> None:
+        """週中除息時，週 K 必須從逐日還原值聚合，不能對原始週 K 整根套因子。"""
+        base = fixture_build_input()
+        actions = parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            load_fixture("tpex-actions.json"),
+            twse_calculation_payload=load_fixture("twse-adjustment-results.json"),
+            tpex_calculation_payload=load_fixture("tpex-adjustment-results.json"),
+            verified_at=date(2026, 8, 11),
+        )
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        sessions: list[MarketSession] = []
+        for session in base.sessions:
+            if session.market == "TWSE":
+                session_date = session.quotes[0].trading_date
+                if session_date == date(2026, 8, 10):
+                    quote = replace(
+                        twse_quote,
+                        trading_date=session_date,
+                        open=Decimal("100"),
+                        high=Decimal("105"),
+                        low=Decimal("95"),
+                        close=Decimal("100"),
+                    )
+                elif session_date == date(2026, 8, 11):
+                    quote = replace(
+                        twse_quote,
+                        trading_date=session_date,
+                        open=Decimal("110"),
+                        high=Decimal("120"),
+                        low=Decimal("108"),
+                        close=Decimal("115"),
+                    )
+                else:
+                    quote = replace(twse_quote, trading_date=session_date)
+                sessions.append(MarketSession("TWSE", (quote,)))
+            else:
+                session_date = session.quotes[0].trading_date
+                sessions.append(MarketSession("TPEx", (replace(tpex_quote, trading_date=session_date),)))
+        build_input = replace(base, corporate_actions=actions, sessions=tuple(sessions))
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, build_input, output)
+            stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            validate_snapshot(output)
+
+        adjusted_week = adjusted_timeframe(stock, "1w")["formingBar"]
+        self.assertIsNotNone(adjusted_week)
+        assert adjusted_week is not None
+        self.assertEqual(95, adjusted_week["open"])
+        self.assertEqual(120, adjusted_week["high"])
+        self.assertEqual(90.25, adjusted_week["low"])
+        self.assertEqual(115, adjusted_week["close"])
+
+    def test_accumulates_multiple_adjustment_factors_by_effective_date(self) -> None:
+        """兩個不同生效日的公司行動，較早日 K 必須套用其後所有因子一次。"""
+        base = fixture_build_input()
+        action = parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            [],
+            twse_calculation_payload=load_fixture("twse-adjustment-results.json"),
+            tpex_calculation_payload=[],
+            verified_at=date(2026, 8, 11),
+        )[0]
+        actions = (
+            replace(action, action_date=date(2026, 8, 5), previous_close=Decimal("100"), reference_price=Decimal("90")),
+            replace(action, action_date=date(2026, 8, 10), previous_close=Decimal("100"), reference_price=Decimal("80")),
+        )
+        build_input = replace(base, corporate_actions=actions)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, build_input, output)
+            stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            validate_snapshot(output)
+
+        self.assertEqual(["2026-08-05", "2026-08-10"], [item["effectiveDate"] for item in stock["adjustmentFactors"]])
+        adjusted_by_date = {bar["date"]: bar for bar in adjusted_completed_bars(stock)}
+        raw_by_date = {bar["date"]: bar for bar in raw_completed_bars(stock)}
+        self.assertEqual(raw_by_date["2026-08-04"]["close"] * 0.9 * 0.8, adjusted_by_date["2026-08-04"]["close"])
+        self.assertEqual(raw_by_date["2026-08-05"]["close"] * 0.8, adjusted_by_date["2026-08-05"]["close"])
+        self.assertEqual(raw_by_date["2026-08-10"]["close"], adjusted_by_date["2026-08-10"]["close"])
+
+    def test_merges_same_day_cash_and_stock_actions_once_and_scales_volume_only_with_a_rebuildable_ratio(self) -> None:
+        """同日混合事件只產生一筆因子；股票股利的完整比率才可調整生效日前整股成交量。"""
+        base = fixture_build_input()
+        action = parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            [],
+            twse_calculation_payload=load_fixture("twse-adjustment-results.json"),
+            tpex_calculation_payload=[],
+            verified_at=date(2026, 8, 11),
+        )[0]
+        actions = (
+            replace(action, action_type="cash-dividend", previous_close=Decimal("100"), reference_price=Decimal("90")),
+            replace(
+                action,
+                action_type="stock-dividend",
+                previous_close=Decimal("100"),
+                reference_price=Decimal("90"),
+                stock_dividend_ratio=Decimal("0.1"),
+            ),
+        )
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        sessions = tuple(
+            MarketSession(
+                session.market,
+                (
+                    replace(
+                        twse_quote,
+                        trading_date=session.quotes[0].trading_date,
+                        volume_shares=1_001,
+                    ),
+                ),
+            )
+            if session.market == "TWSE"
+            else session
+            for session in base.sessions
+        )
+        build_input = replace(base, corporate_actions=actions, sessions=sessions)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, build_input, output)
+            stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            validate_snapshot(output)
+
+        self.assertEqual(1, len(stock["adjustmentFactors"]))
+        factor = stock["adjustmentFactors"][0]
+        self.assertEqual(["cash-dividend", "stock-dividend"], factor["actionTypes"])
+        self.assertEqual(0.9, factor["priceFactor"])
+        self.assertEqual(1.1, factor["volumeFactor"])
+        self.assertEqual(0.1, factor["stockDividendRatio"])
+        adjusted_by_date = {bar["date"]: bar for bar in adjusted_completed_bars(stock)}
+        raw_by_date = {bar["date"]: bar for bar in raw_completed_bars(stock)}
+        self.assertEqual(raw_by_date["2026-08-10"]["close"] * 0.9, adjusted_by_date["2026-08-10"]["close"])
+        self.assertEqual(1_101.1, adjusted_by_date["2026-08-10"]["volumeShares"])
+        self.assertEqual(1_001, adjusted_by_date["2026-08-11"]["volumeShares"])
+
+    def test_keeps_adjusted_available_when_there_are_no_corporate_actions(self) -> None:
+        """無公司行動時還原模式不是錯誤，必須可用且與原始序列完全相同。"""
+        base = replace(fixture_build_input(), corporate_actions=())
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, base, output)
+            stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            validate_snapshot(output)
+
+        self.assertEqual([], stock["adjustmentFactors"])
+        self.assertEqual("available", stock["priceModes"]["adjusted"]["status"])
+        self.assertEqual(raw_timeframe(stock, "1d"), adjusted_timeframe(stock, "1d"))
+        self.assertEqual(raw_timeframe(stock, "1w"), adjusted_timeframe(stock, "1w"))
+        self.assertEqual(raw_timeframe(stock, "1m"), adjusted_timeframe(stock, "1m"))
+
+    def test_incremental_snapshot_preserves_prior_adjustment_evidence_when_new_day_has_no_new_action(self) -> None:
+        """增量日沒有新公司行動時，既有生效日因子仍須隨原始歷史一併帶入新原子快照。"""
+        base = fixture_build_input()
+        actions = parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            load_fixture("tpex-actions.json"),
+            twse_calculation_payload=load_fixture("twse-adjustment-results.json"),
+            tpex_calculation_payload=load_fixture("tpex-adjustment-results.json"),
+            verified_at=date(2026, 8, 11),
+        )
+        initial = replace(base, corporate_actions=actions)
+        twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))[0]
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        next_input = replace(
+            base,
+            source_commit="fixture-next",
+            generated_at=datetime(2026, 8, 12, 18, 0, tzinfo=base.calendar.timezone),
+            sessions=(
+                MarketSession("TWSE", (replace(twse_quote, trading_date=date(2026, 8, 12)),)),
+                MarketSession("TPEx", (replace(tpex_quote, trading_date=date(2026, 8, 12)),)),
+            ),
+            corporate_actions=(),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            previous = root / "previous"
+            output = root / "next"
+            previous_manifest = build_snapshot(None, initial, previous)
+            next_manifest = build_snapshot(previous, next_input, output)
+            previous_stock = json.loads((previous / previous_manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            stock = json.loads((output / next_manifest.symbols[0].data_path).read_text(encoding="utf-8"))
+            validate_snapshot(output)
+
+        self.assertEqual(previous_stock["adjustmentFactors"], stock["adjustmentFactors"])
+        self.assertEqual(previous_stock["corporateActions"], stock["corporateActions"])
+        self.assertEqual("available", stock["priceModes"]["adjusted"]["status"])
+        adjusted_by_date = {bar["date"]: bar for bar in adjusted_completed_bars(stock)}
+        raw_by_date = {bar["date"]: bar for bar in raw_completed_bars(stock)}
+        self.assertEqual(raw_by_date["2026-08-10"]["close"] * 0.95, adjusted_by_date["2026-08-10"]["close"])
+
+    def test_rejects_a_tampered_adjustment_factor_even_when_the_snapshot_checksums_are_rewritten(self) -> None:
+        """調整因子必須等於公開前收與參考價的比值，重算雜湊不能掩蓋竄改。"""
+        base = fixture_build_input()
+        actions = parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            load_fixture("tpex-actions.json"),
+            twse_calculation_payload=load_fixture("twse-adjustment-results.json"),
+            tpex_calculation_payload=load_fixture("tpex-adjustment-results.json"),
+            verified_at=date(2026, 8, 11),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "site-data"
+            manifest = build_snapshot(None, replace(base, corporate_actions=actions), output)
+            manifest_document = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            stock_path = output / manifest.symbols[0].data_path
+            stock = json.loads(stock_path.read_text(encoding="utf-8"))
+            original_stock = json.loads(json.dumps(stock))
+            stock["adjustmentFactors"][0]["priceFactor"] = 0.96
+            rewrite_snapshot_stock(output, manifest_document, stock_path, stock)
+
+            with self.assertRaisesRegex(SnapshotValidationError, "調整因子"):
+                validate_snapshot(output)
+
+            stock = json.loads(json.dumps(original_stock))
+            stock["adjustmentFactors"][0]["priceFactor"] = 0.95
+            stock["adjustmentFactors"][0]["stockDividendRatio"] = 0.1
+            stock["adjustmentFactors"][0]["actionTypes"].append("stock-dividend")
+            rewrite_snapshot_stock(output, manifest_document, stock_path, stock)
+
+            with self.assertRaisesRegex(SnapshotValidationError, "成交量調整因子"):
+                validate_snapshot(output)
+
+            stock = json.loads(json.dumps(original_stock))
+            stock["adjustmentFactors"][0]["sourceUrls"] = [
+                "https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL"
+            ]
+            rewrite_snapshot_stock(output, manifest_document, stock_path, stock)
+
+            with self.assertRaisesRegex(SnapshotValidationError, "計算來源"):
+                validate_snapshot(output)
+
+            stock = json.loads(json.dumps(original_stock))
+            stock["corporateActions"][0]["date"] = "2026-08-12"
+            stock["adjustmentFactors"][0]["effectiveDate"] = "2026-08-12"
+            rewrite_snapshot_stock(output, manifest_document, stock_path, stock)
+
+            with self.assertRaisesRegex(SnapshotValidationError, "公司行動日期"):
+                validate_snapshot(output)
 
     def test_records_emergency_market_closure_evidence_in_manifest_and_provenance(self) -> None:
         base = fixture_build_input()
@@ -735,7 +1049,7 @@ class SnapshotBuildTests(unittest.TestCase):
             build_snapshot(None, initial, output)
             with patch("market_snapshot.fetch_trading_calendar", return_value=calendar), patch(
                 "market_snapshot.fetch_supported_symbols", return_value=symbols
-            ), patch("market_snapshot.fetch_corporate_actions", return_value=actions), patch(
+            ), patch("market_snapshot.fetch_corporate_actions", return_value=actions) as action_fetch, patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
             ), patch(
                 "market_snapshot.fetch_twse_daily", return_value=(twse_new,)
@@ -747,6 +1061,8 @@ class SnapshotBuildTests(unittest.TestCase):
                     Path(temporary_directory) / "cache",
                     now=datetime(2026, 8, 12, 18, 0, tzinfo=taipei),
                 )
+
+            action_fetch.assert_called_once_with(start_date=date(2026, 8, 12), end_date=date(2026, 8, 12))
 
             stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
             self.assertTrue(updated)
@@ -789,7 +1105,7 @@ class SnapshotBuildTests(unittest.TestCase):
 
             with patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar), patch(
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
-            ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
+            ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions) as action_fetch, patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
             ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
@@ -807,6 +1123,11 @@ class SnapshotBuildTests(unittest.TestCase):
                     cache,
                     now=datetime(2026, 8, 11, 18, 0, tzinfo=base.calendar.timezone),
                 )
+
+            action_fetch.assert_called_once_with(
+                start_date=expected_backfill_dates[0],
+                end_date=expected_date,
+            )
 
             stock = json.loads((output / manifest.symbols[0].data_path).read_text(encoding="utf-8"))
             self.assertTrue(updated)
@@ -1659,7 +1980,7 @@ class SnapshotBuildTests(unittest.TestCase):
 
             with patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar), patch(
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
-            ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
+            ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions) as action_fetch, patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
             ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
@@ -1669,6 +1990,10 @@ class SnapshotBuildTests(unittest.TestCase):
                 first = bootstrap_snapshot(root / "first", "fixture", cache, now=now)
 
             self.assertEqual(120, first.symbols[0].bar_count)
+            action_fetch.assert_called_once_with(
+                start_date=official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)[0],
+                end_date=date(2026, 8, 11),
+            )
             self.assertEqual(120, twse_fetch.call_count)
             self.assertEqual(120, tpex_fetch.call_count)
 

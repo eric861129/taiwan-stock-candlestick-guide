@@ -9,6 +9,7 @@ const context: AnalysisContext = {
   market: 'TWSE',
   cutoffDate: '2026-08-11',
   freshness: 'fresh',
+  priceMode: 'raw',
   timeframe: '1d',
   analyzedFrom: '2026-08-10',
   analyzedTo: '2026-08-11',

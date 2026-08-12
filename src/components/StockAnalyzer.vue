@@ -1,9 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { loadManifest, loadStockSnapshot, selectStockTimeframe } from '../domain/market-data/client';
+import {
+  loadManifest,
+  loadStockSnapshot,
+  selectStockPriceMode,
+  selectStockTimeframe,
+} from '../domain/market-data/client';
 import { computeFreshness, mostConservativeFreshness } from '../domain/market-data/freshness';
 import type { MarketDataManifest, MarketDataSymbol } from '../domain/market-data/schema';
-import type { AnalysisResult, StockSnapshot, Timeframe, UnavailableReason } from '../domain/market-data/types';
+import type {
+  AnalysisResult,
+  PriceMode,
+  StockSnapshot,
+  Timeframe,
+  UnavailableReason,
+} from '../domain/market-data/types';
 import { analyzePatterns } from '../domain/patterns/matcher';
 import AnalysisResultPanel from './AnalysisResultPanel.vue';
 import CandlestickChart from './CandlestickChart.vue';
@@ -20,6 +31,7 @@ const errorMessage = ref('');
 const marketCutoffDate = ref<string | null>(null);
 const marketExpectedCutoffDate = ref<string | null>(null);
 const selectedTimeframe = ref<Timeframe>('1d');
+const selectedPriceMode = ref<PriceMode>('raw');
 const stockDataLastDate = computed(() => snapshot.value?.bars.at(-1)?.date ?? null);
 const latestNoQuoteEvidence = computed(() => snapshot.value?.noQuoteEvidence.at(-1));
 const latestNoQuoteDescription = computed(() => {
@@ -42,9 +54,30 @@ const timeframeLabels: Readonly<Record<Timeframe, string>> = {
 };
 
 const timeframeOptions: readonly Timeframe[] = ['1d', '1w', '1m'];
+const priceModeOptions: readonly PriceMode[] = ['adjusted', 'raw'];
+const priceModeLabels: Readonly<Record<PriceMode, string>> = {
+  adjusted: '向後還原價格',
+  raw: '官方原始價格',
+};
+
+const adjustedUnavailableWarning = computed(() => {
+  const adjusted = snapshot.value?.priceModes?.adjusted;
+  return adjusted?.status === 'unavailable' ? adjusted.warnings[0] ?? null : null;
+});
 
 function timeframeLabel(timeframe: Timeframe): string {
   return timeframeLabels[timeframe];
+}
+
+function priceModeLabel(priceMode: PriceMode): string {
+  return priceModeLabels[priceMode];
+}
+
+function priceModeAvailable(priceMode: PriceMode): boolean {
+  if (priceMode === 'raw') {
+    return true;
+  }
+  return snapshot.value?.priceModes?.adjusted.status === 'available';
 }
 
 function latestObservedStockDate(loaded: StockSnapshot): string | null {
@@ -140,6 +173,7 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
   result.value = null;
   snapshot.value = null;
   selectedTimeframe.value = '1d';
+  selectedPriceMode.value = 'raw';
   marketCutoffDate.value = null;
   marketExpectedCutoffDate.value = null;
   statusMessage.value = `已確認 ${symbol.code} ${symbol.name}，正在載入單一股票的盤後資料。`;
@@ -169,6 +203,7 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
     };
     snapshot.value = scopedSnapshot;
     selectedTimeframe.value = scopedSnapshot.timeframe ?? '1d';
+    selectedPriceMode.value = scopedSnapshot.priceMode;
     marketCutoffDate.value = marketCutoff.cutoffDate;
     marketExpectedCutoffDate.value = marketCutoff.expectedCutoffDate;
     result.value = analyzePatterns(scopedSnapshot, {
@@ -178,7 +213,7 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
     loadState.value = 'ready';
     const label = timeframeLabel(selectedTimeframe.value);
     statusMessage.value = scopedSnapshot.bars.length > 0
-      ? `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的原始盤後${label}，可查看圖表與規則比對。`
+      ? `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的${priceModeLabel(scopedSnapshot.priceMode)}${label}，可查看圖表與規則比對。`
       : `已載入 ${scopedSnapshot.code} ${scopedSnapshot.name} 的官方未報價證據；沒有可畫製的${label}。`;
   } catch (error) {
     if (!isCurrentRequest(requestId)) {
@@ -197,6 +232,29 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
       return;
     }
     errorMessage.value = messageFromError(error);
+  }
+}
+
+/** 切換價格口徑後，圖表與 matcher 以同一組日、週或月 K 立即重算。 */
+function changePriceMode(priceMode: PriceMode): void {
+  const current = snapshot.value;
+  if (!current || priceMode === selectedPriceMode.value || !priceModeAvailable(priceMode)) {
+    return;
+  }
+
+  try {
+    const selected = selectStockPriceMode(current, priceMode);
+    selectedPriceMode.value = priceMode;
+    snapshot.value = selected;
+    result.value = analyzePatterns(selected, {
+      freshness: selected.freshness,
+      snapshotHash: selected.snapshotHash,
+    });
+    statusMessage.value = `已切換為${priceModeLabel(priceMode)}；圖表與型態比對已使用同一價格口徑重算。`;
+  } catch (error) {
+    const reason = unavailableReasonFromError(error);
+    result.value = { status: 'unavailable', reason, message: messageFromError(error) };
+    statusMessage.value = '';
   }
 }
 
@@ -227,6 +285,7 @@ function resetQuery(): void {
   beginRequest();
   snapshot.value = null;
   selectedTimeframe.value = '1d';
+  selectedPriceMode.value = 'raw';
   result.value = null;
   marketCutoffDate.value = null;
   marketExpectedCutoffDate.value = null;
@@ -252,7 +311,7 @@ onMounted(() => {
     <h2 id="stock-analyzer-title">
       股票型態比對
     </h2>
-    <p>先確認資料截止日，再把最近 60 根原始盤後{{ timeframeLabel(selectedTimeframe) }}與教學卡規則逐條比對。</p>
+    <p>先確認資料截止日，再把最近 60 根{{ priceModeLabel(selectedPriceMode) }}{{ timeframeLabel(selectedTimeframe) }}與教學卡規則逐條比對。</p>
     <p class="stock-analyzer__disclaimer">
       本工具比較歷史價格資料與教學型態規則，不預測未來價格，也不構成投資建議。
     </p>
@@ -292,7 +351,31 @@ onMounted(() => {
         aria-label="已選擇的股票"
       >
         <h3>已選擇：{{ snapshot.code }} {{ snapshot.name }}</h3>
-        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，原始盤後{{ timeframeLabel(selectedTimeframe) }}，股票{{ timeframeLabel(selectedTimeframe) }}最後資料日 {{ stockDataLastDate ?? '無合法日 K' }}。</p>
+        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，{{ priceModeLabel(selectedPriceMode) }}{{ timeframeLabel(selectedTimeframe) }}，股票{{ timeframeLabel(selectedTimeframe) }}最後資料日 {{ stockDataLastDate ?? '無合法日 K' }}。</p>
+        <fieldset class="stock-analyzer__timeframes">
+          <legend>選擇價格口徑</legend>
+          <label
+            v-for="priceMode in priceModeOptions"
+            :key="priceMode"
+          >
+            <input
+              :data-price-mode="priceMode"
+              type="radio"
+              name="analysis-price-mode"
+              :value="priceMode"
+              :checked="selectedPriceMode === priceMode"
+              :disabled="!priceModeAvailable(priceMode)"
+              @change="changePriceMode(priceMode)"
+            >
+            {{ priceModeLabel(priceMode) }}
+          </label>
+        </fieldset>
+        <p
+          v-if="adjustedUnavailableWarning"
+          class="stock-analyzer__mode-warning"
+        >
+          {{ adjustedUnavailableWarning }} 向後還原價格已停用，仍可查看官方原始價格。
+        </p>
         <fieldset class="stock-analyzer__timeframes">
           <legend>選擇 K 線週期</legend>
           <label
@@ -402,6 +485,18 @@ onMounted(() => {
   align-items: center;
   min-height: 2.25rem;
   cursor: pointer;
+}
+
+.stock-analyzer__timeframes label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.stock-analyzer__mode-warning {
+  padding: 0.75rem;
+  border-left: 4px solid #855b00;
+  background: #fff6dc;
+  color: #4d3b1c;
 }
 
 .stock-analyzer__selection button,

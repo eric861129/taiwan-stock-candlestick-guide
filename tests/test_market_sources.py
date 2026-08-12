@@ -134,6 +134,85 @@ class OfficialCompanyMasterTests(unittest.TestCase):
 
 
 class OfficialCorporateActionTests(unittest.TestCase):
+    def test_fetches_the_twse_calculation_result_for_an_explicit_date_range(self) -> None:
+        """TWSE 官網新端點必須帶 startDate/endDate，不能誤用只回當期資料的舊路徑。"""
+        payload_by_endpoint = {
+            "twse-actions": load_fixture("twse-actions.json"),
+            "tpex-actions": load_fixture("tpex-actions.json"),
+            "twse-action-calculations": load_fixture("twse-adjustment-results.json"),
+            "tpex-action-calculations": load_fixture("tpex-adjustment-results.json"),
+        }
+        calls: list[tuple[str, dict[str, str] | None]] = []
+
+        def fake_fetch(endpoint: str, parameters: dict[str, str] | None = None) -> object:
+            calls.append((endpoint, parameters))
+            return payload_by_endpoint[endpoint]
+
+        with patch("market_sources._fetch_official_json", side_effect=fake_fetch):
+            actions = market_sources.fetch_corporate_actions(
+                start_date=date(2026, 8, 1),
+                end_date=date(2026, 8, 11),
+            )
+
+        self.assertEqual(2, len(actions))
+        self.assertIn(
+            (
+                "twse-action-calculations",
+                {"response": "json", "startDate": "20260801", "endDate": "20260811"},
+            ),
+            calls,
+        )
+
+    def test_keeps_a_conflicting_twse_calculation_key_unavailable_after_later_duplicates(self) -> None:
+        """同日同股官方價格一旦互相矛盾，後續重複列也不可讓該 key 恢復可用。"""
+        calculation = load_fixture("twse-adjustment-results.json")
+        self.assertIsInstance(calculation, dict)
+        conflicting = dict(calculation)
+        original = list(conflicting["data"][0])
+        different = list(original)
+        different[3] = "101.00"
+        conflicting["data"] = [original, different, original]
+
+        actions = parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            [],
+            twse_calculation_payload=conflicting,
+            tpex_calculation_payload=[],
+            verified_at=date(2026, 8, 11),
+        )
+
+        self.assertEqual(1, len(actions))
+        self.assertIsNone(actions[0].previous_close)
+        self.assertIsNone(actions[0].reference_price)
+
+    def test_joins_official_calculation_results_to_the_action_evidence(self) -> None:
+        """計算結果表的前收與參考價必須保留，讓快照可重算而非推測跳空。"""
+        actions = parse_corporate_actions(
+            load_fixture("twse-actions.json"),
+            load_fixture("tpex-actions.json"),
+            twse_calculation_payload=load_fixture("twse-adjustment-results.json"),
+            tpex_calculation_payload=load_fixture("tpex-adjustment-results.json"),
+            verified_at=date(2026, 8, 11),
+        )
+
+        self.assertEqual(
+            (
+                ("TWSE", "2330", Decimal("100.00"), Decimal("95.00")),
+                ("TPEx", "6488", Decimal("100.00"), Decimal("97.00")),
+            ),
+            tuple(
+                (action.market, action.code, action.previous_close, action.reference_price)
+                for action in actions
+            ),
+        )
+        self.assertEqual(
+            (
+                "https://www.twse.com.tw/rwd/zh/exRight/TWT49U",
+                "https://www.tpex.org.tw/openapi/v1/tpex_exright_daily",
+            ),
+            tuple(action.calculation_source_url for action in actions),
+        )
+
     def test_action_rows_keep_date_type_and_official_provenance(self) -> None:
         """若公司行動遺失官方來源或被當成不影響連續性，快照驗證必須失敗。"""
         actions = parse_corporate_actions(

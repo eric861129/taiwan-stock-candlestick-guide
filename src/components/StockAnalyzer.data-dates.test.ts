@@ -14,6 +14,8 @@ const freshnessMocks = vi.hoisted(() => ({
 vi.mock('../domain/market-data/client', () => ({
   loadManifest: clientMocks.loadManifest,
   loadStockSnapshot: clientMocks.loadStockSnapshot,
+  selectStockPriceMode: vi.fn(),
+  selectStockTimeframe: vi.fn(),
   normalizeStockCode: (value: unknown) => (typeof value === 'string' ? value.trim() : null),
 }));
 vi.mock('../domain/market-data/freshness', () => ({

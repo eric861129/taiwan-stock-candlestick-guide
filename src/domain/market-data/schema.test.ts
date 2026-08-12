@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { marketManifestSchema, stockSnapshotSchema } from './schema';
+import { marketManifestSchema, stockSnapshotSchema, toStockSnapshot } from './schema';
 
 const marketManifestFixture = {
   schemaVersion: 1,
@@ -100,10 +100,11 @@ const stockSnapshotFixture = {
     },
     adjusted: {
       status: 'unavailable',
-      reasonCodes: ['adjustment-series-not-built'],
-      warnings: ['尚未建立可稽核的向後還原價格序列。'],
+      reasonCodes: ['missing-adjustment-evidence'],
+      warnings: ['公司行動缺少可重算的官方調整證據，已保留原始價格。'],
     },
   },
+  adjustmentFactors: [],
   noQuoteEvidence: [],
   corporateActions: [{
     date: '2026-08-11',
@@ -134,7 +135,7 @@ describe('market snapshot v4 schemas', () => {
     }).success).toBe(false);
   });
 
-  it('requires all raw timeframes and keeps adjusted prices explicitly unavailable', () => {
+  it('requires all raw timeframes and keeps missing adjustment evidence explicitly unavailable', () => {
     expect(stockSnapshotSchema.safeParse({
       ...stockSnapshotFixture,
       priceModes: {
@@ -167,6 +168,104 @@ describe('market snapshot v4 schemas', () => {
           warnings: ['adjustment series has not been built'],
         },
       },
+    }).success).toBe(false);
+  });
+
+  it('accepts an auditable adjusted series and rejects a factor that cannot be recomputed', () => {
+    const adjustmentFactor = {
+      effectiveDate: '2026-08-11',
+      actionTypes: ['cash-dividend'],
+      priceFactor: 0.995,
+      volumeFactor: 1,
+      stockDividendRatio: null,
+      basis: 'official-distribution-formula',
+      previousClose: 1000,
+      referencePrice: 995,
+      sourceUrls: [
+        'https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL',
+        'https://www.twse.com.tw/rwd/zh/exRight/TWT49U',
+      ],
+      verifiedAt: '2026-08-11',
+    };
+    const adjustedAvailable = {
+      ...stockSnapshotFixture,
+      priceModes: {
+        ...stockSnapshotFixture.priceModes,
+        adjusted: {
+          status: 'available',
+          reasonCodes: [],
+          warnings: [],
+          timeframes: stockSnapshotFixture.priceModes.raw.timeframes,
+        },
+      },
+      adjustmentFactors: [adjustmentFactor],
+      sourceUrls: [
+        ...stockSnapshotFixture.sourceUrls,
+        'https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL',
+        'https://www.twse.com.tw/rwd/zh/exRight/TWT49U',
+      ],
+    };
+
+    expect(stockSnapshotSchema.safeParse(adjustedAvailable).success).toBe(true);
+    const parsed = stockSnapshotSchema.parse(adjustedAvailable);
+    expect(toStockSnapshot(parsed).priceMode).toBe('adjusted');
+    expect(stockSnapshotSchema.safeParse({
+      ...adjustedAvailable,
+      adjustmentFactors: [{ ...adjustmentFactor, priceFactor: 0.9 }],
+    }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({
+      ...adjustedAvailable,
+      adjustmentFactors: [{ ...adjustmentFactor, stockDividendRatio: 0.1 }],
+    }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({
+      ...adjustedAvailable,
+      adjustmentFactors: [{
+        ...adjustmentFactor,
+        sourceUrls: ['https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL'],
+      }],
+    }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({
+      ...adjustedAvailable,
+      corporateActions: adjustedAvailable.corporateActions.map((action) => ({
+        ...action,
+        date: '2026-08-12',
+      })),
+      adjustmentFactors: [{ ...adjustmentFactor, effectiveDate: '2026-08-12' }],
+    }).success).toBe(false);
+    expect(stockSnapshotSchema.safeParse({
+      ...adjustedAvailable,
+      priceModes: {
+        ...adjustedAvailable.priceModes,
+        adjusted: {
+          ...adjustedAvailable.priceModes.adjusted,
+          timeframes: {
+            ...adjustedAvailable.priceModes.adjusted.timeframes,
+            '1d': timeframe([{ ...completedBar(), date: '2026-08-10', periodStart: '2026-08-10', periodEnd: '2026-08-10' }]),
+          },
+        },
+      },
+    }).success).toBe(false);
+  });
+
+  it('keeps adjusted prices available and identical when there are no corporate actions', () => {
+    const withoutActions = {
+      ...stockSnapshotFixture,
+      corporateActions: [],
+      priceModes: {
+        ...stockSnapshotFixture.priceModes,
+        adjusted: {
+          status: 'available',
+          reasonCodes: [],
+          warnings: [],
+          timeframes: stockSnapshotFixture.priceModes.raw.timeframes,
+        },
+      },
+    };
+
+    expect(stockSnapshotSchema.safeParse(withoutActions).success).toBe(true);
+    expect(stockSnapshotSchema.safeParse({
+      ...withoutActions,
+      priceModes: stockSnapshotFixture.priceModes,
     }).success).toBe(false);
   });
 

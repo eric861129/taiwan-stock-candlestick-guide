@@ -166,6 +166,43 @@ describe('explainable 17-pattern matcher', () => {
     expect(result.context.suppressedRules).toContain('price-continuity-action-intersects-window');
   });
 
+  it('analyzes an audited adjusted series without treating its covered corporate action as a continuity break', () => {
+    const piercing = caseFor('piercing-line', 'positive');
+    const cutoff = piercing.snapshot.bars.at(-1)?.date ?? '2026-08-02';
+    const adjustedSnapshot: StockSnapshot = {
+      ...makeSnapshot(piercing.snapshot.bars, [{
+        date: cutoff,
+        type: 'cash-dividend',
+        affectsPriceContinuity: true,
+        sourceUrl: 'https://example.test/actions',
+        verifiedAt: '2026-08-10',
+      }]),
+      priceMode: 'adjusted',
+      adjustmentFactors: [{
+        effectiveDate: cutoff,
+        actionTypes: ['cash-dividend'],
+        priceFactor: 0.99,
+        volumeFactor: 1,
+        stockDividendRatio: null,
+        basis: 'official-reference-price',
+        previousClose: 100,
+        referencePrice: 99,
+        sourceUrls: ['https://example.test/actions'],
+        verifiedAt: '2026-08-10',
+      }],
+    };
+
+    const result = analyzePatterns(adjustedSnapshot);
+
+    expect(resultFor(result, 'piercing-line')).toBe(true);
+    expect(result.status).not.toBe('unavailable');
+    if (result.status !== 'unavailable') {
+      expect(result.context.priceMode).toBe('adjusted');
+      expect(result.context.suppressedRules).not.toContain('price-continuity-action-intersects-window');
+      expect(result.context.warnings).toContain('已使用可稽核的向後還原價格；公司行動仍保留於結果供對照。');
+    }
+  });
+
   it('uses only completed daily bars for the latest analysis window', () => {
     const hammer = caseFor('hammer', 'positive');
     const completedTarget = hammer.snapshot.bars.at(-1);

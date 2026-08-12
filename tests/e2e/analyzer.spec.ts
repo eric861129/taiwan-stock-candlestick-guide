@@ -106,6 +106,22 @@ test.describe('股票型態比對', () => {
     await expect(page.locator('.analysis-result-panel__candidate')).toHaveCount(0);
   });
 
+  test('預設使用可稽核還原價格，切換原始價格後圖表與分析結果同步更新', async ({ page }) => {
+    const stock = makeBrowserStockFixture(neutralBars());
+    await routeBrowserMarketFixture(page, createBrowserMarketFixture(stock));
+    await goToRoute(page, 'analyzer');
+    await waitForAnalyzerReady(page);
+
+    await searchStock(page, '2330');
+    await expect(page.locator('[data-price-mode="adjusted"]')).toBeChecked();
+    await expect(page.getByText('向後還原價格', { exact: true }).last()).toBeVisible();
+
+    await page.locator('[data-price-mode="raw"]').check();
+    await expect(page.locator('[data-price-mode="raw"]')).toBeChecked();
+    await expect(page.getByText(/已切換為官方原始價格；圖表與型態比對已使用同一價格口徑重算/)).toBeVisible();
+    await expect(page.getByText('官方原始價格', { exact: true }).last()).toBeVisible();
+  });
+
   test('不合法的未完成日 K 會 fail closed，而不假裝有候選', async ({ page }) => {
     const stock = makeBrowserStockFixture([
       makeBar('2026-08-10', 100, 101, 99, 100, false),
@@ -243,6 +259,8 @@ test.describe('股票型態比對', () => {
     await waitForAnalyzerReady(page);
 
     await searchStock(page, '2330');
+    await expect(page.locator('[data-price-mode="adjusted"]')).toBeDisabled();
+    await expect(page.getByText(/公司行動缺少可重算的官方調整證據/)).toBeVisible();
     await expect(page.getByRole('heading', { name: '公司行動' })).toBeVisible();
     await expect(page.getByText(/影響候選窗的價格連續性/)).toBeVisible();
     await expect(page.getByRole('heading', { name: '無法完整評估的型態卡' })).toBeVisible();

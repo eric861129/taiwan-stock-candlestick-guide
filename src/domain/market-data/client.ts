@@ -1,5 +1,5 @@
 import { SITE_BASE } from '../site/navigation';
-import type { Freshness, StockSnapshot, Timeframe, UnavailableReason } from './types';
+import type { Freshness, PriceMode, StockSnapshot, Timeframe, UnavailableReason } from './types';
 import {
   marketManifestSchema,
   stockSnapshotSchema,
@@ -317,6 +317,7 @@ function officialPeriodSessions(
 function assertAggregateBar(
   manifest: MarketDataManifest,
   snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
+  dailyBars: ReturnType<typeof stockSnapshotSchema.parse>['priceModes']['raw']['timeframes']['1d']['completedBars'],
   timeframe: Exclude<Timeframe, '1d'>,
   bar: ReturnType<typeof stockSnapshotSchema.parse>['priceModes']['raw']['timeframes']['1w']['completedBars'][number],
 ): void {
@@ -333,7 +334,6 @@ function assertAggregateBar(
     throw new MarketDataError('schema-error', '週期 K 線的完成狀態與官方交易日曆不一致。');
   }
 
-  const dailyBars = snapshot.priceModes.raw.timeframes['1d'].completedBars;
   const firstRetainedDailyDate = dailyBars[0]?.date;
   if (!firstRetainedDailyDate || bar.periodEnd < firstRetainedDailyDate) {
     return;
@@ -365,11 +365,11 @@ function assertAggregateBar(
     .map((daily) => daily.transactionCount)
     .filter((count): count is number => count !== undefined);
   const aggregateMismatch = (
-    bar.open !== constituents[0]!.open
-    || bar.high !== Math.max(...constituents.map((daily) => daily.high))
-    || bar.low !== Math.min(...constituents.map((daily) => daily.low))
-    || bar.close !== constituents.at(-1)!.close
-    || bar.volumeShares !== constituents.reduce((sum, daily) => sum + daily.volumeShares, 0)
+    !almostEqual(bar.open, constituents[0]!.open)
+    || !almostEqual(bar.high, Math.max(...constituents.map((daily) => daily.high)))
+    || !almostEqual(bar.low, Math.min(...constituents.map((daily) => daily.low)))
+    || !almostEqual(bar.close, constituents.at(-1)!.close)
+    || !almostEqual(bar.volumeShares, constituents.reduce((sum, daily) => sum + daily.volumeShares, 0))
     || bar.date !== constituents.at(-1)!.date
     || (transactionCounts.length > 0
       ? bar.transactionCount !== transactionCounts.reduce((sum, count) => sum + count, 0)
@@ -384,13 +384,57 @@ function assertStockTimeframeAggregates(
   manifest: MarketDataManifest,
   snapshot: ReturnType<typeof stockSnapshotSchema.parse>,
 ): void {
-  for (const timeframe of ['1w', '1m'] as const) {
-    const series = snapshot.priceModes.raw.timeframes[timeframe];
-    for (const bar of [
-      ...series.completedBars,
-      ...(series.formingBar ? [series.formingBar] : []),
-    ]) {
-      assertAggregateBar(manifest, snapshot, timeframe, bar);
+  for (const priceMode of ['raw', 'adjusted'] as const) {
+    const mode = snapshot.priceModes[priceMode];
+    if (mode.status !== 'available') {
+      continue;
+    }
+    const dailyBars = mode.timeframes['1d'].completedBars;
+    for (const timeframe of ['1w', '1m'] as const) {
+      const series = mode.timeframes[timeframe];
+      for (const bar of [
+        ...series.completedBars,
+        ...(series.formingBar ? [series.formingBar] : []),
+      ]) {
+        assertAggregateBar(manifest, snapshot, dailyBars, timeframe, bar);
+      }
+    }
+  }
+}
+
+function almostEqual(actual: number, expected: number): boolean {
+  const tolerance = Math.max(1e-8, Math.abs(expected) * 1e-10);
+  return Math.abs(actual - expected) <= tolerance;
+}
+
+/** 瀏覽器再次用公開因子重算日 K，避免雜湊正確但內容語意錯置的還原序列進入 matcher。 */
+function assertAdjustedDailySeries(snapshot: ReturnType<typeof stockSnapshotSchema.parse>): void {
+  const adjusted = snapshot.priceModes.adjusted;
+  if (adjusted.status !== 'available') {
+    return;
+  }
+  const rawBars = snapshot.priceModes.raw.timeframes['1d'].completedBars;
+  const adjustedBars = adjusted.timeframes['1d'].completedBars;
+  if (rawBars.length !== adjustedBars.length) {
+    throw new MarketDataError('schema-error', '向後還原日 K 與官方原始日 K 筆數不一致。');
+  }
+  for (const [index, raw] of rawBars.entries()) {
+    const adjustedBar = adjustedBars[index];
+    if (!adjustedBar) {
+      throw new MarketDataError('schema-error', '向後還原日 K 缺少對應的官方原始日 K。');
+    }
+    const laterFactors = snapshot.adjustmentFactors.filter((factor) => raw.date < factor.effectiveDate);
+    const priceFactor = laterFactors.reduce((product, factor) => product * factor.priceFactor, 1);
+    const volumeFactor = laterFactors.reduce((product, factor) => product * factor.volumeFactor, 1);
+    if (
+      !almostEqual(adjustedBar.open, raw.open * priceFactor)
+      || !almostEqual(adjustedBar.high, raw.high * priceFactor)
+      || !almostEqual(adjustedBar.low, raw.low * priceFactor)
+      || !almostEqual(adjustedBar.close, raw.close * priceFactor)
+      || !almostEqual(adjustedBar.volumeShares, raw.volumeShares * volumeFactor)
+      || adjustedBar.transactionCount !== raw.transactionCount
+    ) {
+      throw new MarketDataError('schema-error', '向後還原日 K 無法由官方原始日 K 與公開調整因子重算。');
     }
   }
 }
@@ -412,18 +456,42 @@ export function normalizeStockCode(input: unknown): string | null {
  * 形成中 K 棒會保留在 bars 供圖表呈現，但 matcher 會依 completed/evidenceStatus 排除。
  */
 export function selectStockTimeframe(snapshot: StockSnapshot, timeframe: Timeframe): StockSnapshot {
-  const raw = snapshot.priceModes?.raw;
-  if (!raw || raw.status !== 'available') {
-    throw new MarketDataError('schema-error', '原始價格多時間週期資料不可用，已停止型態比對。');
+  const mode = snapshot.priceModes?.[snapshot.priceMode];
+  if (!mode || mode.status !== 'available') {
+    throw new MarketDataError('schema-error', '目前價格模式的多時間週期資料不可用，已停止型態比對。');
   }
-  const series = raw.timeframes[timeframe];
+  const series = mode.timeframes[timeframe];
   if (!series) {
     throw new MarketDataError('schema-error', '指定時間週期不在已驗證的股票快照中。');
   }
 
   return {
     ...snapshot,
-    priceMode: 'raw',
+    timeframe,
+    bars: [
+      ...series.completedBars,
+      ...(series.formingBar ? [series.formingBar] : []),
+    ],
+  };
+}
+
+/**
+ * 在相同時間週期下切換官方原始或向後還原價格，確保圖表與 matcher 共用同一組 K 棒。
+ */
+export function selectStockPriceMode(snapshot: StockSnapshot, priceMode: PriceMode): StockSnapshot {
+  const mode = snapshot.priceModes?.[priceMode];
+  if (!mode || mode.status !== 'available') {
+    const warning = mode?.warnings[0];
+    throw new MarketDataError(
+      'schema-error',
+      warning ?? '指定價格模式缺少可稽核資料，已停止型態比對。',
+    );
+  }
+  const timeframe = snapshot.timeframe ?? '1d';
+  const series = mode.timeframes[timeframe];
+  return {
+    ...snapshot,
+    priceMode,
     timeframe,
     bars: [
       ...series.completedBars,
@@ -500,6 +568,7 @@ export async function loadStockSnapshot(
   assertStockMatchesIndex(entry, parsed.data);
   assertStockMatchesMarketSessions(manifest, parsed.data);
   assertStockMatchesSuspensionEvidence(manifest, parsed.data);
+  assertAdjustedDailySeries(parsed.data);
   assertStockTimeframeAggregates(manifest, parsed.data);
   return toStockSnapshot(parsed.data);
 }

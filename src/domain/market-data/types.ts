@@ -9,10 +9,13 @@ export type Freshness = 'fresh' | 'one-session-behind' | 'stale' | 'unknown';
 /** 可在同一市場快照中切換的 K 線時間週期。 */
 export type Timeframe = '1d' | '1w' | '1m';
 
+/** 圖表與 matcher 必須共同使用的價格口徑。 */
+export type PriceMode = 'raw' | 'adjusted';
+
 /** 聚合週期的官方交易日證據是否完整。 */
 export type BarEvidenceStatus = 'complete' | 'incomplete';
 
-/** 原始日線 OHLCV 資料；價格容忍值由資料管線依來源精度與升降單位先行算出。 */
+/** 日線或聚合 OHLCV；還原模式的成交量可為等值股數，價格容忍值由資料管線先行算出。 */
 export interface OhlcvBar {
   date: string;
   /** 此 K 棒涵蓋期間的第一個交易日；舊測試資料未提供時由資料來源相容層保留。 */
@@ -62,6 +65,21 @@ export interface PriceModes {
   adjusted: AvailablePriceMode | UnavailablePriceMode;
 }
 
+/** 一個生效日的可重算向後還原因子與官方來源證據。 */
+export interface AdjustmentFactor {
+  effectiveDate: string;
+  actionTypes: readonly CorporateAction['type'][];
+  priceFactor: number;
+  volumeFactor: number;
+  /** 股票股利配股率；沒有股票股利時為 null，成交量因子可由 1 + 此值重算。 */
+  stockDividendRatio: number | null;
+  basis: 'official-reference-price' | 'official-distribution-formula' | 'official-ratio';
+  previousClose: number;
+  referencePrice: number;
+  sourceUrls: readonly string[];
+  verifiedAt: string;
+}
+
 /** 會影響價格連續性判讀的公司行動來源紀錄。 */
 export interface CorporateAction {
   date: string;
@@ -92,11 +110,13 @@ export interface StockSnapshot {
   name: string;
   market: Market;
   securityType: 'common-stock';
-  priceMode: 'raw';
+  priceMode: PriceMode;
   /** 目前被圖表與 matcher 選取的週期；未指定時視為日 K。 */
   timeframe?: Timeframe;
   /** 所有價格模式與三個時間週期，供切換時重新建立 selected bars。 */
   priceModes?: PriceModes;
+  /** 可由官方欄位重算的公司行動調整因子。 */
+  adjustmentFactors?: readonly AdjustmentFactor[];
   currency: 'TWD';
   comparisonUnitPolicy: {
     version: number;
@@ -145,6 +165,7 @@ export interface AnalysisContext {
   market: Market;
   cutoffDate: string;
   freshness: Freshness;
+  priceMode: PriceMode;
   timeframe: Timeframe;
   analyzedFrom: string;
   analyzedTo: string;

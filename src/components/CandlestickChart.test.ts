@@ -111,4 +111,31 @@ describe('CandlestickChart', () => {
     expect(wrapper.get('h3').text()).toContain('週 K');
     expect(wrapper.get('[data-candle-index="60"]').attributes('aria-label')).toContain('形成中');
   });
+
+  it('shows a company action that happened inside a weekly bar period', async () => {
+    const weeklyBar = {
+      ...chartSnapshot.bars.at(-1)!,
+      date: chartDate(60),
+      periodStart: chartDate(58),
+      periodEnd: chartDate(62),
+      completed: true,
+      evidenceStatus: 'complete' as const,
+      missingSessionDates: [],
+    };
+    const wrapper = mount(CandlestickChart, {
+      props: {
+        snapshot: {
+          ...chartSnapshot,
+          snapshotVersion: 4,
+          timeframe: '1w' as const,
+          bars: [weeklyBar],
+        },
+      },
+    });
+
+    expect(wrapper.find('[data-corporate-action]').exists()).toBe(true);
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('現金股利');
+    await wrapper.get('button[data-chart-table-toggle]').trigger('click');
+    expect(wrapper.get('tbody').text()).toContain('現金股利');
+  });
 });

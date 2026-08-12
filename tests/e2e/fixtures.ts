@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, type Page } from '@playwright/test';
-import type { CorporateAction, NoQuoteEvidence, OhlcvBar } from '../../src/domain/market-data/types';
+import type { AdjustmentFactor, CorporateAction, NoQuoteEvidence, OhlcvBar } from '../../src/domain/market-data/types';
 export { prepareFixtureSnapshot } from './fixture-lifecycle';
 
 export const SITE_BASE = '/taiwan-stock-candlestick-guide/';
@@ -43,10 +43,20 @@ export interface BrowserStockFixture {
     };
     readonly adjusted: {
       readonly status: 'unavailable';
-      readonly reasonCodes: readonly ['adjustment-series-not-built'];
+      readonly reasonCodes: readonly ['missing-adjustment-evidence'];
       readonly warnings: readonly string[];
+    } | {
+      readonly status: 'available';
+      readonly reasonCodes: readonly [];
+      readonly warnings: readonly [];
+      readonly timeframes: {
+        readonly '1d': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: null };
+        readonly '1w': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: BrowserOhlcvBar | null };
+        readonly '1m': { readonly completedBars: readonly BrowserOhlcvBar[]; readonly formingBar: BrowserOhlcvBar | null };
+      };
     };
   };
+  readonly adjustmentFactors: readonly AdjustmentFactor[];
   readonly noQuoteEvidence: readonly NoQuoteEvidence[];
   readonly corporateActions: readonly CorporateAction[];
   readonly sourceUrls: readonly string[];
@@ -129,6 +139,7 @@ export function makeBrowserStockFixture(
     market?: 'TWSE' | 'TPEx';
     securityType?: 'common-stock' | 'etf';
     corporateActions?: readonly CorporateAction[];
+    adjustmentFactors?: readonly AdjustmentFactor[];
     noQuoteEvidence?: readonly NoQuoteEvidence[];
     listingDate?: string;
   } = {},
@@ -154,6 +165,19 @@ export function makeBrowserStockFixture(
   const availableSessions = serializedBars.length + noQuoteEvidence.length;
   const shortHistoryReason = availableSessions < 120 ? 'listing-history' : null;
   const marketSource = market === 'TWSE' ? twseOfficialFixtureSource : tpexOfficialFixtureSource;
+  const corporateActions = options.corporateActions ?? [];
+  const adjustmentFactors = options.adjustmentFactors ?? [];
+  const hasMissingAdjustmentEvidence = corporateActions.some((action) => (
+    action.affectsPriceContinuity
+    && !adjustmentFactors.some((factor) => (
+      factor.effectiveDate === action.date && factor.actionTypes.includes(action.type)
+    ))
+  ));
+  const timeframes = {
+    '1d': { completedBars: serializedBars, formingBar: null },
+    '1w': { completedBars: [], formingBar: null },
+    '1m': { completedBars: [], formingBar: null },
+  } as const;
   return {
     schemaVersion: 1,
     snapshotVersion: 4,
@@ -176,20 +200,22 @@ export function makeBrowserStockFixture(
         status: 'available',
         reasonCodes: [],
         warnings: [],
-        timeframes: {
-          '1d': { completedBars: serializedBars, formingBar: null },
-          '1w': { completedBars: [], formingBar: null },
-          '1m': { completedBars: [], formingBar: null },
-        },
+        timeframes,
       },
-      adjusted: {
+      adjusted: hasMissingAdjustmentEvidence ? {
         status: 'unavailable',
-        reasonCodes: ['adjustment-series-not-built'],
-        warnings: ['尚未建立可稽核的向後還原價格序列。'],
+        reasonCodes: ['missing-adjustment-evidence'],
+        warnings: ['公司行動缺少可重算的官方調整證據，已保留原始價格。'],
+      } : {
+        status: 'available',
+        reasonCodes: [],
+        warnings: [],
+        timeframes,
       },
     },
+    adjustmentFactors,
     noQuoteEvidence,
-    corporateActions: options.corporateActions ?? [],
+    corporateActions,
     sourceUrls: [...new Set([marketSource, ...noQuoteEvidence.map((evidence) => evidence.sourceUrl)])],
   };
 }

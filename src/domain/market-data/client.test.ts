@@ -3,6 +3,7 @@ import {
   loadManifest,
   loadStockSnapshot,
   normalizeStockCode,
+  selectStockPriceMode,
   selectStockTimeframe,
 } from './client';
 import { marketManifestSchema, type MarketDataManifest } from './schema';
@@ -30,6 +31,14 @@ interface StockPayload {
       status: 'unavailable';
       reasonCodes: string[];
       warnings: string[];
+    } | {
+      status: 'available';
+      reasonCodes: string[];
+      warnings: string[];
+      timeframes: Record<string, {
+        completedBars: Array<{ date: string; [key: string]: unknown }>;
+        formingBar: { date: string; [key: string]: unknown } | null;
+      }>;
     };
   };
   noQuoteEvidence: Array<{ date: string; [key: string]: unknown }>;
@@ -85,11 +94,26 @@ const stockSnapshotFixture: StockPayload = {
       },
     },
     adjusted: {
-      status: 'unavailable',
-      reasonCodes: ['adjustment-series-not-built'],
-      warnings: ['尚未建立可稽核的向後還原價格序列。'],
+      status: 'available',
+      reasonCodes: [],
+      warnings: [],
+      timeframes: {
+        '1d': {
+          completedBars: [{
+            date: '2026-08-11', periodStart: '2026-08-11', periodEnd: '2026-08-11',
+            completed: true, evidenceStatus: 'complete', missingSessionDates: [],
+            open: 1000, high: 1015, low: 995, close: 1010,
+            volumeShares: 21_345_678, transactionCount: 12_345,
+            sourcePrecision: 0.01, comparisonUnit: 5, priceUnit: 'TWD',
+          }],
+          formingBar: null,
+        },
+        '1w': { completedBars: [], formingBar: null },
+        '1m': { completedBars: [], formingBar: null },
+      },
     },
   },
+  adjustmentFactors: [],
   noQuoteEvidence: [],
   corporateActions: [],
   sourceUrls: ['https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
@@ -103,17 +127,21 @@ function withRawDailyBars(
   stock: StockPayload,
   completedBars: Array<{ date: string; [key: string]: unknown }>,
 ): StockPayload {
+  const timeframes = {
+    ...stock.priceModes.raw.timeframes,
+    '1d': { completedBars, formingBar: null },
+  };
   return {
     ...stock,
     priceModes: {
       ...stock.priceModes,
       raw: {
         ...stock.priceModes.raw,
-        timeframes: {
-          ...stock.priceModes.raw.timeframes,
-          '1d': { completedBars, formingBar: null },
-        },
+        timeframes,
       },
+      adjusted: stock.priceModes.adjusted.status === 'available'
+        ? { ...stock.priceModes.adjusted, timeframes }
+        : stock.priceModes.adjusted,
     },
   };
 }
@@ -294,8 +322,8 @@ describe('browser snapshot client', () => {
         },
         adjusted: {
           status: 'unavailable' as const,
-          reasonCodes: ['adjustment-series-not-built'],
-          warnings: ['尚未建立可稽核的向後還原價格序列。'],
+          reasonCodes: ['missing-adjustment-evidence'],
+          warnings: ['公司行動缺少可重算的官方調整證據，已保留原始價格。'],
         },
       },
       priceMode: 'raw' as const,
@@ -307,6 +335,46 @@ describe('browser snapshot client', () => {
     expect(selected.timeframe).toBe('1w');
     expect(selected.bars).toEqual([completedWeek, formingWeek]);
     expect(snapshot.bars).toEqual([daily]);
+  });
+
+  it('switches the selected bars between audited adjusted and raw prices without changing the timeframe', () => {
+    const rawBar = { ...rawDailyBars(stockSnapshotFixture)[0], close: 1010 };
+    const adjustedBar = { ...rawBar, close: 1005 };
+    const snapshot = {
+      ...stockSnapshotFixture,
+      timeframe: '1d' as const,
+      priceMode: 'raw' as const,
+      priceModes: {
+        raw: {
+          status: 'available' as const,
+          reasonCodes: [],
+          warnings: [],
+          timeframes: {
+            '1d': { completedBars: [rawBar], formingBar: null },
+            '1w': { completedBars: [], formingBar: null },
+            '1m': { completedBars: [], formingBar: null },
+          },
+        },
+        adjusted: {
+          status: 'available' as const,
+          reasonCodes: [],
+          warnings: [],
+          timeframes: {
+            '1d': { completedBars: [adjustedBar], formingBar: null },
+            '1w': { completedBars: [], formingBar: null },
+            '1m': { completedBars: [], formingBar: null },
+          },
+        },
+      },
+      bars: [rawBar],
+    };
+
+    const selected = selectStockPriceMode(snapshot as unknown as StockSnapshot, 'adjusted');
+
+    expect(selected.priceMode).toBe('adjusted');
+    expect(selected.timeframe).toBe('1d');
+    expect(selected.bars).toEqual([adjustedBar]);
+    expect(snapshot.bars).toEqual([rawBar]);
   });
 
   it('rejects a shortened natural week even when the payload keeps valid OHLCV relationships', async () => {
@@ -350,6 +418,11 @@ describe('browser snapshot client', () => {
       volumeShares: 3_000,
       transactionCount: 30,
     };
+    const timeframes = {
+      '1d': { completedBars: dailyBars, formingBar: null },
+      '1w': { completedBars: [], formingBar: formingWeek },
+      '1m': { completedBars: [], formingBar: null },
+    };
     const stock = {
       ...stockSnapshotFixture,
       listingDate: '2026-08-10',
@@ -358,11 +431,13 @@ describe('browser snapshot client', () => {
         ...stockSnapshotFixture.priceModes,
         raw: {
           ...stockSnapshotFixture.priceModes.raw,
-          timeframes: {
-            '1d': { completedBars: dailyBars, formingBar: null },
-            '1w': { completedBars: [], formingBar: formingWeek },
-            '1m': { completedBars: [], formingBar: null },
-          },
+          timeframes,
+        },
+        adjusted: {
+          status: 'available' as const,
+          reasonCodes: [],
+          warnings: [],
+          timeframes,
         },
       },
     };
@@ -409,6 +484,35 @@ describe('browser snapshot client', () => {
 
     expect(snapshot.code).toBe('2330');
     expect(fetchFixture).toHaveBeenCalledWith('/taiwan-stock-candlestick-guide/data/stocks/2330.fixture.json');
+  });
+
+  it('rejects adjusted daily prices that cannot be recomputed even when manifest digest and size are updated', async () => {
+    const adjusted = stockSnapshotFixture.priceModes.adjusted;
+    if (adjusted.status !== 'available') {
+      throw new Error('測試快照必須提供向後還原價格。');
+    }
+    const tampered = {
+      ...stockSnapshotFixture,
+      priceModes: {
+        ...stockSnapshotFixture.priceModes,
+        adjusted: {
+          ...adjusted,
+          timeframes: {
+            ...adjusted.timeframes,
+            '1d': {
+              completedBars: [{ ...adjusted.timeframes['1d']!.completedBars[0], close: 1009 }],
+              formingBar: null,
+            },
+          },
+        },
+      },
+    };
+    const bytes = utf8Bytes(JSON.stringify(tampered));
+    const manifest = await manifestFixture(tampered, bytes);
+
+    await expect(loadStockSnapshot(manifest, '2330', async () => bytesResponse(bytes))).rejects.toMatchObject({
+      reason: 'schema-error',
+    });
   });
 
   it('accepts only stock suspension evidence that exactly matches the manifest interval', async () => {
