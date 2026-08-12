@@ -139,6 +139,70 @@ class OfficialCompanyMasterTests(unittest.TestCase):
 
 
 class OfficialCorporateActionTests(unittest.TestCase):
+    def test_falls_back_to_the_official_tpex_website_when_openapi_is_temporarily_unavailable(self) -> None:
+        """TPEx OpenAPI 被 CDN 擋下時，只能改用同機關的等價官網 JSON，且須保留實際來源。"""
+        fallback_payload = {
+            "tables": [
+                {
+                    "fields": [
+                        "除權息日期",
+                        "代號",
+                        "名稱",
+                        "除權息",
+                        "每股無償配股率",
+                        "現金增資配股率",
+                        "現金增資認購價",
+                        "現金股利",
+                        "公開承銷股數",
+                        "員工認購股數",
+                        "原股東認購股數",
+                        "按持股比例仟股認購",
+                        "參考價試算",
+                    ],
+                    "data": [
+                        [
+                            "115/08/05",
+                            "6488",
+                            "環球晶",
+                            "除息",
+                            "0.00000000",
+                            "0.00000000",
+                            "0.00",
+                            "3.00000000",
+                            "0",
+                            "0",
+                            "0",
+                            "0.00000000",
+                            "./announce/quotes.html",
+                        ]
+                    ],
+                }
+            ]
+        }
+        payload_by_endpoint = {
+            "twse-actions": load_fixture("twse-actions.json"),
+            "tpex-actions-fallback": fallback_payload,
+            "twse-action-calculations": load_fixture("twse-adjustment-results.json"),
+            "tpex-action-calculations": load_fixture("tpex-adjustment-results.json"),
+        }
+
+        def fake_fetch(endpoint: str, parameters: dict[str, str] | None = None) -> object:
+            del parameters
+            if endpoint == "tpex-actions":
+                raise market_sources.OfficialSourceFetchError("官方來源回傳 HTTP 520。")
+            return payload_by_endpoint[endpoint]
+
+        with patch("market_sources._fetch_official_json", side_effect=fake_fetch):
+            actions = market_sources.fetch_corporate_actions(
+                start_date=date(2026, 8, 1),
+                end_date=date(2026, 8, 11),
+            )
+
+        tpex_action = next(action for action in actions if action.market == "TPEx")
+        self.assertEqual("6488", tpex_action.code)
+        self.assertEqual(Decimal("3.00000000"), tpex_action.cash_dividend)
+        self.assertEqual(market_sources.TPEX_ACTIONS_FALLBACK_URL, tpex_action.source_url)
+
     def test_fetches_the_twse_calculation_result_for_an_explicit_date_range(self) -> None:
         """TWSE 官網新端點必須帶 startDate/endDate，不能誤用只回當期資料的舊路徑。"""
         payload_by_endpoint = {

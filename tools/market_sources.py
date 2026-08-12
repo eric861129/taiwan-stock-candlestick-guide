@@ -39,6 +39,7 @@ TWSE_COMPANIES_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 TPEX_COMPANIES_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
 TWSE_ACTIONS_URL = "https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL"
 TPEX_ACTIONS_URL = "https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost"
+TPEX_ACTIONS_FALLBACK_URL = "https://www.tpex.org.tw/www/zh-tw/bulletin/prePost"
 TWSE_ACTION_CALCULATION_URL = "https://www.twse.com.tw/rwd/zh/exRight/TWT49U"
 TPEX_ACTION_CALCULATION_URL = "https://www.tpex.org.tw/openapi/v1/tpex_exright_daily"
 TWSE_REDUCTION_HISTORY_URL = "https://www.twse.com.tw/rwd/zh/reducation/TWTAUU"
@@ -76,6 +77,7 @@ _OFFICIAL_ENDPOINTS = {
     "tpex-companies": TPEX_COMPANIES_URL,
     "twse-actions": TWSE_ACTIONS_URL,
     "tpex-actions": TPEX_ACTIONS_URL,
+    "tpex-actions-fallback": TPEX_ACTIONS_FALLBACK_URL,
     "twse-action-calculations": TWSE_ACTION_CALCULATION_URL,
     "tpex-action-calculations": TPEX_ACTION_CALCULATION_URL,
     "twse-reduction-history": TWSE_REDUCTION_HISTORY_URL,
@@ -301,9 +303,10 @@ def fetch_corporate_actions(
     calculation_start = start_date or calculation_end - timedelta(days=400)
     if calculation_start > calculation_end:
         raise ValueError("公司行動計算結果的開始日期不可晚於結束日期。")
+    tpex_payload, tpex_source_url = _fetch_tpex_corporate_action_rows()
     return parse_corporate_actions(
         _fetch_official_json("twse-actions"),
-        _fetch_official_json("tpex-actions"),
+        tpex_payload,
         twse_calculation_payload=_fetch_official_json(
             "twse-action-calculations",
             {
@@ -313,7 +316,74 @@ def fetch_corporate_actions(
             },
         ),
         tpex_calculation_payload=_fetch_official_json("tpex-action-calculations"),
+        tpex_source_url=tpex_source_url,
     )
+
+
+def _fetch_tpex_corporate_action_rows() -> tuple[object, str]:
+    """優先使用 OpenAPI；暫時性失敗時才切換同機關的等價官網 JSON。"""
+
+    try:
+        return _fetch_official_json("tpex-actions"), TPEX_ACTIONS_URL
+    except OfficialSourceFetchError:
+        fallback_payload = _fetch_official_json("tpex-actions-fallback")
+        return _normalize_tpex_action_fallback_payload(fallback_payload), TPEX_ACTIONS_FALLBACK_URL
+
+
+def _normalize_tpex_action_fallback_payload(payload: object) -> list[dict[str, str]]:
+    """將 TPEx 官網表格嚴格轉成 OpenAPI 等價欄位，不接受缺欄或非文字資料。"""
+
+    if not isinstance(payload, dict) or "tables" not in payload:
+        raise ValueError("TPEx 除權息官網備援回應缺少 tables。")
+    tables = payload["tables"]
+    if not isinstance(tables, list) or len(tables) != 1 or not isinstance(tables[0], dict):
+        raise ValueError("TPEx 除權息官網備援表格數量無效。")
+    table = tables[0]
+    fields = table.get("fields")
+    data = table.get("data")
+    expected_fields = (
+        "除權息日期",
+        "代號",
+        "名稱",
+        "除權息",
+        "每股無償配股率",
+        "現金增資配股率",
+        "現金增資認購價",
+        "現金股利",
+        "公開承銷股數",
+        "員工認購股數",
+        "原股東認購股數",
+        "按持股比例仟股認購",
+        "參考價試算",
+    )
+    if not isinstance(fields, list) or tuple(fields) != expected_fields:
+        raise ValueError("TPEx 除權息官網備援欄位契約已改變。")
+    if not isinstance(data, list):
+        raise ValueError("TPEx 除權息官網備援資料必須是陣列。")
+
+    normalized: list[dict[str, str]] = []
+    for row in data:
+        if not isinstance(row, list) or len(row) != len(expected_fields) or not all(
+            isinstance(value, str) for value in row
+        ):
+            raise ValueError("TPEx 除權息官網備援資料列格式無效。")
+        normalized.append(
+            {
+                "ExRrightsExDividendDate": row[0],
+                "SecuritiesCompanyCode": row[1],
+                "CompanyName": row[2],
+                "ExRrightsExDividend": row[3],
+                "StockDividendRatio": row[4],
+                "SubscriptionRatioToNewSharesIssued": row[5],
+                "SubscriptionPricePerShare": row[6],
+                "CashDividend": row[7],
+                "AllocatedForPublicUnderwriting": row[8],
+                "SubscribedByEmployees": row[9],
+                "SubscribedByExistingShareholders": row[10],
+                "SubscribedProRataInThousandShares": row[11],
+            }
+        )
+    return normalized
 
 
 def fetch_reduction_suspension_intervals(
@@ -1199,6 +1269,7 @@ def parse_corporate_actions(
     twse_calculation_payload: object | None = None,
     tpex_calculation_payload: object | None = None,
     verified_at: date | None = None,
+    tpex_source_url: str = TPEX_ACTIONS_URL,
 ) -> tuple[CorporateAction, ...]:
     """正規化兩市場公司行動，並在有官方計算結果時保留可重算價格證據。"""
     checked_on = verified_at or date.today()
@@ -1223,7 +1294,7 @@ def parse_corporate_actions(
         stock_dividend_ratio_field="StockDividendRatio",
         subscription_price_field="SubscriptionPricePerShare",
         subscription_ratio_field="SubscriptionRatioToNewSharesIssued",
-        source_url="https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost",
+        source_url=tpex_source_url,
         verified_at=checked_on,
     )
     calculations = {
