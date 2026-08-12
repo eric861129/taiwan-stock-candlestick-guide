@@ -486,6 +486,33 @@ describe('browser snapshot client', () => {
     expect(fetchFixture).toHaveBeenCalledWith('/taiwan-stock-candlestick-guide/data/stocks/2330.fixture.json');
   });
 
+  it('loads raw prices when historical adjustment coverage is explicitly unavailable without listed actions', async () => {
+    const stock = {
+      ...stockSnapshotFixture,
+      priceModes: {
+        ...stockSnapshotFixture.priceModes,
+        adjusted: {
+          status: 'unavailable' as const,
+          reasonCodes: ['missing-adjustment-evidence'],
+          warnings: ['公司行動歷史覆蓋尚未完整證明，請使用官方原始價格。'],
+        },
+      },
+      corporateActions: [],
+    };
+    const stockBytes = utf8Bytes(JSON.stringify(stock));
+    const manifest = await manifestFixture(stock, stockBytes);
+
+    await expect(loadStockSnapshot(
+      manifest,
+      '2330',
+      async () => bytesResponse(stockBytes),
+    )).resolves.toMatchObject({
+      code: '2330',
+      priceMode: 'raw',
+      bars: [{ date: '2026-08-11' }],
+    });
+  });
+
   it('rejects adjusted daily prices that cannot be recomputed even when manifest digest and size are updated', async () => {
     const adjusted = stockSnapshotFixture.priceModes.adjusted;
     if (adjusted.status !== 'available') {

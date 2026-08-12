@@ -704,13 +704,6 @@ export const stockSnapshotSchema = z.object({
     });
   }
   const continuityActions = snapshot.corporateActions.filter((action) => action.affectsPriceContinuity);
-  if (snapshot.priceModes.adjusted.status === 'unavailable' && continuityActions.length === 0) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['priceModes', 'adjusted'],
-      message: '沒有影響價格連續性的公司行動時，向後還原價格必須可用且與原始序列同尺度。',
-    });
-  }
   if (snapshot.priceModes.adjusted.status === 'available') {
     const factorByDate = new Map(snapshot.adjustmentFactors.map((factor) => [factor.effectiveDate, factor]));
     if (continuityActions.some((action) => (

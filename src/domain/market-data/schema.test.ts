@@ -171,6 +171,13 @@ describe('market snapshot v4 schemas', () => {
     }).success).toBe(false);
   });
 
+  it('keeps adjusted prices unavailable when historical action coverage is unproven even without listed actions', () => {
+    expect(stockSnapshotSchema.safeParse({
+      ...stockSnapshotFixture,
+      corporateActions: [],
+    }).success).toBe(true);
+  });
+
   it('accepts an auditable adjusted series and rejects a factor that cannot be recomputed', () => {
     const adjustmentFactor = {
       effectiveDate: '2026-08-11',
@@ -275,7 +282,7 @@ describe('market snapshot v4 schemas', () => {
     }).success).toBe(false);
   });
 
-  it('keeps adjusted prices available and identical when there are no corporate actions', () => {
+  it('accepts an available identical adjusted series when there are no corporate actions', () => {
     const withoutActions = {
       ...stockSnapshotFixture,
       corporateActions: [],
@@ -291,10 +298,6 @@ describe('market snapshot v4 schemas', () => {
     };
 
     expect(stockSnapshotSchema.safeParse(withoutActions).success).toBe(true);
-    expect(stockSnapshotSchema.safeParse({
-      ...withoutActions,
-      priceModes: stockSnapshotFixture.priceModes,
-    }).success).toBe(false);
   });
 
   it('accepts a weekly forming bar but does not allow it to masquerade as a completed daily bar', () => {
