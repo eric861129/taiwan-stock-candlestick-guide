@@ -4,6 +4,7 @@ import {
   getTalibBatchEntries,
   TALIB_BATCH_1_FUNCTIONS,
   TALIB_BATCH_2_FUNCTIONS,
+  TALIB_BATCH_3_FUNCTIONS,
   TALIB_PATTERN_ENTRIES,
 } from './talib-catalog';
 
@@ -114,6 +115,78 @@ describe('TA-Lib pattern catalog batch 1', () => {
     );
     expect(getPatternCard('talib-gap-side-by-side-white-lines').talibObservableDefinition).toContain(
       '收盤不低於開盤，包含開收相等',
+    );
+  });
+});
+
+describe('TA-Lib pattern catalog batch 3', () => {
+  it('contains the official third fifteen functions exactly once', () => {
+    expect(TALIB_BATCH_3_FUNCTIONS).toEqual([
+      'CDLIDENTICAL3CROWS',
+      'CDLINNECK',
+      'CDLINVERTEDHAMMER',
+      'CDLKICKING',
+      'CDLKICKINGBYLENGTH',
+      'CDLLADDERBOTTOM',
+      'CDLLONGLEGGEDDOJI',
+      'CDLLONGLINE',
+      'CDLMARUBOZU',
+      'CDLMATCHINGLOW',
+      'CDLMATHOLD',
+      'CDLMORNINGDOJISTAR',
+      'CDLMORNINGSTAR',
+      'CDLONNECK',
+      'CDLPIERCING',
+    ]);
+
+    const entries = getTalibBatchEntries(3);
+    expect(entries).toHaveLength(15);
+    expect(entries.map((entry) => entry.functionName)).toEqual(TALIB_BATCH_3_FUNCTIONS);
+    expect(new Set(entries.map((entry) => entry.functionName)).size).toBe(15);
+  });
+
+  it('maps every third-batch function to complete canonical teaching content', () => {
+    for (const entry of getTalibBatchEntries(3)) {
+      const card = getPatternCard(entry.cardId);
+      expect(entry.card).toBe(card);
+      expect(card.talibFunction).toBe(entry.functionName);
+      expect(card.talibImplementationSupport).toBe('teaching-only');
+      expect(card.collections).toContain('talib-advanced');
+      expect(card.minimumBars).toBeGreaterThan(0);
+      expect(card.maximumBars).toBeGreaterThanOrEqual(card.minimumBars!);
+      expect(card.patternDirection).not.toBeUndefined();
+      expect(card.patternPurpose).not.toBeUndefined();
+      expect(card.geometrySteps?.length).toBeGreaterThan(0);
+      expect(card.relatedPatternIds?.length).toBeGreaterThan(0);
+      expect(card.confirmationGuidance?.length).toBeGreaterThan(0);
+      expect(card.talibObservableDefinition?.length).toBeGreaterThan(0);
+      expect(card.talibDataRequirements?.length).toBeGreaterThan(0);
+      expect(new Set(card.sourceNotes).size).toBe(card.sourceNotes.length);
+    }
+  });
+
+  it('reuses the canonical morning-star and piercing-line cards', () => {
+    expect(getTalibBatchEntries(3).find((entry) => entry.functionName === 'CDLMORNINGSTAR')?.card)
+      .toBe(getPatternCard('morning-star'));
+    expect(getTalibBatchEntries(3).find((entry) => entry.functionName === 'CDLPIERCING')?.card)
+      .toBe(getPatternCard('piercing-line'));
+  });
+
+  it('keeps reviewed batch-three lookbacks and Mat Hold boundaries explicit', () => {
+    expect(getPatternCard('talib-identical-three-crows').talibDataRequirements).toContain(
+      'ShadowVeryShort、Equal；官方預設 lookback 12 根',
+    );
+    expect(getPatternCard('talib-ladder-bottom').talibDataRequirements).toContain(
+      'ShadowVeryShort；官方預設 lookback 14 根',
+    );
+    expect(getPatternCard('talib-matching-low').talibDataRequirements).toContain(
+      'Equal；官方預設 lookback 6 根',
+    );
+    expect(getPatternCard('talib-mat-hold').talibObservableDefinition).toContain(
+      '第二、三、四根皆為 BodyShort',
+    );
+    expect(getPatternCard('talib-mat-hold').talibObservableDefinition).toContain(
+      '收盤高於第二、三、四根最高價',
     );
   });
 });

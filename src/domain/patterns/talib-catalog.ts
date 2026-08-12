@@ -81,6 +81,31 @@ const BATCH_2_CARD_BY_FUNCTION = {
   CDLHOMINGPIGEON: 'talib-homing-pigeon',
 } as const satisfies Record<(typeof TALIB_BATCH_2_FUNCTIONS)[number], PatternCardId>;
 
+export const TALIB_BATCH_3_FUNCTIONS = [
+  'CDLIDENTICAL3CROWS', 'CDLINNECK', 'CDLINVERTEDHAMMER', 'CDLKICKING',
+  'CDLKICKINGBYLENGTH', 'CDLLADDERBOTTOM', 'CDLLONGLEGGEDDOJI', 'CDLLONGLINE',
+  'CDLMARUBOZU', 'CDLMATCHINGLOW', 'CDLMATHOLD', 'CDLMORNINGDOJISTAR',
+  'CDLMORNINGSTAR', 'CDLONNECK', 'CDLPIERCING',
+] as const satisfies readonly TalibPatternFunction[];
+
+const BATCH_3_CARD_BY_FUNCTION = {
+  CDLIDENTICAL3CROWS: 'talib-identical-three-crows',
+  CDLINNECK: 'talib-in-neck',
+  CDLINVERTEDHAMMER: 'talib-inverted-hammer',
+  CDLKICKING: 'talib-kicking',
+  CDLKICKINGBYLENGTH: 'talib-kicking-by-length',
+  CDLLADDERBOTTOM: 'talib-ladder-bottom',
+  CDLLONGLEGGEDDOJI: 'talib-long-legged-doji',
+  CDLLONGLINE: 'talib-long-line',
+  CDLMARUBOZU: 'talib-marubozu',
+  CDLMATCHINGLOW: 'talib-matching-low',
+  CDLMATHOLD: 'talib-mat-hold',
+  CDLMORNINGDOJISTAR: 'talib-morning-doji-star',
+  CDLMORNINGSTAR: 'morning-star',
+  CDLONNECK: 'talib-on-neck',
+  CDLPIERCING: 'piercing-line',
+} as const satisfies Record<(typeof TALIB_BATCH_3_FUNCTIONS)[number], PatternCardId>;
+
 /** 進階館的函式到正規卡片投影；card 永遠是 catalog 裡的同一個物件。 */
 export interface TalibPatternEntry {
   batch: 1 | 2 | 3 | 4;
@@ -108,6 +133,7 @@ function createEntries<const TFunction extends TalibPatternFunction>(
 export const TALIB_PATTERN_ENTRIES: readonly TalibPatternEntry[] = [
   ...createEntries(1, TALIB_BATCH_1_FUNCTIONS, BATCH_1_CARD_BY_FUNCTION),
   ...createEntries(2, TALIB_BATCH_2_FUNCTIONS, BATCH_2_CARD_BY_FUNCTION),
+  ...createEntries(3, TALIB_BATCH_3_FUNCTIONS, BATCH_3_CARD_BY_FUNCTION),
 ];
 
 /** 依交付批次取得穩定排序的進階型態館投影。 */

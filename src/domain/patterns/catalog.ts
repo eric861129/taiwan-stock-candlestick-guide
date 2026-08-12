@@ -17,6 +17,7 @@ import { hasValidRuleBindingParameters } from './rule-parameters';
 import { ADDITIONAL_STRUCTURE_CARD_DEFINITIONS } from './structure-catalog';
 import { TALIB_BATCH_1_CARD_DEFINITIONS } from './talib-batch-1';
 import { TALIB_BATCH_2_CARD_DEFINITIONS } from './talib-batch-2';
+import { TALIB_BATCH_3_CARD_DEFINITIONS } from './talib-batch-3';
 export { PATTERN_COLLECTIONS } from './collections';
 
 const SINGLE_LESSON = ['/chapters/09-single-candlestick-signals'] as const;
@@ -61,6 +62,19 @@ const TALIB_FUNCTION_BY_CARD: Readonly<Partial<Record<PatternCardId, TalibPatter
   'talib-hikkake': 'CDLHIKKAKE',
   'talib-modified-hikkake': 'CDLHIKKAKEMOD',
   'talib-homing-pigeon': 'CDLHOMINGPIGEON',
+  'talib-identical-three-crows': 'CDLIDENTICAL3CROWS',
+  'talib-in-neck': 'CDLINNECK',
+  'talib-inverted-hammer': 'CDLINVERTEDHAMMER',
+  'talib-kicking': 'CDLKICKING',
+  'talib-kicking-by-length': 'CDLKICKINGBYLENGTH',
+  'talib-ladder-bottom': 'CDLLADDERBOTTOM',
+  'talib-long-legged-doji': 'CDLLONGLEGGEDDOJI',
+  'talib-long-line': 'CDLLONGLINE',
+  'talib-marubozu': 'CDLMARUBOZU',
+  'talib-matching-low': 'CDLMATCHINGLOW',
+  'talib-mat-hold': 'CDLMATHOLD',
+  'talib-morning-doji-star': 'CDLMORNINGDOJISTAR',
+  'talib-on-neck': 'CDLONNECK',
 };
 
 type TalibTeachingMetadata = Pick<
@@ -188,6 +202,28 @@ const TALIB_TEACHING_METADATA_BY_CARD: Readonly<
     confirmationGuidance: ['等待第三根完成並核對 penetration，官方預設為 0.3。', '官方函式不判斷上行趨勢，背景需另行確認。'],
     talibObservableDefinition: '第一根為 BodyLong 長上漲實體；第二根為向上實體跳空的 BodyShort；第三根為大於 BodyShort 的下跌實體，收盤依 penetration 參數深入第一根實體。',
     talibDataRequirements: ['三根目標完成 K', 'BodyLong、BodyShort 前置平均與 penetration 參數；官方預設 lookback 12 根、penetration 0.3', '一致的 OHLC 價格模式與公司行動核對'],
+  },
+  'morning-star': {
+    minimumBars: 3,
+    maximumBars: 3,
+    patternDirection: 'bullish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['第一根為 BodyLong 長下跌實體。', '第二根為 BodyShort 小實體且整個實體向下跳空。', '第三根為大於 BodyShort 的上漲實體，收盤達 penetration 深度。'],
+    relatedPatternIds: ['evening-star', 'talib-morning-doji-star'],
+    confirmationGuidance: ['等待第三根完成並核對 penetration，官方預設為 0.3。', '第二根不要求 Doji；若為 Doji 請對照晨星十字。'],
+    talibObservableDefinition: '第一根 BodyLong 長下跌；第二根 BodyShort 小實體且整個實體向下跳空；第三根上漲且大於 BodyShort，收盤高於第一根收盤加實體乘 penetration。',
+    talibDataRequirements: ['三根目標完成 K', 'BodyLong、BodyShort 前置平均與 penetration 參數；官方預設 lookback 12 根、penetration 0.3', '一致價格模式與公司行動核對'],
+  },
+  'piercing-line': {
+    minimumBars: 2,
+    maximumBars: 2,
+    patternDirection: 'bullish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['第一根為 BodyLong 長下跌。', '第二根為長上漲 K，開盤低於前低。', '第二根收盤高於第一根實體中點，但低於第一根開盤。'],
+    relatedPatternIds: ['dark-cloud-cover', 'talib-in-neck', 'talib-on-neck'],
+    confirmationGuidance: ['官方 penetration 固定為 0.5，不是呼叫參數。', '下行背景需另行確認。'],
+    talibObservableDefinition: '第一根 BodyLong 長下跌；第二根長上漲且開盤低於前低，收盤低於第一根開盤但高於第一根下跌實體中點。',
+    talibDataRequirements: ['兩根目標完成 K', 'BodyLong 前置平均；官方預設 lookback 11 根', '固定 0.5 中點門檻與一致價格模式'],
   },
 };
 
@@ -761,6 +797,7 @@ export const PATTERN_CARDS: readonly PatternCardDefinition[] = [
   }),
   ...TALIB_BATCH_1_CARD_DEFINITIONS.map(card),
   ...TALIB_BATCH_2_CARD_DEFINITIONS.map(card),
+  ...TALIB_BATCH_3_CARD_DEFINITIONS.map(card),
   card({
     id: 'range',
     nameZhTw: '區間',
