@@ -18,6 +18,7 @@ import { ADDITIONAL_STRUCTURE_CARD_DEFINITIONS } from './structure-catalog';
 import { TALIB_BATCH_1_CARD_DEFINITIONS } from './talib-batch-1';
 import { TALIB_BATCH_2_CARD_DEFINITIONS } from './talib-batch-2';
 import { TALIB_BATCH_3_CARD_DEFINITIONS } from './talib-batch-3';
+import { TALIB_BATCH_4_CARD_DEFINITIONS } from './talib-batch-4';
 export { PATTERN_COLLECTIONS } from './collections';
 
 const SINGLE_LESSON = ['/chapters/09-single-candlestick-signals'] as const;
@@ -75,6 +76,20 @@ const TALIB_FUNCTION_BY_CARD: Readonly<Partial<Record<PatternCardId, TalibPatter
   'talib-mat-hold': 'CDLMATHOLD',
   'talib-morning-doji-star': 'CDLMORNINGDOJISTAR',
   'talib-on-neck': 'CDLONNECK',
+  'talib-rickshaw-man': 'CDLRICKSHAWMAN',
+  'talib-rise-fall-three-methods': 'CDLRISEFALL3METHODS',
+  'talib-separating-lines': 'CDLSEPARATINGLINES',
+  'talib-short-line': 'CDLSHORTLINE',
+  'talib-spinning-top': 'CDLSPINNINGTOP',
+  'talib-stalled-pattern': 'CDLSTALLEDPATTERN',
+  'talib-stick-sandwich': 'CDLSTICKSANDWICH',
+  'talib-takuri': 'CDLTAKURI',
+  'talib-tasuki-gap': 'CDLTASUKIGAP',
+  'talib-thrusting': 'CDLTHRUSTING',
+  'talib-tristar': 'CDLTRISTAR',
+  'talib-unique-three-river': 'CDLUNIQUE3RIVER',
+  'talib-upside-gap-two-crows': 'CDLUPSIDEGAP2CROWS',
+  'talib-x-side-gap-three-methods': 'CDLXSIDEGAP3METHODS',
 };
 
 type TalibTeachingMetadata = Pick<
@@ -224,6 +239,17 @@ const TALIB_TEACHING_METADATA_BY_CARD: Readonly<
     confirmationGuidance: ['官方 penetration 固定為 0.5，不是呼叫參數。', '下行背景需另行確認。'],
     talibObservableDefinition: '第一根 BodyLong 長下跌；第二根長上漲且開盤低於前低，收盤低於第一根開盤但高於第一根下跌實體中點。',
     talibDataRequirements: ['兩根目標完成 K', 'BodyLong 前置平均；官方預設 lookback 11 根', '固定 0.5 中點門檻與一致價格模式'],
+  },
+  'shooting-star': {
+    minimumBars: 1,
+    maximumBars: 1,
+    patternDirection: 'bearish',
+    patternPurpose: 'reversal',
+    geometrySteps: ['目標 K 為 BodyShort 小實體。', '上影大於 ShadowLong、下影小於 ShadowVeryShort。', '目標整個實體嚴格高於前一根實體。'],
+    relatedPatternIds: ['talib-inverted-hammer', 'hammer', 'talib-hanging-man'],
+    confirmationGuidance: ['核對目標實體相對前一根實體的 gap。', '上行背景需另行確認。'],
+    talibObservableDefinition: '目標 K 為 BodyShort 小實體、上影長於 ShadowLong、下影短於 ShadowVeryShort，且目標實體最低端嚴格高於前一根實體最高端。',
+    talibDataRequirements: ['一根目標 K 與前一根實體', 'BodyShort、ShadowLong、ShadowVeryShort；官方預設 lookback 11 根', '一致價格模式與公司行動核對'],
   },
 };
 
@@ -798,6 +824,7 @@ export const PATTERN_CARDS: readonly PatternCardDefinition[] = [
   ...TALIB_BATCH_1_CARD_DEFINITIONS.map(card),
   ...TALIB_BATCH_2_CARD_DEFINITIONS.map(card),
   ...TALIB_BATCH_3_CARD_DEFINITIONS.map(card),
+  ...TALIB_BATCH_4_CARD_DEFINITIONS.map(card),
   card({
     id: 'range',
     nameZhTw: '區間',

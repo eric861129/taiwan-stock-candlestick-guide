@@ -5,6 +5,7 @@ import {
   TALIB_BATCH_1_FUNCTIONS,
   TALIB_BATCH_2_FUNCTIONS,
   TALIB_BATCH_3_FUNCTIONS,
+  TALIB_BATCH_4_FUNCTIONS,
   TALIB_PATTERN_ENTRIES,
 } from './talib-catalog';
 
@@ -249,5 +250,74 @@ describe('TA-Lib pattern catalog batch 2', () => {
       const entry = getTalibBatchEntries(2).find((candidate) => candidate.functionName === functionName);
       expect(entry?.card).toBe(getPatternCard(cardId as never));
     }
+  });
+});
+
+describe('TA-Lib pattern catalog batch 4 and complete official inventory', () => {
+  it('contains the official final fifteen functions exactly once', () => {
+    expect(TALIB_BATCH_4_FUNCTIONS).toEqual([
+      'CDLRICKSHAWMAN',
+      'CDLRISEFALL3METHODS',
+      'CDLSEPARATINGLINES',
+      'CDLSHOOTINGSTAR',
+      'CDLSHORTLINE',
+      'CDLSPINNINGTOP',
+      'CDLSTALLEDPATTERN',
+      'CDLSTICKSANDWICH',
+      'CDLTAKURI',
+      'CDLTASUKIGAP',
+      'CDLTHRUSTING',
+      'CDLTRISTAR',
+      'CDLUNIQUE3RIVER',
+      'CDLUPSIDEGAP2CROWS',
+      'CDLXSIDEGAP3METHODS',
+    ]);
+    expect(getTalibBatchEntries(4).map((entry) => entry.functionName)).toEqual(
+      TALIB_BATCH_4_FUNCTIONS,
+    );
+  });
+
+  it('ships exactly 61 official functions without duplicates', () => {
+    expect(TALIB_PATTERN_ENTRIES).toHaveLength(61);
+    expect(new Set(TALIB_PATTERN_ENTRIES.map((entry) => entry.functionName)).size).toBe(61);
+  });
+
+  it('maps every final-batch function to complete canonical teaching content', () => {
+    for (const entry of getTalibBatchEntries(4)) {
+      const card = getPatternCard(entry.cardId);
+      expect(entry.card).toBe(card);
+      expect(card.talibFunction).toBe(entry.functionName);
+      expect(card.talibImplementationSupport).toBe('teaching-only');
+      expect(card.collections).toContain('talib-advanced');
+      expect(card.minimumBars).toBeGreaterThan(0);
+      expect(card.maximumBars).toBeGreaterThanOrEqual(card.minimumBars!);
+      expect(card.patternDirection).not.toBeUndefined();
+      expect(card.patternPurpose).not.toBeUndefined();
+      expect(card.geometrySteps?.length).toBeGreaterThan(0);
+      expect(card.relatedPatternIds?.length).toBeGreaterThan(0);
+      expect(card.confirmationGuidance?.length).toBeGreaterThan(0);
+      expect(card.talibObservableDefinition?.length).toBeGreaterThan(0);
+      expect(card.talibDataRequirements?.length).toBeGreaterThan(0);
+      expect(new Set(card.sourceNotes).size).toBe(card.sourceNotes.length);
+    }
+  });
+
+  it('reuses the canonical shooting-star card', () => {
+    expect(getTalibBatchEntries(4).find((entry) => entry.functionName === 'CDLSHOOTINGSTAR')?.card)
+      .toBe(getPatternCard('shooting-star'));
+  });
+
+  it('does not add a first-candle color requirement to Tasuki Gap', () => {
+    const card = getPatternCard('talib-tasuki-gap');
+    expect(card.talibObservableDefinition).toContain('第一根顏色不限');
+    expect(card.talibObservableDefinition).toContain(
+      '向上缺口時第二根為上漲、第三根為下跌，向下缺口時第二根為下跌、第三根為上漲',
+    );
+    expect(card.geometrySteps).toContain(
+      '第一根顏色不限；第二根順缺口方向形成嚴格實體 gap。',
+    );
+    expect(card.geometrySteps).toContain(
+      '第三根與第二根反色，開在第二根實體內。',
+    );
   });
 });

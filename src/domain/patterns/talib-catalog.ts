@@ -106,6 +106,24 @@ const BATCH_3_CARD_BY_FUNCTION = {
   CDLPIERCING: 'piercing-line',
 } as const satisfies Record<(typeof TALIB_BATCH_3_FUNCTIONS)[number], PatternCardId>;
 
+export const TALIB_BATCH_4_FUNCTIONS = [
+  'CDLRICKSHAWMAN', 'CDLRISEFALL3METHODS', 'CDLSEPARATINGLINES', 'CDLSHOOTINGSTAR',
+  'CDLSHORTLINE', 'CDLSPINNINGTOP', 'CDLSTALLEDPATTERN', 'CDLSTICKSANDWICH',
+  'CDLTAKURI', 'CDLTASUKIGAP', 'CDLTHRUSTING', 'CDLTRISTAR', 'CDLUNIQUE3RIVER',
+  'CDLUPSIDEGAP2CROWS', 'CDLXSIDEGAP3METHODS',
+] as const satisfies readonly TalibPatternFunction[];
+
+const BATCH_4_CARD_BY_FUNCTION = {
+  CDLRICKSHAWMAN: 'talib-rickshaw-man', CDLRISEFALL3METHODS: 'talib-rise-fall-three-methods',
+  CDLSEPARATINGLINES: 'talib-separating-lines', CDLSHOOTINGSTAR: 'shooting-star',
+  CDLSHORTLINE: 'talib-short-line', CDLSPINNINGTOP: 'talib-spinning-top',
+  CDLSTALLEDPATTERN: 'talib-stalled-pattern', CDLSTICKSANDWICH: 'talib-stick-sandwich',
+  CDLTAKURI: 'talib-takuri', CDLTASUKIGAP: 'talib-tasuki-gap',
+  CDLTHRUSTING: 'talib-thrusting', CDLTRISTAR: 'talib-tristar',
+  CDLUNIQUE3RIVER: 'talib-unique-three-river', CDLUPSIDEGAP2CROWS: 'talib-upside-gap-two-crows',
+  CDLXSIDEGAP3METHODS: 'talib-x-side-gap-three-methods',
+} as const satisfies Record<(typeof TALIB_BATCH_4_FUNCTIONS)[number], PatternCardId>;
+
 /** 進階館的函式到正規卡片投影；card 永遠是 catalog 裡的同一個物件。 */
 export interface TalibPatternEntry {
   batch: 1 | 2 | 3 | 4;
@@ -134,6 +152,7 @@ export const TALIB_PATTERN_ENTRIES: readonly TalibPatternEntry[] = [
   ...createEntries(1, TALIB_BATCH_1_FUNCTIONS, BATCH_1_CARD_BY_FUNCTION),
   ...createEntries(2, TALIB_BATCH_2_FUNCTIONS, BATCH_2_CARD_BY_FUNCTION),
   ...createEntries(3, TALIB_BATCH_3_FUNCTIONS, BATCH_3_CARD_BY_FUNCTION),
+  ...createEntries(4, TALIB_BATCH_4_FUNCTIONS, BATCH_4_CARD_BY_FUNCTION),
 ];
 
 /** 依交付批次取得穩定排序的進階型態館投影。 */

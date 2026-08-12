@@ -46,7 +46,7 @@ describe('Pattern Card interactions', () => {
 
     expect(wrapper.find('h2').text()).toContain('型態卡目錄');
     expect(wrapper.findAll('h1')).toHaveLength(0);
-    expect(wrapper.get('[aria-live="polite"]').text()).toContain('82');
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('96');
 
     await wrapper.get('select[name="match-support"]').setValue('mvp');
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('17');
