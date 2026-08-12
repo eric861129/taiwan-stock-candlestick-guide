@@ -3,6 +3,17 @@
   "intervals": [
     {
       "market": "TWSE",
+      "code": "1213",
+      "startDate": "2019-04-08",
+      "endDateExclusive": "2019-09-24",
+      "reason": "107 年度財務報告經會計師出具無法表示意見，停止買賣至補行公告申報後恢復。",
+      "sourceUrls": [
+        "https://www.twse.com.tw/zh/about/news/news/content.html?ff80808167ee6fdf0169dd685f7d0af1",
+        "https://www.twse.com.tw/zh/about/news/news/content.html?ff8080816d250b14016d4de335b2009c"
+      ]
+    },
+    {
+      "market": "TWSE",
       "code": "1435",
       "startDate": "2026-04-29",
       "endDateExclusive": "2026-06-18",

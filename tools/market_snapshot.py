@@ -514,6 +514,14 @@ def _build_stock_documents(
     if coverage < Decimal("0.98"):
         raise SnapshotValidationError(f"官方普通股日行情覆蓋率 {coverage:.2%} 低於 98% 發布門檻。")
 
+    _validate_all_historical_stock_coverage(
+        symbols=symbols,
+        bars_by_symbol=bars_by_symbol,
+        no_quote_by_symbol=no_quote_by_symbol,
+        history_sessions_by_market=history_sessions_by_market,
+        suspension_intervals=build.suspension_intervals,
+    )
+
     for key, symbol in symbols.items():
         previous_adjustment = previous_adjustments_by_symbol.get(
             key,
@@ -1349,11 +1357,109 @@ def _validate_history_availability(
         or set(bar_dates) & set(evidence_dates)
         or tuple(sorted((*bar_dates, *evidence_dates))) != eligible_sessions
     ):
-        raise SnapshotValidationError(f"{symbol.market} {symbol.code} 的歷史交易日有不合理缺口。")
+        observed_dates = set((*bar_dates, *evidence_dates))
+        eligible_set = set(eligible_sessions)
+        missing_dates = tuple(session for session in eligible_sessions if session not in observed_dates)
+        unexpected_dates = tuple(sorted(observed_dates - eligible_set))
+        details: list[str] = []
+        if missing_dates:
+            details.append(f"缺少 {_format_missing_session_ranges(eligible_sessions, missing_dates)}")
+        if unexpected_dates:
+            details.append(
+                "包含範圍外日期 "
+                + "、".join(day.isoformat() for day in unexpected_dates[:8])
+                + (f" 等 {len(unexpected_dates)} 日" if len(unexpected_dates) > 8 else "")
+            )
+        if len(set(bar_dates)) != len(bar_dates):
+            details.append("K 線日期重複")
+        if len(set(evidence_dates)) != len(evidence_dates):
+            details.append("未報價證據日期重複")
+        if set(bar_dates) & set(evidence_dates):
+            details.append("同日同時存在 K 線與未報價證據")
+        detail_text = f"；{'；'.join(details)}" if details else ""
+        raise SnapshotValidationError(
+            f"{symbol.market} {symbol.code} 的歷史交易日有不合理缺口{detail_text}。"
+        )
     short_history_reason: Literal["listing-history"] | None = None
     if len(eligible_sessions) < len(market_sessions):
         short_history_reason = "listing-history"
     return len(eligible_sessions), short_history_reason
+
+
+def _format_missing_session_ranges(
+    eligible_sessions: Sequence[date],
+    missing_dates: Sequence[date],
+) -> str:
+    """依官方交易日順序壓縮缺口，週末與休市日不會切斷同一段。"""
+
+    missing_set = set(missing_dates)
+    ranges: list[tuple[date, date]] = []
+    range_start: date | None = None
+    range_end: date | None = None
+    for session in eligible_sessions:
+        if session in missing_set:
+            if range_start is None:
+                range_start = session
+            range_end = session
+            continue
+        if range_start is not None and range_end is not None:
+            ranges.append((range_start, range_end))
+            range_start = None
+            range_end = None
+    if range_start is not None and range_end is not None:
+        ranges.append((range_start, range_end))
+
+    visible_ranges = ranges[:8]
+    formatted = "、".join(
+        start.isoformat() if start == end else f"{start.isoformat()}～{end.isoformat()}"
+        for start, end in visible_ranges
+    )
+    if len(ranges) > len(visible_ranges):
+        formatted += f" 等 {len(ranges)} 段"
+    return f"{formatted}（共 {len(missing_dates)} 日）"
+
+
+def _validate_all_historical_stock_coverage(
+    *,
+    symbols: Mapping[tuple[Market, str], SupportedSymbol],
+    bars_by_symbol: Mapping[tuple[Market, str], Sequence[_NormalizedBar]],
+    no_quote_by_symbol: Mapping[tuple[Market, str], Sequence[NoQuoteEvidence]],
+    history_sessions_by_market: Mapping[Market, Sequence[date]],
+    suspension_intervals: Sequence[SuspensionInterval],
+) -> None:
+    """一次列出所有歷史缺口股票，讓基準 Action 可在單輪完成診斷。"""
+
+    issues: list[str] = []
+    for key, symbol in symbols.items():
+        bars = tuple(sorted(bars_by_symbol.get(key, ()), key=lambda item: item.trading_date))
+        evidence = tuple(sorted(no_quote_by_symbol.get(key, ()), key=lambda item: item.trading_date))
+        try:
+            _validate_suspension_evidence_for_history(
+                market=symbol.market,
+                code=symbol.code,
+                listing_date=symbol.listing_date,
+                bar_dates=tuple(bar.trading_date for bar in bars),
+                no_quote_evidence=evidence,
+                market_sessions=history_sessions_by_market[symbol.market],
+                suspension_intervals=suspension_intervals,
+            )
+            _validate_history_availability(
+                symbol,
+                bars,
+                evidence,
+                history_sessions_by_market[symbol.market],
+            )
+        except SnapshotValidationError as error:
+            issues.append(str(error))
+
+    if issues:
+        visible_issues = issues[:50]
+        remainder = f"；另有 {len(issues) - len(visible_issues)} 檔" if len(issues) > len(visible_issues) else ""
+        raise SnapshotValidationError(
+            f"全市場歷史交易日完整性驗證失敗（{len(issues)} 檔）："
+            + " | ".join(visible_issues)
+            + remainder
+        )
 
 
 def _validate_suspension_evidence_for_history(

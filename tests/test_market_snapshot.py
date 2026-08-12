@@ -1681,6 +1681,42 @@ class SnapshotBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(SnapshotValidationError, "不合理缺口"):
                 build_snapshot(None, build_input, Path(temporary_directory) / "site-data")
 
+    def test_reports_all_stocks_with_history_holes_in_one_failure(self) -> None:
+        """全市場基準應一次列出所有缺口股票，避免 Action 每次只修到第一檔。"""
+        base = fixture_build_input()
+        twse_quote, unsupported_twse_quote = parse_twse_daily(load_fixture("twse-daily.json"))
+        tpex_quote = parse_tpex_daily(load_fixture("tpex-daily.json"))[0]
+        session_dates = official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar)
+        twse_missing_date = session_dates[50]
+        tpex_missing_date = session_dates[70]
+        sessions: list[MarketSession] = []
+        for session_date in session_dates:
+            twse_quotes = (
+                (replace(unsupported_twse_quote, trading_date=session_date),)
+                if session_date == twse_missing_date
+                else (replace(twse_quote, trading_date=session_date),)
+            )
+            tpex_quotes = (
+                (replace(tpex_quote, code="9999", name="非支援股票", trading_date=session_date),)
+                if session_date == tpex_missing_date
+                else (replace(tpex_quote, trading_date=session_date),)
+            )
+            sessions.extend((MarketSession("TWSE", twse_quotes), MarketSession("TPEx", tpex_quotes)))
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaises(SnapshotValidationError) as context:
+                build_snapshot(
+                    None,
+                    replace(base, sessions=tuple(sessions)),
+                    Path(temporary_directory) / "site-data",
+                )
+
+        message = str(context.exception)
+        self.assertIn(f"TWSE {twse_quote.code}", message)
+        self.assertIn(twse_missing_date.isoformat(), message)
+        self.assertIn(f"TPEx {tpex_quote.code}", message)
+        self.assertIn(tpex_missing_date.isoformat(), message)
+
     def test_rejects_common_official_market_session_gap_in_a_direct_v3_build(self) -> None:
         """直接建立 v3 時，不可把兩市場共同缺少的官方交易日誤當成不存在。"""
 
