@@ -32,6 +32,7 @@ from market_sources import (
     parse_corporate_actions,
     parse_emergency_market_closure_evidence,
     parse_holiday_calendar,
+    parse_reduction_suspension_intervals,
     parse_suspension_interval_evidence,
     parse_supported_symbols,
     parse_tpex_historical_daily,
@@ -669,6 +670,136 @@ class OfficialCalendarTests(unittest.TestCase):
         self.assertFalse(interval.includes(date(2026, 6, 18)))
         self.assertEqual("TWSE", interval.market)
         self.assertEqual("2026-06-18", interval.end_date_exclusive.isoformat())
+
+    def test_reduction_history_builds_auditable_twse_and_tpex_suspension_intervals(self) -> None:
+        """減資歷史表必須提供停止日與恢復日，不能只靠缺少行情猜測停牌。"""
+        intervals = parse_reduction_suspension_intervals(
+            {
+                "stat": "OK",
+                "fields": [
+                    "恢復買賣日期",
+                    "股票代號",
+                    "名稱",
+                    "停止買賣前收盤價格",
+                    "恢復買賣參考價",
+                    "漲停價格",
+                    "跌停價格",
+                    "開盤競價基準",
+                    "除權參考價",
+                    "減資原因",
+                    "詳細資料",
+                ],
+                "data": [
+                    [
+                        "106/10/30",
+                        "1109",
+                        "信大",
+                        "12.60",
+                        "12.73",
+                        "14.00",
+                        "11.50",
+                        "12.75",
+                        "--",
+                        "退還股款",
+                        "1109  ,20171018",
+                    ]
+                ],
+            },
+            {
+                "stat": "ok",
+                "tables": [
+                    {
+                        "fields": [
+                            "恢復買賣日期",
+                            "股票代號",
+                            "名稱",
+                            "最後交易日之收盤價格",
+                            "減資恢復買賣開始日參考價格",
+                            "漲停價格",
+                            "跌停價格",
+                            "開始交易基準價",
+                            "除權參考價",
+                            "減資原因",
+                            "詳細資料",
+                        ],
+                        "data": [
+                            [
+                                "1150630",
+                                "3152",
+                                "璟德",
+                                "208.00",
+                                "360.24",
+                                "396.00",
+                                "324.50",
+                                "360.00",
+                                "0.00",
+                                "現金減資",
+                                "<table><tr><th>股票代號/股票名稱:</th><td>3152&nbsp/&nbsp璟德</td></tr>"
+                                "<tr><th>停止買賣日期:</th><td>115/06/23</td></tr>"
+                                "<tr><th>恢復買賣日期:</th><td>115/06/30</td></tr></table>",
+                            ]
+                        ],
+                    }
+                ],
+            },
+            twse_source_url="https://www.twse.com.tw/rwd/zh/reducation/TWTAUU?startDate=20160601&endDate=20260812&response=json",
+            tpex_source_url="https://www.tpex.org.tw/www/zh-tw/bulletin/revivt?startDate=2016%2F06%2F01&endDate=2026%2F08%2F12",
+        )
+
+        self.assertEqual(
+            [
+                ("TWSE", "1109", "2017-10-19", "2017-10-30"),
+                ("TPEx", "3152", "2026-06-23", "2026-06-30"),
+            ],
+            [
+                (
+                    interval.market,
+                    interval.code,
+                    interval.start_date.isoformat(),
+                    interval.end_date_exclusive.isoformat(),
+                )
+                for interval in intervals
+            ],
+        )
+
+    def test_reduction_history_rejects_a_mismatched_detail_or_recovery_date(self) -> None:
+        """詳情代碼或恢復日不一致時，不能建立看似合理的停牌區間。"""
+        with self.assertRaisesRegex(ValueError, "代碼"):
+            parse_reduction_suspension_intervals(
+                {
+                    "stat": "OK",
+                    "fields": ["恢復買賣日期", "股票代號", "減資原因", "詳細資料"],
+                    "data": [["106/10/30", "1109", "退還股款", "1236,20171018"]],
+                },
+                {"stat": "ok", "tables": [{"fields": [], "data": []}]},
+                twse_source_url="https://www.twse.com.tw/rwd/zh/reducation/TWTAUU",
+                tpex_source_url="https://www.tpex.org.tw/www/zh-tw/bulletin/revivt",
+            )
+
+        with self.assertRaisesRegex(ValueError, "TPEx.*代碼"):
+            parse_reduction_suspension_intervals(
+                {"stat": "OK", "fields": ["恢復買賣日期", "股票代號", "減資原因", "詳細資料"], "data": []},
+                {
+                    "stat": "ok",
+                    "tables": [
+                        {
+                            "fields": ["恢復買賣日期", "股票代號", "減資原因", "詳細資料"],
+                            "data": [
+                                [
+                                    "1150630",
+                                    "3152",
+                                    "現金減資",
+                                    "<table><tr><th>股票代號/股票名稱:</th><td>6109&nbsp/&nbsp亞元</td></tr>"
+                                    "<tr><th>停止買賣日期:</th><td>115/06/23</td></tr>"
+                                    "<tr><th>恢復買賣日期:</th><td>115/06/30</td></tr></table>",
+                                ]
+                            ],
+                        }
+                    ],
+                },
+                twse_source_url="https://www.twse.com.tw/rwd/zh/reducation/TWTAUU",
+                tpex_source_url="https://www.tpex.org.tw/www/zh-tw/bulletin/revivt",
+            )
 
     def test_suspension_interval_evidence_rejects_an_overlapping_or_unofficial_interval(self) -> None:
         with self.assertRaisesRegex(ValueError, "重疊"):

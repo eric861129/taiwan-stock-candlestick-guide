@@ -939,6 +939,44 @@ class SnapshotBuildTests(unittest.TestCase):
             manifest["suspensionEvidence"],
         )
 
+    def test_reduction_interval_uses_the_consecutive_missing_suffix_before_recovery(self) -> None:
+        """TWSE 減資表的搜尋日期較早時，合法行情不可被誤標為停牌。"""
+        base = fixture_build_input()
+        sessions = tuple(
+            replace(
+                session,
+                quotes=tuple(
+                    quote
+                    for quote in session.quotes
+                    if not (
+                        session.market == "TWSE"
+                        and quote.code == "2330"
+                        and quote.trading_date == date(2026, 8, 10)
+                    )
+                ),
+            )
+            for session in base.sessions
+        )
+        reduction = SuspensionInterval(
+            market="TWSE",
+            code="2330",
+            start_date=date(2026, 8, 7),
+            end_date_exclusive=date(2026, 8, 11),
+            reason="退還股款減資換發新股。",
+            source_urls=("https://www.twse.com.tw/rwd/zh/reducation/TWTAUU",),
+        )
+
+        merged = market_snapshot._merge_historical_suspension_intervals(
+            base.symbols,
+            sessions,
+            (),
+            (reduction,),
+        )
+
+        self.assertEqual(1, len(merged))
+        self.assertEqual(date(2026, 8, 10), merged[0].start_date)
+        self.assertEqual(date(2026, 8, 11), merged[0].end_date_exclusive)
+
     def test_rejects_a_suspension_interval_that_overlaps_a_legal_bar(self) -> None:
         """官方停牌區間若與同日合法 K 線衝突，快照必須 fail closed。"""
         base = fixture_build_input()
@@ -1091,6 +1129,8 @@ class SnapshotBuildTests(unittest.TestCase):
             ), patch("market_snapshot.fetch_corporate_actions", return_value=actions) as action_fetch, patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
             ), patch(
+                "market_snapshot.fetch_reduction_suspension_intervals", return_value=()
+            ), patch(
                 "market_snapshot.fetch_twse_daily", return_value=(twse_new,)
             ), patch("market_snapshot.fetch_tpex_daily", return_value=(tpex_new,)):
                 manifest, updated = update_snapshot(
@@ -1146,6 +1186,8 @@ class SnapshotBuildTests(unittest.TestCase):
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions) as action_fetch, patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
+                "market_snapshot.fetch_reduction_suspension_intervals", return_value=()
             ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
             ) as twse_history_fetch, patch(
@@ -1218,6 +1260,8 @@ class SnapshotBuildTests(unittest.TestCase):
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
+                "market_snapshot.fetch_reduction_suspension_intervals", return_value=()
             ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
             ), patch("market_snapshot.fetch_tpex_historical_daily", side_effect=tpex_history), patch(
@@ -2069,6 +2113,8 @@ class SnapshotBuildTests(unittest.TestCase):
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
             ), patch("market_snapshot._history_cache_is_complete", return_value=False), patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
+                "market_snapshot.fetch_reduction_suspension_intervals", return_value=()
             ):
                 with self.assertRaisesRegex(SnapshotValidationError, "同截止日.*十年歷史日期快取"):
                     update_snapshot(
@@ -2152,6 +2198,8 @@ class SnapshotBuildTests(unittest.TestCase):
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions) as action_fetch, patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
             ), patch(
+                "market_snapshot.fetch_reduction_suspension_intervals", return_value=()
+            ), patch(
                 "market_snapshot._historical_candidate_dates",
                 return_value=official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar),
             ), patch(
@@ -2174,16 +2222,19 @@ class SnapshotBuildTests(unittest.TestCase):
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
             ), patch(
+                "market_snapshot.fetch_reduction_suspension_intervals", return_value=()
+            ), patch(
                 "market_snapshot._historical_candidate_dates",
                 return_value=official_fixture_sessions_ending_at(date(2026, 8, 11), 120, base.calendar),
             ), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=AssertionError("應使用快取")
             ), patch(
                 "market_snapshot.fetch_tpex_historical_daily", side_effect=AssertionError("應使用快取")
-            ), patch("market_snapshot._throttle_official_requests"):
+            ), patch("market_snapshot._throttle_official_requests") as resumed_throttle:
                 resumed = bootstrap_snapshot(root / "resumed", "fixture", cache, now=now)
 
             self.assertEqual(first.snapshot_hash, resumed.snapshot_hash)
+            resumed_throttle.assert_not_called()
 
     def test_incremental_history_cache_matches_a_full_rebuild_at_the_same_cutoff(self) -> None:
         """每日補齊後的公開結果必須與同一截止日完整重建位元一致。"""
@@ -2212,16 +2263,31 @@ class SnapshotBuildTests(unittest.TestCase):
                 "market_snapshot.fetch_supported_symbols", return_value=base.symbols
             ), patch("market_snapshot.fetch_corporate_actions", return_value=base.corporate_actions), patch(
                 "market_snapshot.load_suspension_interval_evidence", return_value=()
+            ), patch(
+                "market_snapshot.fetch_reduction_suspension_intervals", return_value=()
             ), patch("market_snapshot._historical_candidate_dates", side_effect=candidate_dates), patch(
                 "market_snapshot.fetch_twse_historical_daily", side_effect=twse_history
             ), patch("market_snapshot.fetch_tpex_historical_daily", side_effect=tpex_history), patch(
                 "market_snapshot.fetch_twse_daily",
-                return_value=(replace(twse_quote, trading_date=date(2026, 8, 12)),),
+                side_effect=AssertionError("應使用下一交易日快取"),
             ), patch(
                 "market_snapshot.fetch_tpex_daily",
-                return_value=(replace(tpex_quote, trading_date=date(2026, 8, 12)),),
-            ), patch("market_snapshot._throttle_official_requests"):
+                side_effect=AssertionError("應使用下一交易日快取"),
+            ), patch("market_snapshot._throttle_official_requests") as throttle:
                 bootstrap_snapshot(incremental_output, "fixture-history", cache, now=first_now)
+                market_snapshot._fetch_cached_daily(
+                    "TWSE",
+                    date(2026, 8, 12),
+                    cache,
+                    lambda session_date: (replace(twse_quote, trading_date=session_date),),
+                )
+                market_snapshot._fetch_cached_daily(
+                    "TPEx",
+                    date(2026, 8, 12),
+                    cache,
+                    lambda session_date: (replace(tpex_quote, trading_date=session_date),),
+                )
+                throttle_calls_before_update = throttle.call_count
                 incremental, updated = update_snapshot(
                     incremental_output,
                     incremental_output,
@@ -2229,6 +2295,7 @@ class SnapshotBuildTests(unittest.TestCase):
                     cache,
                     now=second_now,
                 )
+                self.assertEqual(throttle_calls_before_update, throttle.call_count)
                 full = bootstrap_snapshot(full_output, "fixture-history", cache, now=second_now)
 
             self.assertTrue(updated)

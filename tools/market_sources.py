@@ -7,6 +7,7 @@ from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
+import re
 import ssl
 from time import sleep
 from typing import Literal
@@ -40,6 +41,8 @@ TWSE_ACTIONS_URL = "https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL"
 TPEX_ACTIONS_URL = "https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost"
 TWSE_ACTION_CALCULATION_URL = "https://www.twse.com.tw/rwd/zh/exRight/TWT49U"
 TPEX_ACTION_CALCULATION_URL = "https://www.tpex.org.tw/openapi/v1/tpex_exright_daily"
+TWSE_REDUCTION_HISTORY_URL = "https://www.twse.com.tw/rwd/zh/reducation/TWTAUU"
+TPEX_REDUCTION_HISTORY_URL = "https://www.tpex.org.tw/www/zh-tw/bulletin/revivt"
 HOLIDAY_CALENDAR_URL = "https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule"
 EMERGENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION = 1
 DEFAULT_EMERGENCY_CLOSURES_PATH = Path(__file__).resolve().parents[1] / "data" / "emergency-market-closures.json"
@@ -61,7 +64,7 @@ _EMERGENCY_CLOSURE_RULE_HOSTS: dict[Market, frozenset[str]] = {
 _MARKET_WIDE_EMERGENCY_CLOSURE_MARKETS: tuple[Market, ...] = ("TWSE", "TPEx")
 _SUSPENSION_OFFICIAL_HOSTS: dict[Market, frozenset[str]] = {
     "TWSE": frozenset({"www.twse.com.tw"}),
-    "TPEx": frozenset({"dsp.tpex.org.tw"}),
+    "TPEx": frozenset({"dsp.tpex.org.tw", "www.tpex.org.tw"}),
 }
 
 _OFFICIAL_ENDPOINTS = {
@@ -75,6 +78,8 @@ _OFFICIAL_ENDPOINTS = {
     "tpex-actions": TPEX_ACTIONS_URL,
     "twse-action-calculations": TWSE_ACTION_CALCULATION_URL,
     "tpex-action-calculations": TPEX_ACTION_CALCULATION_URL,
+    "twse-reduction-history": TWSE_REDUCTION_HISTORY_URL,
+    "tpex-reduction-history": TPEX_REDUCTION_HISTORY_URL,
     "holiday-calendar": HOLIDAY_CALENDAR_URL,
 }
 
@@ -311,6 +316,31 @@ def fetch_corporate_actions(
     )
 
 
+def fetch_reduction_suspension_intervals(
+    start_date: date,
+    end_date: date,
+) -> tuple[SuspensionInterval, ...]:
+    """取得兩市場減資換發股票的停止與恢復買賣區間。"""
+
+    if start_date > end_date:
+        raise ValueError("減資停牌資料的開始日期不可晚於結束日期。")
+    twse_parameters = {
+        "startDate": start_date.strftime("%Y%m%d"),
+        "endDate": end_date.strftime("%Y%m%d"),
+        "response": "json",
+    }
+    tpex_parameters = {
+        "startDate": start_date.strftime("%Y/%m/%d"),
+        "endDate": end_date.strftime("%Y/%m/%d"),
+    }
+    return parse_reduction_suspension_intervals(
+        _fetch_official_json("twse-reduction-history", twse_parameters),
+        _fetch_official_json("tpex-reduction-history", tpex_parameters),
+        twse_source_url=f"{TWSE_REDUCTION_HISTORY_URL}?{urlencode(twse_parameters)}",
+        tpex_source_url=f"{TPEX_REDUCTION_HISTORY_URL}?{urlencode(tpex_parameters)}",
+    )
+
+
 def fetch_trading_calendar(
     emergency_closures_path: Path = DEFAULT_EMERGENCY_CLOSURES_PATH,
 ) -> TradingCalendar:
@@ -526,6 +556,172 @@ def parse_suspension_interval_evidence(payload: object) -> tuple[SuspensionInter
     ordered = tuple(sorted(intervals, key=lambda item: (item.market, item.code, item.start_date)))
     _validate_non_overlapping_suspension_intervals(ordered)
     return ordered
+
+
+def parse_reduction_suspension_intervals(
+    twse_payload: object,
+    tpex_payload: object,
+    *,
+    twse_source_url: str,
+    tpex_source_url: str,
+) -> tuple[SuspensionInterval, ...]:
+    """解析官方減資歷史表，保留停止買賣起日與恢復日的精確邊界。"""
+
+    twse_source = _validate_suspension_source_url("TWSE", twse_source_url)
+    tpex_source = _validate_suspension_source_url("TPEx", tpex_source_url)
+    intervals = [
+        *_parse_twse_reduction_intervals(twse_payload, twse_source),
+        *_parse_tpex_reduction_intervals(tpex_payload, tpex_source),
+    ]
+    intervals = list(_deduplicate_reduction_intervals(intervals))
+    market_order = {"TWSE": 0, "TPEx": 1}
+    ordered = tuple(sorted(intervals, key=lambda item: (market_order[item.market], item.code, item.start_date)))
+    _validate_non_overlapping_suspension_intervals(ordered)
+    return ordered
+
+
+def _deduplicate_reduction_intervals(
+    intervals: list[SuspensionInterval],
+) -> tuple[SuspensionInterval, ...]:
+    """同一事件若有更正版，採共同支持的較窄區間，避免誤標合法行情。"""
+
+    market_order = {"TWSE": 0, "TPEx": 1}
+    ordered = sorted(intervals, key=lambda item: (market_order[item.market], item.code, item.start_date))
+    selected: list[SuspensionInterval] = []
+    for interval in ordered:
+        if not selected or (selected[-1].market, selected[-1].code) != (interval.market, interval.code):
+            selected.append(interval)
+            continue
+        previous = selected[-1]
+        previous_end = previous.end_date_exclusive
+        current_end = interval.end_date_exclusive
+        overlaps = previous_end is None or interval.start_date < previous_end
+        same_event = previous.start_date == interval.start_date or previous_end == current_end
+        if not overlaps or not same_event:
+            selected.append(interval)
+            continue
+        if previous_end is None:
+            narrower_end = current_end
+        elif current_end is None:
+            narrower_end = previous_end
+        else:
+            narrower_end = min(previous_end, current_end)
+        narrower_start = max(previous.start_date, interval.start_date)
+        if narrower_end is None or narrower_end <= narrower_start:
+            raise ValueError(f"{interval.market} {interval.code} 的減資更正版沒有共同有效區間。")
+        selected[-1] = replace(
+            interval,
+            start_date=narrower_start,
+            end_date_exclusive=narrower_end,
+            source_urls=tuple(sorted({*previous.source_urls, *interval.source_urls})),
+        )
+    return tuple(selected)
+
+
+def _parse_twse_reduction_intervals(payload: object, source_url: str) -> tuple[SuspensionInterval, ...]:
+    if not isinstance(payload, dict) or str(payload.get("stat", "")).strip().lower() != "ok":
+        raise ValueError("TWSE 減資恢復買賣歷史資料狀態不是成功。")
+    fields = payload.get("fields")
+    rows = payload.get("data")
+    if not isinstance(fields, list) or not isinstance(rows, list):
+        raise ValueError("TWSE 減資恢復買賣歷史資料缺少表格。")
+    indexes = _normalized_field_indexes(fields)
+    required = ("恢復買賣日期", "股票代號", "減資原因", "詳細資料")
+    if not all(field in indexes for field in required):
+        raise ValueError("TWSE 減資恢復買賣歷史資料缺少必要欄位。")
+    intervals: list[SuspensionInterval] = []
+    detail_pattern = re.compile(r"^\s*(\d+)\s*,\s*(\d{8})\s*$")
+    for row in rows:
+        if not isinstance(row, list):
+            raise ValueError("TWSE 減資恢復買賣歷史資料列必須是陣列。")
+        try:
+            code = row[indexes["股票代號"]]
+            resume_value = row[indexes["恢復買賣日期"]]
+            reason_value = row[indexes["減資原因"]]
+            detail_value = row[indexes["詳細資料"]]
+        except IndexError as error:
+            raise ValueError("TWSE 減資恢復買賣歷史資料列缺少必要欄位。") from error
+        if not all(isinstance(value, str) for value in (code, resume_value, reason_value, detail_value)):
+            raise ValueError("TWSE 減資恢復買賣歷史欄位必須是文字。")
+        detail_match = detail_pattern.fullmatch(detail_value)
+        if detail_match is None or detail_match.group(1) != code.strip():
+            raise ValueError("TWSE 減資恢復買賣詳細資料的股票代碼不一致。")
+        search_start_date = _parse_official_date(detail_match.group(2))
+        resume_date = _parse_official_date(resume_value)
+        start_date = search_start_date + timedelta(days=1)
+        if resume_date <= start_date:
+            raise ValueError("TWSE 減資恢復買賣日期沒有形成有效停牌區間。")
+        intervals.append(
+            SuspensionInterval(
+                market="TWSE",
+                code=code.strip(),
+                start_date=start_date,
+                end_date_exclusive=resume_date,
+                reason=f"{reason_value.strip()}減資換發新股。",
+                source_urls=(source_url,),
+            )
+        )
+    return tuple(intervals)
+
+
+def _parse_tpex_reduction_intervals(payload: object, source_url: str) -> tuple[SuspensionInterval, ...]:
+    if not isinstance(payload, dict) or str(payload.get("stat", "")).strip().lower() != "ok":
+        raise ValueError("TPEx 減資恢復買賣歷史資料狀態不是成功。")
+    tables = payload.get("tables")
+    if not isinstance(tables, list) or len(tables) != 1 or not isinstance(tables[0], dict):
+        raise ValueError("TPEx 減資恢復買賣歷史資料缺少唯一表格。")
+    fields = tables[0].get("fields")
+    rows = tables[0].get("data")
+    if not isinstance(fields, list) or not isinstance(rows, list):
+        raise ValueError("TPEx 減資恢復買賣歷史資料缺少表格欄位。")
+    indexes = _normalized_field_indexes(fields)
+    required = ("恢復買賣日期", "股票代號", "減資原因", "詳細資料")
+    if not all(field in indexes for field in required):
+        if not rows:
+            return ()
+        raise ValueError("TPEx 減資恢復買賣歷史資料缺少必要欄位。")
+    stop_pattern = re.compile(r"停止買賣日期\s*[:：]</th>\s*<td>\s*([^<]+?)\s*</td>")
+    resume_pattern = re.compile(r"恢復買賣日期\s*[:：]</th>\s*<td>\s*([^<]+?)\s*</td>")
+    code_pattern = re.compile(
+        r"股票代號/股票名稱\s*[:：]</th>\s*<td>\s*(\d+)\s*(?:&nbsp;?)?\s*/"
+    )
+    intervals: list[SuspensionInterval] = []
+    for row in rows:
+        if not isinstance(row, list):
+            raise ValueError("TPEx 減資恢復買賣歷史資料列必須是陣列。")
+        try:
+            code = row[indexes["股票代號"]]
+            resume_value = row[indexes["恢復買賣日期"]]
+            reason_value = row[indexes["減資原因"]]
+            detail_value = row[indexes["詳細資料"]]
+        except IndexError as error:
+            raise ValueError("TPEx 減資恢復買賣歷史資料列缺少必要欄位。") from error
+        if not all(isinstance(value, str) for value in (code, resume_value, reason_value, detail_value)):
+            raise ValueError("TPEx 減資恢復買賣歷史欄位必須是文字。")
+        stop_match = stop_pattern.search(detail_value)
+        resume_match = resume_pattern.search(detail_value)
+        code_match = code_pattern.search(detail_value)
+        if stop_match is None or resume_match is None or code_match is None:
+            raise ValueError("TPEx 減資恢復買賣詳細資料缺少代碼、停止或恢復日期。")
+        if code_match.group(1) != code.strip():
+            raise ValueError("TPEx 減資恢復買賣詳細資料的股票代碼不一致。")
+        start_date = _parse_official_date(stop_match.group(1))
+        resume_date = _parse_official_date(resume_match.group(1))
+        if resume_date != _parse_official_date(resume_value):
+            raise ValueError("TPEx 減資恢復買賣表格與詳細資料的恢復日期不一致。")
+        if resume_date <= start_date:
+            raise ValueError("TPEx 減資恢復買賣日期沒有形成有效停牌區間。")
+        intervals.append(
+            SuspensionInterval(
+                market="TPEx",
+                code=code.strip(),
+                start_date=start_date,
+                end_date_exclusive=resume_date,
+                reason=f"{reason_value.strip()}換發新股。",
+                source_urls=(source_url,),
+            )
+        )
+    return tuple(intervals)
 
 
 def _validate_suspension_source_url(market: Market, value: str) -> str:

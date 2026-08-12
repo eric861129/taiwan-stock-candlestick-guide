@@ -38,6 +38,7 @@ from market_sources import (
     compute_freshness,
     expected_cutoff_date,
     fetch_corporate_actions,
+    fetch_reduction_suspension_intervals,
     fetch_supported_symbols,
     fetch_tpex_daily,
     fetch_tpex_historical_daily,
@@ -368,6 +369,71 @@ def _with_official_suspension_evidence(build: SnapshotBuildInput) -> SnapshotBui
             )
         )
     return replace(build, sessions=tuple(expanded_sessions), suspension_intervals=intervals)
+
+
+def _merge_historical_suspension_intervals(
+    symbols: Sequence[SupportedSymbol],
+    sessions: Sequence[MarketSession],
+    curated_intervals: Sequence[SuspensionInterval],
+    reduction_intervals: Sequence[SuspensionInterval],
+) -> tuple[SuspensionInterval, ...]:
+    """以實際全市場缺列修正減資表搜尋下界，再與人工公告證據合併。"""
+
+    symbols_by_key = {(symbol.market, symbol.code): symbol for symbol in symbols}
+    quoted_codes_by_market_date: dict[tuple[Market, date], set[str]] = {}
+    market_dates: dict[Market, set[date]] = {"TWSE": set(), "TPEx": set()}
+    for session in sessions:
+        observed_dates = {
+            *(quote.trading_date for quote in session.quotes),
+            *(evidence.trading_date for evidence in session.no_quote_evidence),
+        }
+        if len(observed_dates) != 1:
+            raise SnapshotValidationError(f"{session.market} 官方交易日行情日期不一致。")
+        session_date = next(iter(observed_dates))
+        market_dates[session.market].add(session_date)
+        quoted_codes_by_market_date[(session.market, session_date)] = {
+            quote.code for quote in session.quotes
+        }
+
+    normalized_reductions: list[SuspensionInterval] = []
+    for interval in reduction_intervals:
+        symbol = symbols_by_key.get((interval.market, interval.code))
+        if symbol is None or interval.end_date_exclusive is None:
+            continue
+        eligible_dates = tuple(
+            session_date
+            for session_date in sorted(market_dates[interval.market])
+            if max(symbol.listing_date, interval.start_date)
+            <= session_date
+            < interval.end_date_exclusive
+        )
+        missing_suffix: list[date] = []
+        for session_date in reversed(eligible_dates):
+            if interval.code in quoted_codes_by_market_date[(interval.market, session_date)]:
+                break
+            missing_suffix.append(session_date)
+        if not missing_suffix:
+            continue
+        normalized_reductions.append(replace(interval, start_date=min(missing_suffix)))
+
+    combined: dict[tuple[Market, str, date, date | None], SuspensionInterval] = {}
+    for interval in (*curated_intervals, *normalized_reductions):
+        if (interval.market, interval.code) not in symbols_by_key:
+            continue
+        key = (interval.market, interval.code, interval.start_date, interval.end_date_exclusive)
+        existing = combined.get(key)
+        if existing is None:
+            combined[key] = interval
+            continue
+        combined[key] = replace(
+            existing,
+            source_urls=tuple(sorted({*existing.source_urls, *interval.source_urls})),
+        )
+    payload = _suspension_evidence_json(tuple(combined.values()))
+    try:
+        return parse_suspension_interval_evidence(payload)
+    except ValueError as error:
+        raise SnapshotValidationError("官方減資歷史與版本化停牌區間互相衝突。") from error
 
 
 def _build_stock_documents(
@@ -3595,7 +3661,8 @@ def bootstrap_snapshot(
     symbols = fetch_supported_symbols()
     actions = fetch_corporate_actions(start_date=history_start, end_date=cutoff)
     override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
-    suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
+    curated_suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
+    reduction_intervals = fetch_reduction_suspension_intervals(history_start, cutoff)
     market_sessions, closed_market_dates = _collect_historical_market_sessions(
         history_start,
         cutoff,
@@ -3606,6 +3673,12 @@ def bootstrap_snapshot(
         history_start,
         cutoff,
         closed_market_dates,
+    )
+    suspension_intervals = _merge_historical_suspension_intervals(
+        symbols,
+        market_sessions,
+        curated_suspension_intervals,
+        reduction_intervals,
     )
     build_input = SnapshotBuildInput(
         source_commit=source_commit,
@@ -3654,20 +3727,24 @@ def _collect_historical_market_sessions(
     market_sessions: list[MarketSession] = []
     closed_market_dates: list[date] = []
     for session_date in _historical_candidate_dates(history_start, cutoff):
+        twse_was_cached = (cache_directory / "TWSE" / f"{session_date.isoformat()}.json").is_file()
         twse_response = _fetch_cached_historical_daily(
             "TWSE",
             session_date,
             cache_directory,
             fetch_twse_historical_daily,
         )
-        _throttle_official_requests()
+        if not twse_was_cached:
+            _throttle_official_requests()
+        tpex_was_cached = (cache_directory / "TPEx" / f"{session_date.isoformat()}.json").is_file()
         tpex_response = _fetch_cached_historical_daily(
             "TPEx",
             session_date,
             cache_directory,
             fetch_tpex_historical_daily,
         )
-        _throttle_official_requests()
+        if not tpex_was_cached:
+            _throttle_official_requests()
         if (twse_response is None) != (tpex_response is None):
             raise SnapshotValidationError(
                 f"兩市場官方歷史日行情狀態不一致：{session_date.isoformat()}；拒絕猜測共用交易日。"
@@ -3817,11 +3894,16 @@ def update_snapshot(
 
         symbols = fetch_supported_symbols()
         override_actions, retired_symbols = _load_company_action_overrides(overrides_path)
-        suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
+        curated_suspension_intervals = load_suspension_interval_evidence(suspension_intervals_path)
         if len(missing_sessions) == 1:
+            twse_was_cached = (cache_directory / "TWSE" / f"{expected.isoformat()}.json").is_file()
             twse_response = _fetch_cached_daily("TWSE", expected, cache_directory, fetch_twse_daily)
-            _throttle_official_requests()
+            if not twse_was_cached:
+                _throttle_official_requests()
+            tpex_was_cached = (cache_directory / "TPEx" / f"{expected.isoformat()}.json").is_file()
             tpex_response = _fetch_cached_daily("TPEx", expected, cache_directory, fetch_tpex_daily)
+            if not tpex_was_cached:
+                _throttle_official_requests()
             market_sessions = (
                 _market_session_from_response("TWSE", twse_response),
                 _market_session_from_response("TPEx", tpex_response),
@@ -3829,6 +3911,9 @@ def update_snapshot(
         elif missing_sessions:
             market_sessions_list: list[MarketSession] = []
             for session_date in missing_sessions:
+                twse_was_cached = (
+                    cache_directory / "TWSE" / f"{session_date.isoformat()}.json"
+                ).is_file()
                 if history_cache_complete:
                     twse_response = _fetch_cached_historical_daily(
                         "TWSE",
@@ -3850,7 +3935,11 @@ def update_snapshot(
                 market_sessions_list.append(
                     _market_session_from_response("TWSE", twse_response)
                 )
-                _throttle_official_requests()
+                if not twse_was_cached:
+                    _throttle_official_requests()
+                tpex_was_cached = (
+                    cache_directory / "TPEx" / f"{session_date.isoformat()}.json"
+                ).is_file()
                 if history_cache_complete:
                     tpex_response = _fetch_cached_historical_daily(
                         "TPEx",
@@ -3872,7 +3961,8 @@ def update_snapshot(
                 market_sessions_list.append(
                     _market_session_from_response("TPEx", tpex_response)
                 )
-                _throttle_official_requests()
+                if not tpex_was_cached:
+                    _throttle_official_requests()
             market_sessions = tuple(market_sessions_list)
         else:
             market_sessions = ()
@@ -3889,6 +3979,13 @@ def update_snapshot(
                 closed_market_dates,
             )
             full_actions = fetch_corporate_actions(start_date=history_start, end_date=expected)
+            reduction_intervals = fetch_reduction_suspension_intervals(history_start, expected)
+            suspension_intervals = _merge_historical_suspension_intervals(
+                symbols,
+                history_sessions,
+                curated_suspension_intervals,
+                reduction_intervals,
+            )
             build_input = SnapshotBuildInput(
                 source_commit=source_commit,
                 generated_at=generated_at,
@@ -3915,7 +4012,7 @@ def update_snapshot(
             corporate_actions=(*actions, *override_actions),
             calendar=calendar,
             retired_symbols=retired_symbols,
-            suspension_intervals=suspension_intervals,
+            suspension_intervals=curated_suspension_intervals,
         )
         return build_snapshot(previous_directory, build_input, output), True
     finally:
