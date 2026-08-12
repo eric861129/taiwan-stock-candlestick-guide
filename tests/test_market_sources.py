@@ -8,7 +8,7 @@ import ssl
 import sys
 import unittest
 from unittest.mock import patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request
 
@@ -52,11 +52,13 @@ class FakeResponse:
     def __init__(self, body: bytes, status: int = 200) -> None:
         self.status = status
         self._body = body
+        self.closed = False
 
     def __enter__(self) -> "FakeResponse":
         return self
 
     def __exit__(self, exception_type: object, exception: object, traceback: object) -> None:
+        self.closed = True
         return None
 
     def read(self) -> bytes:
@@ -348,6 +350,130 @@ class OfficialFetchBoundaryTests(unittest.TestCase):
         self.assertTrue(retry_context.check_hostname)
         self.assertEqual(ssl.CERT_REQUIRED, retry_context.verify_mode)
         self.assertFalse(retry_context.verify_flags & ssl.VERIFY_X509_STRICT)
+
+    def test_official_fetch_retries_transient_http_errors_with_a_finite_backoff(self) -> None:
+        """官方站短暫回傳 5xx 時可重試，但不能放寬驗證或無限等待。"""
+        transient_error = HTTPError(
+            "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+            520,
+            "transient",
+            hdrs=None,
+            fp=None,
+        )
+
+        with (
+            patch(
+                "market_sources._open_official_market_source",
+                side_effect=[transient_error, transient_error, FakeResponse(b"[]")],
+            ) as open_source,
+            patch("market_sources.sleep") as wait,
+        ):
+            payload = market_sources._fetch_official_json("twse-daily")
+
+        self.assertEqual([], payload)
+        self.assertEqual(3, open_source.call_count)
+        self.assertEqual([unittest.mock.call(1), unittest.mock.call(2)], wait.call_args_list)
+
+    def test_official_fetch_treats_rate_limits_and_the_full_5xx_range_as_transient(self) -> None:
+        for status in (429, 500, 521, 599):
+            with self.subTest(status=status):
+                self.assertTrue(market_sources._is_transient_http_status(status))
+        for status in (400, 404, 600, True, None):
+            with self.subTest(status=status):
+                self.assertFalse(market_sources._is_transient_http_status(status))
+
+    def test_official_fetch_stops_after_three_persistent_transient_errors(self) -> None:
+        errors = [
+            HTTPError(
+                "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+                521,
+                "transient",
+                hdrs=None,
+                fp=None,
+            )
+            for _ in range(3)
+        ]
+        close_spies = []
+        for error in errors:
+            close_spy = unittest.mock.Mock(wraps=error.close)
+            error.close = close_spy
+            close_spies.append(close_spy)
+
+        with (
+            patch("market_sources._open_official_market_source", side_effect=errors) as open_source,
+            patch("market_sources.sleep") as wait,
+            self.assertRaisesRegex(market_sources.OfficialSourceFetchError, "HTTP 521"),
+        ):
+            market_sources._fetch_official_json("twse-daily")
+
+        self.assertEqual(3, open_source.call_count)
+        self.assertEqual([unittest.mock.call(1), unittest.mock.call(2)], wait.call_args_list)
+        for close_spy in close_spies:
+            close_spy.assert_called_once_with()
+
+    def test_official_fetch_closes_each_http_error_before_retrying(self) -> None:
+        errors = [
+            HTTPError(
+                "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+                status,
+                "transient",
+                hdrs=None,
+                fp=None,
+            )
+            for status in (429, 521)
+        ]
+        for error in errors:
+            error.close = unittest.mock.Mock(wraps=error.close)
+
+        with (
+            patch(
+                "market_sources._open_official_market_source",
+                side_effect=[*errors, FakeResponse(b"[]")],
+            ),
+            patch("market_sources.sleep"),
+        ):
+            market_sources._fetch_official_json("twse-daily")
+
+        for error in errors:
+            error.close.assert_called_once_with()
+
+    def test_official_fetch_does_not_retry_invalid_json(self) -> None:
+        for body in (b"not-json", b"\xff"):
+            with self.subTest(body=body):
+                response = FakeResponse(body)
+                with (
+                    patch(
+                        "market_sources._open_official_market_source",
+                        return_value=response,
+                    ) as open_source,
+                    patch("market_sources.sleep") as wait,
+                    self.assertRaisesRegex(market_sources.OfficialSourceFetchError, "UTF-8 JSON"),
+                ):
+                    market_sources._fetch_official_json("twse-daily")
+
+                self.assertEqual(1, open_source.call_count)
+                self.assertTrue(response.closed)
+                wait.assert_not_called()
+
+    def test_official_fetch_does_not_retry_a_permanent_http_error(self) -> None:
+        """4xx 代表請求或契約錯誤，必須立即 fail closed。"""
+        permanent_error = HTTPError(
+            "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+            404,
+            "permanent",
+            hdrs=None,
+            fp=None,
+        )
+
+        with (
+            patch("market_sources._open_official_market_source", side_effect=permanent_error) as open_source,
+            patch("market_sources.sleep") as wait,
+            self.assertRaisesRegex(market_sources.MarketSourceError, "HTTP 404"),
+        ):
+            market_sources._fetch_official_json("twse-daily")
+
+        self.assertEqual(1, open_source.call_count)
+        wait.assert_not_called()
 
     def test_endpoint_guard_rejects_cross_host_and_userinfo_urls(self) -> None:
         """若任意 URL 可進入 opener，官方 redirect 邊界就能被繞過。"""

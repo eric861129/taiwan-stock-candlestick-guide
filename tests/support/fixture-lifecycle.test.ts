@@ -311,6 +311,23 @@ describe('E2E fixture lifecycle', () => {
     expect(existsSync(activePreparationFailure.temporaryRoots[0]!)).toBe(false);
   });
 
+  it('既有空 public/data 在前一輪 cleanup 後可再次準備 fixture', () => {
+    activePreparationFailure = createPreparationFailurePaths({ existingDataDirectory: true });
+    const options = {
+      publicDataDirectory: activePreparationFailure.publicDataDirectory,
+      createTemporaryRoot: () => createTrustedTemporaryRoot(activePreparationFailure!),
+      buildFixture: writeStockFixture,
+    };
+
+    prepareFixtureSnapshot(options);
+    cleanupFixtureSnapshot(activePreparationFailure.publicDataDirectory);
+
+    expect(readdirSync(activePreparationFailure.publicDataDirectory)).toEqual([]);
+    expect(() => prepareFixtureSnapshot(options)).not.toThrow();
+    expect(existsSync(join(activePreparationFailure.publicDataDirectory, '.task-8-e2e-fixture.json'))).toBe(true);
+    expect(existsSync(join(activePreparationFailure.publicDataDirectory, 'manifest.json'))).toBe(true);
+  });
+
   it('既有巢狀目錄與檔案時拒絕準備並完整保留它們', () => {
     activePreparationFailure = createPreparationFailurePaths({ existingNestedFile: true });
 

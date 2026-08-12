@@ -323,8 +323,9 @@ describe('StockAnalyzer', () => {
     await wrapper.get('form[data-stock-search]').trigger('submit');
     await flushPromises();
 
-    expect(wrapper.get('input[data-timeframe="1m"]').attributes('checked')).toBeDefined();
+    expect(wrapper.get('input[data-timeframe="1d"]').attributes('checked')).toBeDefined();
     expect(wrapper.findAll('[data-timeframe-summary]')).toHaveLength(0);
+    await wrapper.get('[data-exercise-step-button="1m"]').trigger('click');
     await wrapper.get('input[name="monthly-direction"][value="up"]').setValue();
     await wrapper.get('textarea[name="monthly-key-area"]').setValue('月 K 長期壓力區');
     await flushPromises();
@@ -386,7 +387,7 @@ describe('StockAnalyzer', () => {
       expect.objectContaining({ priceMode: 'raw', bars: [rawBar] }),
       expect.any(Object),
     );
-    expect(wrapper.text()).toContain('最近 60 根官方原始價格月 K');
+    expect(wrapper.text()).toContain('最近 60 根官方原始價格日 K');
   });
 
   it('disables adjusted analysis and explains the missing official evidence while keeping raw prices usable', async () => {

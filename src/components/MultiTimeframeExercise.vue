@@ -56,6 +56,9 @@ const displayedStep = computed<ExerciseStep>(() => {
   if (requestedStep === '1w' && !monthlyComplete.value) return '1m';
   return requestedStep;
 });
+const isChartSynchronized = computed(() => (
+  props.activeTimeframe === undefined || props.activeTimeframe === displayedStep.value
+));
 const progressMessage = computed(() => {
   if (!monthlyComplete.value) return '第一步：先完成月 K 的長期背景與關鍵區記錄。';
   if (!weeklyComplete.value) return '第二步：月 K 已完成，請判斷週 K 是否呼應較長週期背景。';
@@ -92,6 +95,10 @@ function stepLabel(step: ExerciseStep): string {
     '1w': '第二步：週 K',
     '1d': '第三步：日 K',
   })[step];
+}
+
+function timeframeOnlyLabel(step: ExerciseStep): string {
+  return ({ '1m': '月 K', '1w': '週 K', '1d': '日 K' })[step];
 }
 
 function isStepUnlocked(step: ExerciseStep): boolean {
@@ -206,7 +213,7 @@ function revealSummary(): void {
         :ref="(element) => setStepButton(step, element)"
         type="button"
         :data-exercise-step-button="step"
-        :aria-pressed="displayedStep === step"
+        :aria-pressed="isChartSynchronized && displayedStep === step"
         :disabled="!isStepUnlocked(step)"
         @click="selectStep(step)"
         @keydown="moveStep($event, step)"
@@ -215,7 +222,23 @@ function revealSummary(): void {
       </button>
     </div>
 
+    <section
+      v-if="!isChartSynchronized"
+      class="multi-timeframe-exercise__chart-sync"
+      data-exercise-chart-sync
+    >
+      <p>主圖目前不是這一步的 K 線週期；先切換圖表，才能填寫觀察。</p>
+      <button
+        type="button"
+        data-exercise-sync-timeframe
+        @click="selectStep(displayedStep)"
+      >
+        切換到 {{ timeframeOnlyLabel(displayedStep) }}，開始這一步
+      </button>
+    </section>
+
     <form
+      v-else
       class="multi-timeframe-exercise__steps"
       @submit.prevent
     >

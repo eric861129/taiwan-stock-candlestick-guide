@@ -37,6 +37,7 @@ from market_sources import (
     MarketSourceError,
     NoQuoteEvidence,
     OfficialMarketClosedError,
+    OfficialSourceFetchError,
     SuspensionInterval,
     TradingCalendar,
     apply_emergency_market_closures,
@@ -1236,6 +1237,21 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertEqual(manifest_before, (output / "manifest.json").read_bytes())
             self.assertEqual(archive_before, (output / "snapshot.tar.gz").read_bytes())
             self.assertEqual(sums_before, (output / "SHA256SUMS").read_bytes())
+
+    def test_snapshot_does_not_repeat_a_source_request_cycle_that_already_finished_retrying(self) -> None:
+        """來源層已有限重試後，快照層不可再放大為九次官方請求。"""
+        fetcher = unittest.mock.Mock(
+            side_effect=OfficialSourceFetchError("官方來源回傳 HTTP 520。")
+        )
+
+        with (
+            patch("market_snapshot.time.sleep") as wait,
+            self.assertRaisesRegex(SnapshotValidationError, "官方來源請求失敗"),
+        ):
+            market_snapshot._fetch_with_retries("TPEx", date(2026, 8, 12), fetcher)
+
+        fetcher.assert_called_once_with(date(2026, 8, 12))
+        wait.assert_not_called()
 
     def test_update_rejects_a_current_day_coverage_drop_without_overwriting_output(self) -> None:
         """若沿用舊 K 線掩蓋今天的缺漏行情，部署會把資料掉量誤當正常。"""

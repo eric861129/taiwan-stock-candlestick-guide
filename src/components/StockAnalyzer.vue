@@ -346,7 +346,7 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
       snapshotHash: activeManifest.snapshotHash,
     };
     snapshot.value = scopedSnapshot;
-    selectedTimeframe.value = scopedSnapshot.priceModes ? '1m' : scopedSnapshot.timeframe ?? '1d';
+    selectedTimeframe.value = scopedSnapshot.timeframe ?? '1d';
     selectedPriceMode.value = scopedSnapshot.priceMode;
     marketCutoffDate.value = marketCutoff.cutoffDate;
     marketExpectedCutoffDate.value = marketCutoff.expectedCutoffDate;
@@ -387,7 +387,7 @@ function changePriceMode(priceMode: PriceMode): void {
     const selected = selectStockPriceMode(current, priceMode);
     selectedStructureIds.value = {};
     resetMultiTimeframeExercise();
-    selectedTimeframe.value = '1m';
+    selectedTimeframe.value = '1d';
     selectedPriceMode.value = priceMode;
     snapshot.value = selected;
     coordinateSelectedSnapshot(selected);
@@ -587,7 +587,7 @@ onMounted(() => {
         <template #summary>
           <MultiTimeframeSummary
             :periods="multiTimeframePeriods"
-            :overall-status="multiTimeframeResult.summary.state"
+            :overall-summary="multiTimeframeResult.summary"
             :active-timeframe="selectedTimeframe"
             :selected-candidate-ids="multiTimeframeSelectedCandidateIds"
             @select-timeframe="changeTimeframe"

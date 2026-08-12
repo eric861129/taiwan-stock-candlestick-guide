@@ -46,6 +46,7 @@ from market_sources import (
     fetch_twse_historical_daily,
     load_suspension_interval_evidence,
     MarketSourceError,
+    OfficialSourceFetchError,
     OfficialMarketClosedError,
     parse_corporate_actions,
     parse_emergency_market_closure_evidence,
@@ -4244,6 +4245,10 @@ def _fetch_with_retries(market: Market, session_date: date, fetcher: Any) -> Dai
             return response
         except OfficialMarketClosedError:
             raise
+        except OfficialSourceFetchError as error:
+            raise SnapshotValidationError(
+                f"{market} {session_date.isoformat()} 官方來源請求失敗：{error}。"
+            ) from error
         except (MarketSourceError, OSError, SnapshotValidationError) as error:
             last_error = error
             if attempt < 3:

@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
 import ssl
+from time import sleep
 from typing import Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
@@ -26,6 +27,8 @@ _EXPLICIT_NO_HISTORICAL_DATA_STATUSES = frozenset(
     }
 )
 USER_AGENT = "taiwan-stock-candlestick-guide/1.0 (official snapshot adapter)"
+_OFFICIAL_FETCH_ATTEMPTS = 3
+_OFFICIAL_FETCH_BACKOFF_SECONDS = (1, 2)
 
 TWSE_DAILY_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 TPEX_DAILY_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
@@ -215,6 +218,10 @@ class TradingCalendar:
 
 class MarketSourceError(RuntimeError):
     """官方來源、TLS 或回應契約未通過時提供繁體中文可追蹤錯誤。"""
+
+
+class OfficialSourceFetchError(MarketSourceError):
+    """單次官方請求週期已有限重試或確認為非暫時錯誤。"""
 
 
 class OfficialMarketClosedError(MarketSourceError):
@@ -612,22 +619,44 @@ def _fetch_official_json(endpoint: str, parameters: dict[str, str] | None = None
     query = urlencode(parameters) if parameters else ""
     request_url = f"{base_url}?{query}" if query else base_url
     request = Request(request_url, headers={"User-Agent": USER_AGENT})
-    try:
-        with _open_official_market_source(request) as response:
-            status = getattr(response, "status", None)
-            if status != 200:
-                raise MarketSourceError(f"官方來源回傳 HTTP {status}。")
-            payload_bytes = response.read()
-    except MarketSourceError:
-        raise
-    except HTTPError as error:
-        raise MarketSourceError(f"官方來源回傳 HTTP {error.code}。") from error
-    except (URLError, OSError) as error:
-        raise MarketSourceError(f"無法安全連線官方來源：{error}。") from error
+    payload_bytes: bytes | None = None
+    for attempt in range(_OFFICIAL_FETCH_ATTEMPTS):
+        try:
+            with _open_official_market_source(request) as response:
+                status = getattr(response, "status", None)
+                if status == 200:
+                    payload_bytes = response.read()
+                    break
+                if _is_transient_http_status(status) and attempt < _OFFICIAL_FETCH_ATTEMPTS - 1:
+                    sleep(_OFFICIAL_FETCH_BACKOFF_SECONDS[attempt])
+                    continue
+                raise OfficialSourceFetchError(f"官方來源回傳 HTTP {status}。")
+        except MarketSourceError:
+            raise
+        except HTTPError as error:
+            status = error.code
+            error.close()
+            if _is_transient_http_status(status) and attempt < _OFFICIAL_FETCH_ATTEMPTS - 1:
+                sleep(_OFFICIAL_FETCH_BACKOFF_SECONDS[attempt])
+                continue
+            raise OfficialSourceFetchError(f"官方來源回傳 HTTP {status}。") from error
+        except (URLError, OSError) as error:
+            if attempt < _OFFICIAL_FETCH_ATTEMPTS - 1:
+                sleep(_OFFICIAL_FETCH_BACKOFF_SECONDS[attempt])
+                continue
+            raise OfficialSourceFetchError(f"無法安全連線官方來源：{error}。") from error
+    if payload_bytes is None:
+        raise OfficialSourceFetchError("官方來源在有限重試後仍無可驗證回應。")
     try:
         return json.loads(payload_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MarketSourceError("官方來源不是有效的 UTF-8 JSON。") from error
+        raise OfficialSourceFetchError("官方來源不是有效的 UTF-8 JSON。") from error
+
+
+def _is_transient_http_status(status: object) -> bool:
+    return isinstance(status, int) and not isinstance(status, bool) and (
+        status == 429 or 500 <= status <= 599
+    )
 
 
 def _open_official_market_source(request: Request):

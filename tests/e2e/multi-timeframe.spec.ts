@@ -197,7 +197,10 @@ async function completeMonthWeekDayExercise(page: Page): Promise<void> {
   await expect(practice).toBeVisible();
   await expect(practice).toContainText('月 K');
   await expect(announcement).toHaveAttribute('aria-atomic', 'true');
-  await expect(practice.locator('[data-exercise-step-button="1m"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(practice.locator('[data-exercise-step-button="1m"]')).toHaveAttribute('aria-pressed', 'false');
+  await expectPrimaryTimeframe(page, '1d', '日 K');
+  await expect(practice.locator('input[name="monthly-direction"]')).toHaveCount(0);
+  await practice.locator('[data-exercise-sync-timeframe]').click();
   await expectPrimaryTimeframe(page, '1m', '月 K');
 
   await practice.locator('input[name="monthly-direction"][value="up"]').check();

@@ -9,6 +9,12 @@ type AnalysisStatus = 'matched' | 'no-clear-pattern' | 'insufficient-evidence' |
 type CandidateStatus = 'forming' | 'confirmed' | 'invalid' | 'insufficient-evidence';
 type OverallStatus = 'aligned' | 'partially-aligned' | 'divergent' | 'insufficient-evidence';
 
+interface OverallSummary {
+  state: OverallStatus;
+  label: string;
+  explanation: string;
+}
+
 interface SummaryCandidate {
   candidateId: string;
   name: string;
@@ -28,7 +34,7 @@ interface TimeframeSummary {
 
 const props = withDefaults(defineProps<{
   periods: readonly TimeframeSummary[];
-  overallStatus: OverallStatus;
+  overallSummary: OverallSummary;
   activeTimeframe: Timeframe;
   selectedCandidateIds?: Partial<Record<Timeframe, string | null>>;
 }>(), {
@@ -160,7 +166,8 @@ function selectCandidate(period: TimeframeSummary, candidate: SummaryCandidate):
       多時間週期摘要
     </h2>
     <p>
-      整體狀態：<strong data-multitimeframe-overall-status>{{ overallStatusLabel(props.overallStatus) }}</strong>。各週期保留自己的候選與規則符合度，不合併成單一分數。
+      整體狀態：<strong data-multitimeframe-overall-status>{{ overallStatusLabel(props.overallSummary.state) }}</strong>——{{ props.overallSummary.label }}。
+      {{ props.overallSummary.explanation }}各週期保留自己的候選與規則符合度，不合併成單一分數。
     </p>
 
     <div

@@ -281,6 +281,10 @@ describe('canonical Pattern Card catalog', () => {
     expect(structureCards.map((card) => card.id)).toContain('range');
     expect(talibCards.map((card) => card.id)).toContain('hammer');
     expect(talibCards.find((card) => card.id === 'hammer')).toBe(getPatternCard('hammer'));
+    expect(talibCards).toHaveLength(61);
+    expect(new Set(talibCards.map((card) => card.talibFunction)).size).toBe(61);
+    expect(talibCards.map((card) => card.id)).not.toContain('bearish-engulfing');
+    expect(talibCards.map((card) => card.id)).not.toContain('bearish-harami');
     expect(PATTERN_CARDS.every((card) => card.collections.length > 0)).toBe(true);
   });
 

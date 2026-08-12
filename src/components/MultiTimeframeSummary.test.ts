@@ -47,7 +47,11 @@ describe('MultiTimeframeSummary', () => {
     const wrapper = mount(MultiTimeframeSummary, {
       props: {
         periods,
-        overallStatus: 'partially-aligned',
+        overallSummary: {
+          state: 'partially-aligned',
+          label: '三個週期部分一致',
+          explanation: '週期之間沒有相反方向，但仍有中性或未決背景。',
+        },
         activeTimeframe: '1d',
         selectedCandidateIds: { '1d': 'daily-range', '1w': 'weekly-flag', '1m': null },
       },
@@ -56,6 +60,7 @@ describe('MultiTimeframeSummary', () => {
     expect(wrapper.findAll('[data-timeframe-summary]').map((item) => item.attributes('data-timeframe-summary')))
       .toEqual(['1m', '1w', '1d']);
     expect(wrapper.text()).toContain('部分一致');
+    expect(wrapper.text()).toContain('週期之間沒有相反方向');
     expect(wrapper.text()).toContain('2026-07-31');
     expect(wrapper.text()).toContain('84 根');
     expect(wrapper.text()).toContain('向後還原價格');
@@ -69,7 +74,11 @@ describe('MultiTimeframeSummary', () => {
     const wrapper = mount(MultiTimeframeSummary, {
       props: {
         periods,
-        overallStatus: 'aligned',
+        overallSummary: {
+          state: 'aligned',
+          label: '三個週期背景一致',
+          explanation: '月 K、週 K 與日 K 的已確認邊界方向一致。',
+        },
         activeTimeframe: '1d',
         selectedCandidateIds: { '1d': 'daily-range', '1w': null, '1m': null },
       },
@@ -100,11 +109,17 @@ describe('MultiTimeframeSummary', () => {
     const wrapper = mount(MultiTimeframeSummary, {
       props: {
         periods,
-        overallStatus,
+        overallSummary: {
+          state: overallStatus,
+          label: `正式摘要 ${label}`,
+          explanation: `正式說明 ${label}`,
+        },
         activeTimeframe: '1d',
       },
     });
 
     expect(wrapper.get('[data-multitimeframe-overall-status]').text()).toBe(label);
+    expect(wrapper.text()).toContain(`正式摘要 ${label}`);
+    expect(wrapper.text()).toContain(`正式說明 ${label}`);
   });
 });

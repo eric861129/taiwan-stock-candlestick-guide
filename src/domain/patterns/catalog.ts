@@ -26,6 +26,12 @@ const MULTI_LESSON = ['/chapters/10-two-three-candlestick-patterns'] as const;
 const STRUCTURE_LESSON = ['/chapters/11-consolidation-reversal-continuation-patterns'] as const;
 const VOLUME_LESSON = ['/chapters/12-volume-price-liquidity-failed-signals'] as const;
 
+// CDLENGULFING 與 CDLHARAMI 各有多、空兩張方向卡，但官方圖鑑以每個函式一張為固定驗收單位。
+const TALIB_SECONDARY_DIRECTION_CARD_IDS = new Set<PatternCardId>([
+  'bearish-engulfing',
+  'bearish-harami',
+]);
+
 const TALIB_FUNCTION_BY_CARD: Readonly<Partial<Record<PatternCardId, TalibPatternFunction>>> = {
   doji: 'CDLDOJI',
   hammer: 'CDLHAMMER',
@@ -274,11 +280,12 @@ function automationSupportFor(support: MatchSupport): AutomationSupport {
 }
 
 function collectionsFor(
+  id: PatternCardId,
   kind: PatternKind,
   talibFunction: TalibPatternFunction | undefined,
 ): readonly PatternCollectionId[] {
   if (kind === 'candlestick-pattern') {
-    return talibFunction
+    return talibFunction && !TALIB_SECONDARY_DIRECTION_CARD_IDS.has(id)
       ? ['candlestick-reference', 'talib-advanced']
       : ['candlestick-reference'];
   }
@@ -338,7 +345,7 @@ function card(definition: PatternCardInput): PatternCardDefinition {
     slug: definition.slug ?? definition.id,
     kind,
     automationSupport: definition.automationSupport ?? automationSupportFor(definition.matchSupport),
-    collections: collectionsFor(kind, talibFunction),
+    collections: collectionsFor(definition.id, kind, talibFunction),
     sourceNotes: [...definition.sourceNotes, ...officialSources],
     ...(timeframeGuidance ? { timeframeGuidance } : {}),
     ...(talibFunction

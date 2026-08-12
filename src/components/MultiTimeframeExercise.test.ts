@@ -147,4 +147,23 @@ describe('MultiTimeframeExercise', () => {
     expect(wrapper.get('[data-exercise-step="1w"]').attributes('style')).toBeUndefined();
     expect(wrapper.get('[data-exercise-step="1m"]').attributes('style')).toContain('display: none');
   });
+
+  it('blocks monthly answers until the day-K default chart is switched to the exercise timeframe', async () => {
+    const wrapper = mount(MultiTimeframeExercise, {
+      props: {
+        stockName: '台積電',
+        stockCode: '2330',
+        cutoffDate: '2026-08-12',
+        activeTimeframe: '1d',
+        answers: emptyAnswers,
+      },
+    });
+
+    expect(wrapper.get('[data-exercise-chart-sync]').text()).toContain('先切換圖表');
+    expect(wrapper.find('input[name="monthly-direction"]').exists()).toBe(false);
+    expect(wrapper.get('[data-exercise-step-button="1m"]').attributes('aria-pressed')).toBe('false');
+
+    await wrapper.get('[data-exercise-sync-timeframe]').trigger('click');
+    expect(wrapper.emitted('select-timeframe')?.at(-1)).toEqual(['1m']);
+  });
 });
