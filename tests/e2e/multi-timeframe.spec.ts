@@ -295,6 +295,37 @@ async function expectNoDocumentHorizontalOverflow(page: Page): Promise<void> {
 }
 
 test.describe('多時間週期股票分析', () => {
+  test('搜尋後預設日 K，主控制可直接切換週 K 與月 K，並立即更新完整型態', async ({ page }) => {
+    await openMultiTimeframeExercise(page);
+
+    const resultPanel = page.locator('.analysis-result-panel');
+    const practice = page.locator('[data-multitimeframe-practice]');
+    await expectPrimaryTimeframe(page, '1d', '日 K');
+    await expect(page.locator('input[data-timeframe="1d"]')).toBeEnabled();
+    await expect(page.locator('input[data-timeframe="1w"]')).toBeEnabled();
+    await expect(page.locator('input[data-timeframe="1m"]')).toBeEnabled();
+    await expect(resultPanel.getByRole('heading', { name: '最接近的完整價格結構（最多三個）' })).toBeVisible();
+    await expect(resultPanel.locator('[data-structure-candidate]')).toHaveCount(3);
+    await expect(page.locator('[data-structure-overlay]')).toHaveCount(1);
+
+    const positions = await Promise.all([resultPanel, practice].map((element) => element.boundingBox()));
+    if (positions.some((position) => position === null)) {
+      throw new Error('Analyzer 主要結果或互動練習沒有可量測的位置。');
+    }
+    expect(positions[0]!.y).toBeLessThan(positions[1]!.y);
+
+    await page.locator('input[data-timeframe="1w"]').check();
+    await expectPrimaryTimeframe(page, '1w', '週 K');
+    await expect(resultPanel).toContainText('本檔週 K 資料截止日');
+    await expect(resultPanel).toContainText('分析區間');
+
+    await page.locator('input[data-timeframe="1m"]').check();
+    await expectPrimaryTimeframe(page, '1m', '月 K');
+    await expect(resultPanel).toContainText('本檔月 K 資料截止日');
+    await expect(resultPanel.locator('[data-structure-candidate]')).toHaveCount(3);
+    await expect(page.locator('[data-structure-overlay]')).toHaveCount(1);
+  });
+
   test('桌機依月→週→日完成練習後揭露摘要，保留各週期候選並可鍵盤開啟三圖比較', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'chromium-desktop', '桌機比較配置只在 desktop Chromium 驗證。');
     await page.setViewportSize({ width: 1280, height: 1000 });

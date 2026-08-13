@@ -163,7 +163,7 @@ test.describe('股票型態比對', () => {
 
     await searchStock(page, '2330');
     await expect(page.getByRole('heading', { name: /證據不足/ })).toBeVisible();
-    await expect(page.getByText(/沒有可用的已完成日 K/)).toBeVisible();
+    await expect(page.getByText(/沒有可用的已完成 K 棒/)).toBeVisible();
     await expect(page.getByText(/官方曾明示交易日未報價/)).toBeVisible();
     await expect(page.getByRole('heading', { name: '暫時無法分析' })).toHaveCount(0);
   });

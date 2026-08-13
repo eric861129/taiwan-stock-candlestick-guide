@@ -155,7 +155,7 @@ export interface StructureAtrFeatures {
 
 /** 結構特徵擷取器的版本化輸出。 */
 export interface StructureFeatures {
-  configVersion: 'structure-features-v1';
+  configVersion: 'structure-features-v2';
   sourceBarCount: number;
   analyzedBarCount: number;
   smoothedClose: readonly (number | null)[];
@@ -166,7 +166,7 @@ export interface StructureFeatures {
 
 /** 所有結構規則必須經由此版本化設定取得門檻。 */
 export interface StructureEngineConfig {
-  version: 'structure-features-v1';
+  version: 'structure-features-v2';
   maximumBars: number;
   minimumBars: number;
   atr: {
@@ -213,7 +213,7 @@ export interface AnalyzeStructuresOptions {
 /** 結構 matcher 的完整、可重播結果。 */
 export interface StructureAnalysisResult {
   status: 'matched' | 'no-clear-pattern' | 'insufficient-evidence';
-  matcherVersion: 'structure-v1';
+  matcherVersion: 'structure-v2';
   timeframe: Timeframe;
   priceMode: PriceMode;
   cutoffDate: string | null;

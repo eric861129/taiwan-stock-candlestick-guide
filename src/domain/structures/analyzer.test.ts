@@ -69,8 +69,8 @@ describe('analyzeStructures', () => {
     const result = analyzeStructures(snapshot(boxBars()));
     const candidate = result.candidates.find((item) => item.structureId === 'range');
 
-    expect(result.matcherVersion).toBe('structure-v1');
-    expect(result.features.configVersion).toBe('structure-features-v1');
+    expect(result.matcherVersion).toBe('structure-v2');
+    expect(result.features.configVersion).toBe('structure-features-v2');
     expect(result.features.atr.period).toBe(14);
     expect(result.features.pivots.filter((pivot) => pivot.kind === 'high').length).toBeGreaterThan(0);
     expect(result.features.pivots[0]?.version).toBe('structure-pivot-v1');
@@ -248,7 +248,7 @@ describe('analyzeStructures', () => {
     expect(analyzeStructures(snapshot(malformed)).status).toBe('insufficient-evidence');
   });
 
-  it('integrates a confirmed double top after the 120-bar slice without confusing source and local indexes', () => {
+  it('integrates a confirmed double top after the 60-bar slice without confusing source and local indexes', () => {
     const dated = (index: number, close: number): OhlcvBar => ({
       ...bar(index % 28, close + 1, close - 1, close),
       date: new Date(Date.UTC(2025, 0, index + 1)).toISOString().slice(0, 10),
@@ -263,6 +263,18 @@ describe('analyzeStructures', () => {
     expect(candidate?.anchors.every((anchor) => anchor.barIndex >= 116)).toBe(true);
     expect(candidate?.overlay.segments.some((segment) => segment.kind === 'confirmation')).toBe(true);
     expect(candidate?.overlay.segments.some((segment) => segment.kind === 'invalidation')).toBe(true);
+  });
+
+  it('limits every structure comparison to the latest 60 completed bars', () => {
+    const bars = Array.from({ length: 70 }, (_value, index) => ({
+      ...bar(index % 28, 105 + (index % 5), 95 + (index % 5), 100 + (index % 5)),
+      date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+    }));
+    const result = analyzeStructures(snapshot(bars));
+
+    expect(result.features.sourceBarCount).toBe(70);
+    expect(result.features.analyzedBarCount).toBe(60);
+    expect(result.features.warnings).toContain('只使用最近 60 根完成 K 棒。');
   });
 
   it.each([

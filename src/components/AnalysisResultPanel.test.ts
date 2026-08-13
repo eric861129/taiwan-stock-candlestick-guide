@@ -83,12 +83,12 @@ describe('AnalysisResultPanel guided rendering', () => {
   it('keeps long structures in a separate selectable ranking and short-window observations collapsible', async () => {
     const structureResult: StructureAnalysisResult = {
       status: 'matched',
-      matcherVersion: 'structure-v1',
+      matcherVersion: 'structure-v2',
       timeframe: '1d',
       priceMode: 'raw',
       cutoffDate: '2026-08-11',
       features: {
-        configVersion: 'structure-features-v1',
+        configVersion: 'structure-features-v2',
         sourceBarCount: 20,
         analyzedBarCount: 20,
         smoothedClose: [],
@@ -113,7 +113,7 @@ describe('AnalysisResultPanel guided rendering', () => {
         confirmationCondition: '收盤離開邊界後確認。',
         invalidationCondition: '返回區間即失效。',
         warnings: [],
-        matcherVersion: 'structure-v1',
+        matcherVersion: 'structure-v2',
         overlay: {
           candidateId: 'range:1d:raw:2026-08-01:2026-08-11',
           window: { version: 'structure-window-v1', startBarIndex: 0, endBarIndex: 10, startDate: '2026-08-01', endDate: '2026-08-11', barCount: 11 },
@@ -148,7 +148,7 @@ describe('AnalysisResultPanel guided rendering', () => {
       }],
     }, marketSnapshotMetadata, structureResult);
 
-    expect(wrapper.text()).toContain('價格結構候選');
+    expect(wrapper.text()).toContain('最接近的完整價格結構（最多三個）');
     expect(wrapper.text()).toContain('規則符合度 90');
     expect(wrapper.text()).toContain('條件式情境，非價格預測');
     expect(wrapper.text()).toContain('延續情境：完成 K 棒仍守在確認邊界外。');
@@ -224,7 +224,7 @@ describe('AnalysisResultPanel guided rendering', () => {
       reasonCodes: ['no-completed-bars', 'prior-body-window-unavailable'],
     });
 
-    expect(wrapper.text()).toContain('沒有可用的已完成日 K');
+    expect(wrapper.text()).toContain('沒有可用的已完成 K 棒');
     expect(wrapper.text()).toContain('前段實體比較窗不足');
     expect(wrapper.text()).toContain('下一步');
     expect(wrapper.text()).not.toContain('no-completed-bars');

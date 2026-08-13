@@ -27,12 +27,12 @@ const snapshots = (['1m', '1w', '1d'] as const).map((timeframe, index) => ({
   formingBar: null,
   structureAnalysis: {
     status: 'insufficient-evidence' as const,
-    matcherVersion: 'structure-v1' as const,
+    matcherVersion: 'structure-v2' as const,
     timeframe,
     priceMode: 'raw' as const,
     cutoffDate: '2026-08-12',
     features: {
-      configVersion: 'structure-features-v1' as const,
+      configVersion: 'structure-features-v2' as const,
       sourceBarCount: 0,
       analyzedBarCount: 0,
       smoothedClose: [],

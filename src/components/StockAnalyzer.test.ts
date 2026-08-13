@@ -128,12 +128,12 @@ const analysisContext = {
 
 const structureResultFixture = {
   status: 'matched' as const,
-  matcherVersion: 'structure-v1' as const,
+  matcherVersion: 'structure-v2' as const,
   timeframe: '1d' as const,
   priceMode: 'raw' as const,
   cutoffDate: '2026-08-11',
   features: {
-    configVersion: 'structure-features-v1' as const,
+    configVersion: 'structure-features-v2' as const,
     sourceBarCount: 1,
     analyzedBarCount: 1,
     smoothedClose: [],
@@ -158,7 +158,7 @@ const structureResultFixture = {
     confirmationCondition: '收盤離開邊界後確認。',
     invalidationCondition: '返回區間即失效。',
     warnings: [],
-    matcherVersion: 'structure-v1' as const,
+    matcherVersion: 'structure-v2' as const,
     overlay: {
       candidateId: 'range:1d:raw:2026-08-11:2026-08-11',
       window: { version: 'structure-window-v1' as const, startBarIndex: 0, endBarIndex: 0, startDate: '2026-08-11', endDate: '2026-08-11', barCount: 1 },
@@ -324,6 +324,18 @@ describe('StockAnalyzer', () => {
     await flushPromises();
 
     expect(wrapper.get('input[data-timeframe="1d"]').attributes('checked')).toBeDefined();
+    expect(wrapper.get('input[data-timeframe="1d"]').attributes('disabled')).toBeUndefined();
+    expect(wrapper.get('input[data-timeframe="1w"]').attributes('disabled')).toBeUndefined();
+    expect(wrapper.get('input[data-timeframe="1m"]').attributes('disabled')).toBeUndefined();
+    await wrapper.get('input[data-timeframe="1w"]').trigger('change');
+    await flushPromises();
+    expect(wrapper.get('input[data-timeframe="1w"]').attributes('checked')).toBeDefined();
+    expect(wrapper.text()).toContain('最近 60 根官方原始價格週 K');
+    await wrapper.get('input[data-timeframe="1d"]').trigger('change');
+    await flushPromises();
+
+    expect(wrapper.html().indexOf('analysis-result-panel__structures'))
+      .toBeLessThan(wrapper.html().indexOf('data-multitimeframe-practice'));
     expect(wrapper.findAll('[data-timeframe-summary]')).toHaveLength(0);
     await wrapper.get('[data-exercise-step-button="1m"]').trigger('click');
     await wrapper.get('input[name="monthly-direction"][value="up"]').setValue();

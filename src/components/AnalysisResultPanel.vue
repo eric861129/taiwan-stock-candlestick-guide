@@ -12,7 +12,7 @@ import type {
   UnavailableReason,
 } from '../domain/market-data/types';
 
-/** 保留市場快照與官方預期日期，避免與單一股票的日 K 資料截止日混用。 */
+/** 保留市場快照與官方預期日期，避免與單一股票的所選週期截止日混用。 */
 interface MarketSnapshotMetadata {
   marketSnapshotCutoffDate: string | null;
   officialExpectedCutoffDate: string | null;
@@ -53,16 +53,16 @@ const nextAction = computed(() => {
 const reasonCodeLabels: Record<string, string> = {
   'official-no-quote': '官方在交易日明示未提供完整 OHLC；系統不補值，也不跨越該日建立型態視窗。',
   'official-suspension': '交易所公告該股票停止買賣；系統保留公告證據，不補值，也不跨越停牌區間建立型態視窗。',
-  'no-completed-bars': '沒有可用的已完成日 K，無法建立比對視窗。',
+  'no-completed-bars': '沒有可用的已完成 K 棒，無法建立比對視窗。',
   'insufficient-evidence': '可用資料不足以可靠評估所有必要條件。',
   'prior-body-window-unavailable': '前段實體比較窗不足，無法可靠比較相對大小。',
   'comparison-unit-unavailable': '價格比較單位不足，無法用既定容忍範圍比對。',
-  'range-unavailable': '目標日 K 的價格區間無法計算，不能安全判讀幾何條件。',
+  'range-unavailable': '目標 K 棒的價格區間無法計算，不能安全判讀幾何條件。',
   'single-candle-data-unavailable': '單根 K 的必要價格資料不足，不能安全判讀形狀。',
-  'incomplete-bar': '候選窗含未完成日 K，因此本次不參與計分。',
+  'incomplete-bar': '候選窗含未完成 K 棒，因此本次不參與計分。',
   'price-continuity-action-intersects-window': '公司行動影響候選窗的價格連續性，因此本次不參與計分。',
   'optional-context-unavailable': '部分背景資訊不足，該補充條件未納入判讀。',
-  'missing-target-bar': '目標日 K 不完整，無法建立候選條件。',
+  'missing-target-bar': '目標 K 棒不完整，無法建立候選條件。',
 };
 
 function reasonDescription(reasonCode: string): string {
@@ -194,7 +194,7 @@ function selectStructureCandidate(candidate: StructureCandidate): void {
 
       <dl class="analysis-result-panel__facts">
         <div>
-          <dt>本檔日 K 資料截止日</dt>
+          <dt>本檔{{ timeframeLabel(context.timeframe) }} 資料截止日</dt>
           <dd>{{ context.cutoffDate }}</dd>
         </div>
         <div>
@@ -295,7 +295,7 @@ function selectStructureCandidate(candidate: StructureCandidate): void {
         aria-labelledby="analysis-structure-title"
       >
         <h3 id="analysis-structure-title">
-          價格結構候選（最多三個）
+          最接近的完整價格結構（最多三個）
         </h3>
         <p>完整價格結構和一至三根短窗 K 棒觀察分開排名；規則符合度只描述結構與規則的接近程度，不是機率、預測或買賣建議。</p>
         <template v-if="structureResult.candidates.length > 0">
@@ -419,7 +419,7 @@ function selectStructureCandidate(candidate: StructureCandidate): void {
         <h3 id="analysis-no-clear-title">
           本次已檢查的條件
         </h3>
-        <p>已依可用日 K 評估 {{ context.evaluatedCardCount }} 張可評估的教學卡；本次沒有候選同時達到必要條件與規則門檻。</p>
+        <p>已依可用 {{ timeframeLabel(context.timeframe) }} 評估 {{ context.evaluatedCardCount }} 張可評估的教學卡；本次沒有候選同時達到必要條件與規則門檻。</p>
         <p>下一步：可回到上方圖表核對背景、位置與資料限制，再閱讀對應課程。</p>
       </section>
 

@@ -133,15 +133,6 @@ function priceModeAvailable(priceMode: PriceMode): boolean {
   return snapshot.value?.priceModes?.adjusted.status === 'available';
 }
 
-function timeframeAvailableForExercise(timeframe: Timeframe): boolean {
-  if (!multiTimeframeResult.value) return true;
-  if (timeframe === '1m') return true;
-  const monthlyComplete = multiTimeframeExerciseAnswers.value.monthlyDirection !== null
-    && multiTimeframeExerciseAnswers.value.monthlyKeyArea.trim().length > 0;
-  if (timeframe === '1w') return monthlyComplete;
-  return monthlyComplete && multiTimeframeExerciseAnswers.value.weeklyRelationship !== null;
-}
-
 function latestObservedStockDate(loaded: StockSnapshot): string | null {
   const rawDailyBars = loaded.priceModes?.raw.status === 'available'
     ? loaded.priceModes.raw.timeframes['1d'].completedBars
@@ -543,7 +534,6 @@ onMounted(() => {
               name="analysis-timeframe"
               :value="timeframe"
               :checked="selectedTimeframe === timeframe"
-              :disabled="!timeframeAvailableForExercise(timeframe)"
               @change="changeTimeframe(timeframe)"
             >
             {{ timeframeLabel(timeframe) }}
@@ -571,6 +561,16 @@ onMounted(() => {
         :structure-overlay="selectedStructureCandidate?.overlay ?? null"
       />
     </template>
+
+    <AnalysisResultPanel
+      v-if="result"
+      :result="result"
+      :snapshot="snapshot"
+      :market-snapshot-metadata="marketSnapshotMetadata"
+      :structure-result="structureResult"
+      :selected-structure-candidate-id="selectedStructureCandidateId"
+      @select-structure-candidate="selectDetailedCandidate"
+    />
 
     <template v-if="multiTimeframeResult">
       <MultiTimeframeExercise
@@ -615,16 +615,6 @@ onMounted(() => {
         :analysis="multiTimeframeResult"
       />
     </template>
-
-    <AnalysisResultPanel
-      v-if="result"
-      :result="result"
-      :snapshot="snapshot"
-      :market-snapshot-metadata="marketSnapshotMetadata"
-      :structure-result="structureResult"
-      :selected-structure-candidate-id="selectedStructureCandidateId"
-      @select-structure-candidate="selectDetailedCandidate"
-    />
   </section>
 </template>
 

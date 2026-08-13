@@ -5,8 +5,8 @@ import type { StructureEngineConfig } from './types';
  * 版本變更時必須連同 fixture 與 matcher 版本一起校準，不能由畫面自行覆寫。
  */
 export const STRUCTURE_ENGINE_CONFIG: StructureEngineConfig = {
-  version: 'structure-features-v1',
-  maximumBars: 120,
+  version: 'structure-features-v2',
+  maximumBars: 60,
   minimumBars: 8,
   atr: {
     period: 14,
@@ -38,4 +38,4 @@ export const STRUCTURE_ENGINE_CONFIG: StructureEngineConfig = {
 };
 
 /** 結構 matcher 的公開版本，作為快取與結果可稽核識別的一部分。 */
-export const STRUCTURE_MATCHER_VERSION = 'structure-v1' as const;
+export const STRUCTURE_MATCHER_VERSION = 'structure-v2' as const;

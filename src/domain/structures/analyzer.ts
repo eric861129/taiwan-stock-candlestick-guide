@@ -732,7 +732,7 @@ function isNearMiss(value: CandidateDraft | StructureNearMiss): value is Structu
 
 /**
  * 分析指定週期與指定價格口徑的完成 K 棒。函式沒有網路、時間或 UI 副作用，
- * 並只讀取 cutoff 日及以前的最多 120 根資料。
+ * 並只讀取 cutoff 日及以前的最近 60 根完成資料。
  */
 export function analyzeStructures(
   input: StructureAnalysisInput,
