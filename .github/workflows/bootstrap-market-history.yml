@@ -224,6 +224,7 @@ jobs:
           ATTESTATION_URL: ${{ steps.attest-market-snapshot.outputs.attestation-url }}
           SNAPSHOT_HASH: ${{ steps.create-validation-receipt.outputs.snapshot_hash }}
           CUTOFF_DATE: ${{ steps.create-validation-receipt.outputs.cutoff_date }}
+          MARKET_VALIDATOR_TIMING_OUTPUT: ${{ runner.temp }}/market-validator-timing.json
         shell: bash
         run: |
           set -euo pipefail
