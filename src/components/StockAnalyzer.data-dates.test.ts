@@ -108,7 +108,7 @@ describe('StockAnalyzer data dates', () => {
       expect.objectContaining({ freshness: 'one-session-behind' }),
     );
     const selection = wrapper.get('[aria-label="已選擇的股票"]').text();
-    expect(selection).toContain('股票日 K最後資料日 2026-08-10');
+    expect(selection).toContain('股票日 K 最後資料日 2026-08-10');
     expect(selection).toContain('市場快照截止日 2026-08-11');
     expect(selection).toContain('官方預期截止日 2026-08-11');
     expect(wrapper.text()).toContain('2026-08-10 的型態相似度分析');
@@ -203,6 +203,6 @@ describe('StockAnalyzer data dates', () => {
       expect.objectContaining({ cutoffDate: '2026-08-11', freshness: 'fresh' }),
       expect.objectContaining({ freshness: 'fresh' }),
     );
-    expect(wrapper.get('[aria-label="已選擇的股票"]').text()).toContain('股票日 K最後資料日 2026-08-10');
+    expect(wrapper.get('[aria-label="已選擇的股票"]').text()).toContain('股票日 K 最後資料日 2026-08-10');
   });
 });

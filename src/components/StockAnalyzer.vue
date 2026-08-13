@@ -457,7 +457,7 @@ onMounted(() => {
     <h2 id="stock-analyzer-title">
       股票型態比對
     </h2>
-    <p>先確認資料截止日，再把最近 60 根{{ priceModeLabel(selectedPriceMode) }}{{ timeframeLabel(selectedTimeframe) }}與教學卡規則逐條比對。</p>
+    <p>先確認資料截止日，再把最近 60 根{{ priceModeLabel(selectedPriceMode) }}{{ timeframeLabel(selectedTimeframe) }} 與教學卡規則逐條比對。</p>
     <p class="stock-analyzer__disclaimer">
       本工具比較歷史價格資料與教學型態規則，不預測未來價格，也不構成投資建議。
     </p>
@@ -497,7 +497,7 @@ onMounted(() => {
         aria-label="已選擇的股票"
       >
         <h3>已選擇：{{ snapshot.code }} {{ snapshot.name }}</h3>
-        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，{{ priceModeLabel(selectedPriceMode) }}{{ timeframeLabel(selectedTimeframe) }}，股票{{ timeframeLabel(selectedTimeframe) }}最後資料日 {{ stockDataLastDate ?? '無合法日 K' }}。</p>
+        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，{{ priceModeLabel(selectedPriceMode) }}{{ timeframeLabel(selectedTimeframe) }}，股票{{ timeframeLabel(selectedTimeframe) }} 最後資料日 {{ stockDataLastDate ?? '無合法日 K' }}。</p>
         <fieldset class="stock-analyzer__timeframes">
           <legend>選擇價格口徑</legend>
           <label

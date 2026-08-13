@@ -288,7 +288,7 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
         role="img"
         :aria-labelledby="`${chartTitleId} ${chartDescriptionId}`"
       >
-        <title :id="chartTitleId">{{ snapshot.name }}最近 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }}與成交量</title>
+        <title :id="chartTitleId">{{ snapshot.name }}最近 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }} 與成交量</title>
         <desc :id="chartDescriptionId">顯示 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }}、成交量與公司行動標記。形成中或證據不完整的 K 棒不納入型態比對。{{ overlayDescription }}使用左右方向鍵可逐根取得繁體中文 OHLCV 摘要。</desc>
         <defs>
           <clipPath :id="chartClipId">

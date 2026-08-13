@@ -496,7 +496,7 @@ describe('StockAnalyzer', () => {
     await wrapper.get('form[data-stock-search]').trigger('submit');
     await flushPromises();
 
-    expect(wrapper.text()).toContain('股票日 K最後資料日 無合法日 K');
+    expect(wrapper.text()).toContain('股票日 K 最後資料日 無合法日 K');
     expect(wrapper.text()).toContain('官方未報價證據 2026-08-11');
     expect(wrapper.findComponent({ name: 'CandlestickChart' }).exists()).toBe(false);
   });
