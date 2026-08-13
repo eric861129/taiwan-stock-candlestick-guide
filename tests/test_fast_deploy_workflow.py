@@ -79,7 +79,7 @@ class FastDeployWorkflowTests(unittest.TestCase):
 
         self.assertIn("  verify-public:", text)
         self.assertIn("deployment-version.json", text)
-        self.assertIn("/analyzer/", text)
+        self.assertIn('"$base/analyzer"', text)
         self.assertIn("id: upload-deployment-record", text)
         self.assertNotIn("  publish-successful-snapshot:", text)
         record = text.split("id: upload-deployment-record", 1)[1]

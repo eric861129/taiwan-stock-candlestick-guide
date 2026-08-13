@@ -690,6 +690,14 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("https://huangchiyu.com/taiwan-stock-candlestick-guide/", text)
         self.assertIn("原子化 GitHub Pages 部署", text)
 
+    def test_public_smoke_uses_the_analyzer_clean_url(self) -> None:
+        """VitePress clean URL 不含結尾斜線，公開驗收不可持續探測不存在的路徑。"""
+
+        text = read_workflow("deploy-pages.yml")
+
+        self.assertIn('"$base/analyzer"', text)
+        self.assertNotIn('"$base/analyzer/"', text)
+
 
 if __name__ == "__main__":
     unittest.main()
