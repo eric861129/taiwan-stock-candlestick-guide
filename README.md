@@ -107,6 +107,8 @@ git status --short --branch
 
 版本分流功能第一次上線時，因部署契約本身已改變，仍會安全重建一次市場快照；完成這次遷移後，只改前端或教材的部署才會走快速重用路徑。
 
+Actions Summary 會列出 `snapshot-reuse`／`snapshot-rebuild`、分類原因、網站與市場資料版本、Artifact ID／digest，以及 Artifact 查找、驗證、建置、部署與公開 smoke 的實際秒數。`snapshot-reuse` 的 Time-to-public 與 Workflow complete 任何一項超過 5 分鐘，workflow 都會 fail closed。
+
 市場 Artifact 名稱為 `market-snapshot-<snapshotHash>`，固定只含 `snapshot.tar.gz`、`snapshot.tar.gz.sha256` 與 `validation-receipt.json`。市場快照建立／更新時先完成一次完整驗證，再為 archive 建立 custom Artifact Attestation；後續純前端部署只驗證這份不可變證據。每次網站部署另產生 deploymentVersion 2 的 `deployment.json`，分別記錄 `websiteSourceCommit`、`marketDataSourceCommit`、市場 Artifact ID 與 digest；公開站台輸出相同內容的 `/deployment-version.json`。
 
 `update-market-data.yml` 在台北時間平日 17:30 與 20:30 執行。它只解析一次 `main` 的不可變 SHA，再交給相同部署流程；官方資料日期相同時會成功 no-op，不建立新的 Pages 部署。
