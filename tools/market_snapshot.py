@@ -74,6 +74,10 @@ NO_QUOTE_EVIDENCE_SNAPSHOT_VERSIONS = frozenset({V3_SNAPSHOT_VERSION, SNAPSHOT_V
 RETENTION_SESSIONS = 120
 HISTORY_YEARS = 10
 MAX_PUBLISHED_ARTIFACT_BYTES = 400 * 1024 * 1024
+MAX_SNAPSHOT_ARCHIVE_BYTES = 400 * 1024 * 1024
+MAX_SNAPSHOT_PAYLOAD_BYTES = 400 * 1024 * 1024
+MAX_SNAPSHOT_ARCHIVE_MEMBERS = 20_000
+ARCHIVE_COPY_CHUNK_SIZE = 1024 * 1024
 PRICE_UNIT = "TWD"
 COMPARISON_UNIT_POLICY_URL = "https://www.twse.com.tw/zh/trading/trading-rule.html"
 DEFAULT_OVERRIDES_PATH = Path(__file__).resolve().parents[1] / "data" / "company-action-overrides.json"
@@ -1792,7 +1796,9 @@ def _write_snapshot_atomically(
         _write_deterministic_tar(temporary)
         _write_sha256sums(temporary)
         _validate_published_artifact_size(temporary)
+        validator_started = time.monotonic()
         validate_snapshot(temporary)
+        _write_validator_timing(time.monotonic() - validator_started)
         _replace_output_directory(temporary, output)
     except Exception:
         try:
@@ -1801,6 +1807,25 @@ def _write_snapshot_atomically(
             # 暫存內容無法確認為本次檔案時保留現場，不能用遞迴刪除掩蓋原始錯誤。
             pass
         raise
+
+
+def _write_validator_timing(elapsed_seconds: float) -> None:
+    """若 workflow 要求，記錄候選快照完整 validator 的單次實際耗時。"""
+
+    destination_text = os.environ.get("MARKET_VALIDATOR_TIMING_OUTPUT")
+    if not destination_text:
+        return
+    destination = Path(destination_text).resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _write_bytes(
+        destination,
+        _canonical_json_bytes(
+            {
+                "fullValidatorCount": 1,
+                "fullValidatorSeconds": round(elapsed_seconds, 3),
+            }
+        ),
+    )
 
 
 def _replace_output_directory(temporary: Path, output: Path) -> None:
@@ -3513,7 +3538,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     bootstrap.add_argument("--suspensions", type=Path, default=DEFAULT_SUSPENSION_INTERVALS_PATH, help="官方停止買賣區間佐證檔")
 
     update = commands.add_parser("update", help="補齊缺少官方交易日並由完整歷史快取重建")
-    update.add_argument("--previous", type=Path, required=True, help="前一成功快照目錄")
+    previous_source = update.add_mutually_exclusive_group(required=True)
+    previous_source.add_argument("--previous", type=Path, help="前一成功快照目錄")
+    previous_source.add_argument(
+        "--verified-previous-manifest",
+        type=Path,
+        help="已由 validation receipt 驗證並安全解壓的 canonical manifest；只可搭配完整歷史快取。",
+    )
     update.add_argument("--output", type=Path, required=True, help="輸出目錄")
     update.add_argument("--source-commit", required=True, help="對應的完整 source commit")
     update.add_argument("--cache", type=Path, default=Path(".cache/market-snapshot"), help="可續跑快取目錄")
@@ -3549,8 +3580,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"已建立十年全市場基準快照：{manifest.snapshot_hash}。")
             return 0
         if args.command == "update":
+            previous = (
+                _load_receipt_verified_manifest(args.verified_previous_manifest)
+                if args.verified_previous_manifest is not None
+                else args.previous
+            )
             manifest, updated = update_snapshot(
-                args.previous,
+                previous,
                 args.output,
                 args.source_commit,
                 args.cache,
@@ -4016,7 +4052,7 @@ def _load_cached_historical_market_sessions(
 
 
 def update_snapshot(
-    previous: Path,
+    previous: Path | SnapshotManifest,
     output: Path,
     source_commit: str,
     cache_directory: Path,
@@ -4028,10 +4064,22 @@ def update_snapshot(
     rebuild_if_same_cutoff: bool = False,
 ) -> tuple[SnapshotManifest, bool]:
     """取得缺少日行情後，以完整十年快取重建；同截止日則維持冪等。"""
-    previous_directory, is_temporary = _previous_snapshot_directory(previous)
+    if isinstance(previous, SnapshotManifest):
+        previous_directory: Path | None = None
+        is_temporary = False
+    else:
+        previous_directory, is_temporary = _previous_snapshot_directory(previous)
     previous_manifest: SnapshotManifest | None = None
     try:
-        previous_manifest = validate_snapshot(previous_directory)
+        previous_manifest = (
+            previous
+            if isinstance(previous, SnapshotManifest)
+            else validate_snapshot(previous_directory)
+        )
+        if isinstance(previous, SnapshotManifest) and not require_history_cache:
+            raise SnapshotValidationError(
+                "receipt 驗證後的 manifest 模式必須搭配 --require-history-cache，不能降級讀取舊 K 線。"
+            )
         if previous_manifest.snapshot_version != SNAPSHOT_VERSION:
             raise SnapshotValidationError(_legacy_snapshot_rebootstrap_message(previous_manifest.snapshot_version))
         calendar = fetch_trading_calendar()
@@ -4185,9 +4233,11 @@ def update_snapshot(
             retired_symbols=retired_symbols,
             suspension_intervals=curated_suspension_intervals,
         )
+        if previous_directory is None:
+            raise SnapshotValidationError("缺少舊快照資料目錄，不能執行 120 日相容增量。")
         return build_snapshot(previous_directory, build_input, output), True
     finally:
-        if is_temporary and previous_manifest is not None:
+        if is_temporary and previous_manifest is not None and previous_directory is not None:
             try:
                 _remove_known_snapshot_files(previous_directory, (entry.data_path for entry in previous_manifest.symbols))
             except OSError:
@@ -4222,6 +4272,22 @@ def _previous_snapshot_directory(previous: Path) -> tuple[Path, bool]:
     raise SnapshotValidationError("前一成功快照必須是目錄，或是可獨立驗證的 snapshot.tar.gz。")
 
 
+def _load_receipt_verified_manifest(path: Path) -> SnapshotManifest:
+    """載入已由 receipt 驗證的 canonical manifest，不重跑完整快照 validator。"""
+
+    try:
+        payload = path.read_bytes()
+        document = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SnapshotValidationError("receipt 驗證後的 manifest 無法讀取。") from error
+    if payload != _canonical_json_bytes(document):
+        raise SnapshotValidationError("receipt 驗證後的 manifest 必須是 canonical JSON。")
+    manifest = _manifest_from_json(document)
+    if manifest.snapshot_version != SNAPSHOT_VERSION:
+        raise SnapshotValidationError("receipt 驗證後的 manifest 必須是目前 v4 快照。")
+    return manifest
+
+
 def _extract_previous_snapshot_archive(archive: Path) -> Path:
     """安全展開獨立 archive，驗證後才作為增量更新基準。"""
     archive = archive.resolve()
@@ -4230,21 +4296,39 @@ def _extract_previous_snapshot_archive(archive: Path) -> Path:
     created_files: list[Path] = []
     created_directories: list[Path] = []
     try:
+        if archive.stat().st_size > MAX_SNAPSHOT_ARCHIVE_BYTES:
+            raise SnapshotValidationError("snapshot archive 超過 400 MiB 安全上限。")
         with gzip.open(archive, "rb") as compressed:
-            with tarfile.open(fileobj=compressed, mode="r:") as tar:
+            with tarfile.open(fileobj=compressed, mode="r|") as tar:
                 names: set[str] = set()
-                for member in tar.getmembers():
+                total_size = 0
+                member_count = 0
+                for member in tar:
+                    member_count += 1
+                    if member_count > MAX_SNAPSHOT_ARCHIVE_MEMBERS:
+                        raise SnapshotValidationError("snapshot archive 檔案數量超過安全上限。")
                     relative_path = _safe_archive_member_path(member)
                     if relative_path in names:
                         raise SnapshotValidationError("snapshot archive 有重複檔案。")
                     names.add(relative_path)
+                    total_size += member.size
+                    if total_size > MAX_SNAPSHOT_PAYLOAD_BYTES:
+                        raise SnapshotValidationError("snapshot archive 解壓後超過 400 MiB 安全上限。")
                     extracted = tar.extractfile(member)
                     if extracted is None:
                         raise SnapshotValidationError("snapshot archive 檔案無法讀取。")
                     destination = temporary / Path(relative_path)
                     _create_archive_parent_directories(temporary, destination.parent, created_directories)
                     created_files.append(destination)
-                    _write_bytes(destination, extracted.read())
+                    written = 0
+                    with destination.open("xb") as output:
+                        while chunk := extracted.read(ARCHIVE_COPY_CHUNK_SIZE):
+                            written += len(chunk)
+                            if written > member.size:
+                                raise SnapshotValidationError("snapshot archive 檔案大小超出宣告值。")
+                            output.write(chunk)
+                    if written != member.size:
+                        raise SnapshotValidationError("snapshot archive 檔案大小與宣告值不一致。")
         manifest = _validate_snapshot_payload(temporary)
         if manifest.snapshot_version == LEGACY_SNAPSHOT_VERSION and not (temporary / "SHA256SUMS").is_file():
             raise SnapshotValidationError(
@@ -4253,7 +4337,9 @@ def _extract_previous_snapshot_archive(archive: Path) -> Path:
         _validate_sha256sums(temporary, include_archive=False)
         copied_archive = temporary / "snapshot.tar.gz"
         created_files.append(copied_archive)
-        _write_bytes(copied_archive, archive.read_bytes())
+        with archive.open("rb") as source, copied_archive.open("xb") as destination:
+            while chunk := source.read(ARCHIVE_COPY_CHUNK_SIZE):
+                destination.write(chunk)
         _write_sha256sums(temporary)
         validate_snapshot(temporary)
         return temporary
@@ -4623,6 +4709,8 @@ def _validate_archive_contents(snapshot: Path, manifest: SnapshotManifest) -> No
     archive = snapshot / "snapshot.tar.gz"
     if not archive.is_file():
         raise SnapshotValidationError("找不到 snapshot.tar.gz。")
+    if archive.stat().st_size > MAX_SNAPSHOT_ARCHIVE_BYTES:
+        raise SnapshotValidationError("snapshot archive 超過 400 MiB 安全上限。")
     expected_files = {
         path.relative_to(snapshot).as_posix(): path.read_bytes()
         for path in snapshot.rglob("*")
@@ -4630,17 +4718,27 @@ def _validate_archive_contents(snapshot: Path, manifest: SnapshotManifest) -> No
     }
     try:
         with gzip.open(archive, "rb") as compressed:
-            with tarfile.open(fileobj=compressed, mode="r:") as tar:
+            with tarfile.open(fileobj=compressed, mode="r|") as tar:
                 actual_files: dict[str, bytes] = {}
-                for member in tar.getmembers():
-                    if not member.isfile() or member.name.startswith("/") or ".." in Path(member.name).parts:
-                        raise SnapshotValidationError("snapshot archive 含有不安全檔案。")
-                    if member.name in actual_files:
+                member_count = 0
+                total_size = 0
+                for member in tar:
+                    member_count += 1
+                    if member_count > MAX_SNAPSHOT_ARCHIVE_MEMBERS:
+                        raise SnapshotValidationError("snapshot archive 檔案數量超過安全上限。")
+                    name = _safe_archive_member_path(member)
+                    if name in actual_files:
                         raise SnapshotValidationError("snapshot archive 有重複檔案。")
+                    total_size += member.size
+                    if total_size > MAX_SNAPSHOT_PAYLOAD_BYTES:
+                        raise SnapshotValidationError("snapshot archive 解壓後超過 400 MiB 安全上限。")
                     extracted = tar.extractfile(member)
                     if extracted is None:
                         raise SnapshotValidationError("snapshot archive 檔案無法讀取。")
-                    actual_files[member.name] = extracted.read()
+                    payload = extracted.read(member.size + 1)
+                    if len(payload) != member.size:
+                        raise SnapshotValidationError("snapshot archive 檔案大小與宣告值不一致。")
+                    actual_files[name] = payload
     except (OSError, EOFError, tarfile.TarError) as error:
         raise SnapshotValidationError("snapshot archive 無法解壓或讀取。") from error
     internal_sums = actual_files.pop("SHA256SUMS", None)

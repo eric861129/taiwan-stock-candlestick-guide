@@ -21,16 +21,17 @@ jobs:
       source_sha: ${{ steps.resolve.outputs.source_sha }}
     steps:
       - id: resolve
-        name: Resolve refs/heads/main exactly once
+        name: Bind to the workflow main SHA exactly once
+        env:
+          WORKFLOW_SOURCE_SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          source_sha="$(git ls-remote "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" refs/heads/main | awk 'NR == 1 { print $1 }')"
-          if ! [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+          if ! [[ "$WORKFLOW_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "無法取得 refs/heads/main 的完整不可變 SHA。" >&2
             exit 1
           fi
-          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$WORKFLOW_SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: 以鎖定 main SHA 更新與部署
@@ -44,5 +45,6 @@ jobs:
     permissions:
       contents: read
       actions: read
+      attestations: write
       pages: write
       id-token: write

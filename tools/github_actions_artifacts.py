@@ -15,6 +15,9 @@ from urllib.request import Request, urlopen
 
 MAX_ARTIFACT_PAGES = 10
 MARKET_SNAPSHOT_PREFIX = "market-snapshot-"
+DEPLOYMENT_RECORD_PREFIX = "deployment-record-"
+ARTIFACT_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+FULL_GIT_SHA = re.compile(r"[0-9a-f]{40}")
 DEPLOY_WORKFLOW_PATHS = frozenset(
     {
         ".github/workflows/bootstrap-market-history.yml",
@@ -23,6 +26,17 @@ DEPLOY_WORKFLOW_PATHS = frozenset(
     }
 )
 DEPLOY_BRANCH = "main"
+DEPLOYMENT_RECORD_WORKFLOW_PATHS = frozenset(
+    {
+        ".github/workflows/deploy-pages.yml",
+        ".github/workflows/update-market-data.yml",
+    }
+)
+ATTESTATION_SIGNER_BY_RUN_WORKFLOW = {
+    ".github/workflows/bootstrap-market-history.yml": ".github/workflows/bootstrap-market-history.yml",
+    ".github/workflows/deploy-pages.yml": ".github/workflows/deploy-pages.yml",
+    ".github/workflows/update-market-data.yml": ".github/workflows/deploy-pages.yml",
+}
 
 
 class GitHubArtifactQueryError(RuntimeError):
@@ -34,7 +48,11 @@ class SuccessfulMarketSnapshot:
     """已確認所屬 workflow 成功的市場快照 artifact 識別資料。"""
 
     artifact_id: int
+    artifact_digest: str
     workflow_run_id: int
+    workflow_path: str
+    signer_workflow_path: str
+    source_sha: str
     created_at: datetime
 
 
@@ -62,7 +80,10 @@ def find_latest_successful_market_snapshot(
         raise ValueError("max_pages 必須至少為 1。")
 
     _validate_page_url(first_page_url, first_page_url)
-    repository = expected_repository or _repository_from_artifact_page_url(first_page_url)
+    repository_from_url = _repository_from_artifact_page_url(first_page_url)
+    if expected_repository is not None and expected_repository != repository_from_url:
+        raise GitHubArtifactQueryError("artifact API URL 與預期 repository 不一致。")
+    repository = expected_repository or repository_from_url
     next_page_url: str | None = first_page_url
     seen_page_urls: set[str] = set()
     scanned_artifact_count = 0
@@ -145,6 +166,123 @@ def query_successful_market_snapshot(
     )
 
 
+def query_selected_market_snapshot(
+    api_url: str,
+    repository: str,
+    token: str,
+    *,
+    artifact_id: int,
+    artifact_digest: str,
+    expected_workflow_paths: frozenset[str] = DEPLOY_WORKFLOW_PATHS,
+    expected_branch: str = DEPLOY_BRANCH,
+    allow_in_progress_run_id: int | None = None,
+) -> SuccessfulMarketSnapshot:
+    """依部署紀錄的 immutable ID 與 digest 讀取並驗證單一市場 Artifact。
+
+    此介面提供 rollback 與後續建置使用；它不列舉 Artifact，也不會因
+    名稱相同而挑選其他候選。任一 provenance 或 digest 不符皆會停止。
+    """
+    if not token:
+        raise GitHubArtifactQueryError("缺少 GitHub API token。")
+    base_url = api_url.rstrip("/")
+    _validate_api_base_url(base_url)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise GitHubArtifactQueryError("GitHub repository 格式無效。")
+    selected_id = _positive_integer(artifact_id, "預期 artifact ID")
+    selected_digest = _artifact_digest(artifact_digest, "預期 artifact digest")
+
+    artifact_response, _ = _fetch_json(
+        f"{base_url}/repos/{repository}/actions/artifacts/{selected_id}", token
+    )
+    if not isinstance(artifact_response, Mapping):
+        raise GitHubArtifactQueryError("選取的 artifact API 回應必須是 JSON object。")
+
+    def fetch_run(run_id: int) -> object:
+        response, _ = _fetch_json(f"{base_url}/repos/{repository}/actions/runs/{run_id}", token)
+        return response
+
+    return validate_selected_market_snapshot(
+        artifact_response,
+        fetch_run,
+        expected_repository=repository,
+        expected_artifact_id=selected_id,
+        expected_artifact_digest=selected_digest,
+        expected_workflow_paths=expected_workflow_paths,
+        expected_branch=expected_branch,
+        allow_in_progress_run_id=allow_in_progress_run_id,
+    )
+
+
+def query_selected_deployment_record(
+    api_url: str,
+    repository: str,
+    token: str,
+    *,
+    artifact_id: int,
+) -> SuccessfulMarketSnapshot:
+    """以 immutable ID 驗證部署紀錄 Artifact，digest 只取可信 REST metadata。"""
+
+    if not token:
+        raise GitHubArtifactQueryError("缺少 GitHub API token。")
+    base_url = api_url.rstrip("/")
+    _validate_api_base_url(base_url)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise GitHubArtifactQueryError("GitHub repository 格式無效。")
+    selected_id = _positive_integer(artifact_id, "預期 artifact ID")
+    artifact_response, _ = _fetch_json(
+        f"{base_url}/repos/{repository}/actions/artifacts/{selected_id}", token
+    )
+    if not isinstance(artifact_response, Mapping):
+        raise GitHubArtifactQueryError("選取的 artifact API 回應必須是 JSON object。")
+
+    def fetch_run(run_id: int) -> object:
+        response, _ = _fetch_json(f"{base_url}/repos/{repository}/actions/runs/{run_id}", token)
+        return response
+
+    candidate = _successful_snapshot_from_artifact(
+        artifact_response,
+        fetch_run,
+        expected_repository=repository,
+        expected_workflow_paths=DEPLOYMENT_RECORD_WORKFLOW_PATHS,
+        expected_branch=DEPLOY_BRANCH,
+        expected_name_prefix=DEPLOYMENT_RECORD_PREFIX,
+    )
+    if candidate is None or candidate.artifact_id != selected_id:
+        raise GitHubArtifactQueryError("選取的部署紀錄 Artifact 未通過信任邊界。")
+    return candidate
+
+
+def validate_selected_market_snapshot(
+    artifact: Mapping[str, object],
+    fetch_run: RunFetcher,
+    *,
+    expected_repository: str,
+    expected_artifact_id: int,
+    expected_artifact_digest: str,
+    expected_workflow_paths: frozenset[str] = DEPLOY_WORKFLOW_PATHS,
+    expected_branch: str = DEPLOY_BRANCH,
+    allow_in_progress_run_id: int | None = None,
+) -> SuccessfulMarketSnapshot:
+    """驗證既有部署紀錄指定的單一市場 Artifact，不允許名稱 fallback。"""
+    selected_id = _positive_integer(expected_artifact_id, "預期 artifact ID")
+    selected_digest = _artifact_digest(expected_artifact_digest, "預期 artifact digest")
+    candidate = _successful_snapshot_from_artifact(
+        artifact,
+        fetch_run,
+        expected_repository=expected_repository,
+        expected_workflow_paths=expected_workflow_paths,
+        expected_branch=expected_branch,
+        allow_in_progress_run_id=allow_in_progress_run_id,
+    )
+    if candidate is None:
+        raise GitHubArtifactQueryError("選取的市場 Artifact 未通過信任邊界。")
+    if candidate.artifact_id != selected_id:
+        raise GitHubArtifactQueryError("選取的市場 Artifact ID 與部署紀錄不一致。")
+    if candidate.artifact_digest != selected_digest:
+        raise GitHubArtifactQueryError("選取的市場 Artifact digest 與部署紀錄不一致。")
+    return candidate
+
+
 def _validate_artifact_page(response: object) -> tuple[int, list[Mapping[str, object]]]:
     if not isinstance(response, Mapping):
         raise GitHubArtifactQueryError("artifact API 回應必須是 JSON object。")
@@ -169,28 +307,41 @@ def _successful_snapshot_from_artifact(
     expected_repository: str,
     expected_workflow_paths: frozenset[str],
     expected_branch: str,
+    expected_name_prefix: str = MARKET_SNAPSHOT_PREFIX,
+    allow_in_progress_run_id: int | None = None,
 ) -> SuccessfulMarketSnapshot | None:
     name = artifact.get("name")
     expired = artifact.get("expired")
     if not isinstance(name, str) or not isinstance(expired, bool):
         raise GitHubArtifactQueryError("artifact API 清單缺少 name 或 expired 欄位。")
-    if expired or not name.startswith(MARKET_SNAPSHOT_PREFIX):
+    if expired or not name.startswith(expected_name_prefix):
         return None
 
     artifact_id = _positive_integer(artifact.get("id"), "artifact ID")
+    artifact_digest = _artifact_digest(artifact.get("digest"), "artifact digest")
     workflow_run = artifact.get("workflow_run")
     if not isinstance(workflow_run, Mapping):
         raise GitHubArtifactQueryError("市場 snapshot artifact 缺少 workflow_run。")
     workflow_run_id = _positive_integer(workflow_run.get("id"), "workflow run ID")
+    artifact_source_sha = workflow_run.get("head_sha")
+    if not isinstance(artifact_source_sha, str) or FULL_GIT_SHA.fullmatch(artifact_source_sha) is None:
+        raise GitHubArtifactQueryError("市場 snapshot artifact 缺少有效 source SHA。")
     created_at = _parse_created_at(artifact.get("created_at"))
 
     run = fetch_run(workflow_run_id)
     if not isinstance(run, Mapping):
         raise GitHubArtifactQueryError("市場 snapshot workflow run 回應必須是 JSON object。")
     conclusion = run.get("conclusion")
-    if not isinstance(conclusion, str):
+    in_progress_is_allowed = (
+        conclusion is None
+        and allow_in_progress_run_id is not None
+        and workflow_run_id == allow_in_progress_run_id
+    )
+    if conclusion is None and not in_progress_is_allowed:
         raise GitHubArtifactQueryError("市場 snapshot workflow run 缺少 conclusion。")
-    if conclusion != "success":
+    if conclusion is not None and not isinstance(conclusion, str):
+        raise GitHubArtifactQueryError("市場 snapshot workflow run conclusion 格式無效。")
+    if conclusion != "success" and not in_progress_is_allowed:
         return None
     workflow_path = run.get("path")
     head_branch = run.get("head_branch")
@@ -198,6 +349,7 @@ def _successful_snapshot_from_artifact(
     repository_name = (
         head_repository.get("full_name") if isinstance(head_repository, Mapping) else None
     )
+    run_source_sha = run.get("head_sha")
     if not all(isinstance(value, str) for value in (workflow_path, head_branch, repository_name)):
         raise GitHubArtifactQueryError("市場 snapshot workflow run 缺少可信 provenance。")
     if (
@@ -206,9 +358,19 @@ def _successful_snapshot_from_artifact(
         or repository_name != expected_repository
     ):
         return None
+    if not isinstance(run_source_sha, str) or FULL_GIT_SHA.fullmatch(run_source_sha) is None:
+        raise GitHubArtifactQueryError("市場 snapshot workflow run 缺少有效 source SHA。")
+    if run_source_sha != artifact_source_sha:
+        raise GitHubArtifactQueryError("市場 snapshot Artifact 與 workflow run 的 source SHA 不一致。")
     return SuccessfulMarketSnapshot(
         artifact_id=artifact_id,
+        artifact_digest=artifact_digest,
         workflow_run_id=workflow_run_id,
+        workflow_path=workflow_path,
+        signer_workflow_path=ATTESTATION_SIGNER_BY_RUN_WORKFLOW.get(
+            workflow_path, workflow_path
+        ),
+        source_sha=run_source_sha,
         created_at=created_at,
     )
 
@@ -216,6 +378,12 @@ def _successful_snapshot_from_artifact(
 def _positive_integer(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise GitHubArtifactQueryError(f"{label} 必須是正整數。")
+    return value
+
+
+def _artifact_digest(value: object, label: str) -> str:
+    if not isinstance(value, str) or ARTIFACT_DIGEST.fullmatch(value) is None:
+        raise GitHubArtifactQueryError(f"{label} 必須是 sha256 digest。")
     return value
 
 
@@ -306,28 +474,62 @@ def _fetch_json(url: str, token: str) -> tuple[object, dict[str, str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI：將有效 artifact ID 寫為 GitHub Actions step outputs。"""
+    """CLI：將驗證後的 immutable Artifact 識別資料寫入 step outputs。"""
     parser = argparse.ArgumentParser(description="查詢上一個可用的 GitHub Actions 市場快照 artifact")
     parser.add_argument("--api-url", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--max-pages", type=int, default=MAX_ARTIFACT_PAGES)
+    parser.add_argument("--artifact-id", type=int)
+    parser.add_argument("--artifact-digest")
+    parser.add_argument("--deployment-record-id", type=int)
+    parser.add_argument("--allow-in-progress-run-id", type=int)
     arguments = parser.parse_args(argv)
+    if (arguments.artifact_id is None) != (arguments.artifact_digest is None):
+        parser.error("--artifact-id 與 --artifact-digest 必須同時提供。")
+    if arguments.deployment_record_id is not None and arguments.artifact_id is not None:
+        parser.error("部署紀錄與市場 Artifact 查詢模式不可同時使用。")
     try:
-        result = query_successful_market_snapshot(
-            arguments.api_url,
-            arguments.repository,
-            os.environ.get("GITHUB_TOKEN", ""),
-            max_pages=arguments.max_pages,
-        )
+        github_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+        if arguments.deployment_record_id is not None:
+            result = query_selected_deployment_record(
+                arguments.api_url,
+                arguments.repository,
+                github_token,
+                artifact_id=arguments.deployment_record_id,
+            )
+        elif arguments.artifact_id is None:
+            result = query_successful_market_snapshot(
+                arguments.api_url,
+                arguments.repository,
+                github_token,
+                max_pages=arguments.max_pages,
+            )
+        else:
+            result = query_selected_market_snapshot(
+                arguments.api_url,
+                arguments.repository,
+                github_token,
+                artifact_id=arguments.artifact_id,
+                artifact_digest=arguments.artifact_digest,
+                allow_in_progress_run_id=arguments.allow_in_progress_run_id,
+            )
     except (GitHubArtifactQueryError, ValueError) as error:
         parser.exit(1, f"錯誤：{error}\n")
 
     if result is None:
         print("artifact_id=")
+        print("artifact_digest=")
         print("artifact_run_id=")
+        print("artifact_workflow_path=")
+        print("artifact_signer_workflow_path=")
+        print("artifact_source_sha=")
     else:
         print(f"artifact_id={result.artifact_id}")
+        print(f"artifact_digest={result.artifact_digest}")
         print(f"artifact_run_id={result.workflow_run_id}")
+        print(f"artifact_workflow_path={result.workflow_path}")
+        print(f"artifact_signer_workflow_path={result.signer_workflow_path}")
+        print(f"artifact_source_sha={result.source_sha}")
     return 0
 
 

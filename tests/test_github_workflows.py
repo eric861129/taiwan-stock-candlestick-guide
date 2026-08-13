@@ -25,7 +25,7 @@ ACTION_PINS = {
     "actions/cache/restore": "5a3ec84eff668545956fd18022155c47e93e2684",  # v4.2.3
     "actions/cache/save": "5a3ec84eff668545956fd18022155c47e93e2684",  # v4.2.3
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",  # v4.6.2
-    "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",  # v4.3.0
+    "actions/attest": "1e69f48acb82d1966a394da916b4c1698aa569d6",  # v4
     "actions/configure-pages": "983d7736d9b0ae728b81ab479565c72886d7745b",  # v5.0.0
     "actions/upload-pages-artifact": "56afc609e74202658d3ffba0e8f6dda462b719fa",  # v3.0.1
     "actions/deploy-pages": "d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",  # v4.0.5
@@ -63,7 +63,12 @@ def trusted_deploy_run(*, conclusion: str = "success") -> dict[str, object]:
         "path": ".github/workflows/deploy-pages.yml",
         "head_branch": "main",
         "head_repository": {"full_name": "example/guide"},
+        "head_sha": "c" * 40,
     }
+
+
+def artifact_run(run_id: int) -> dict[str, object]:
+    return {"id": run_id, "head_sha": "c" * 40}
 
 
 class GitHubArtifactPaginationTests(unittest.TestCase):
@@ -78,7 +83,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 "id": artifact_id,
                 "name": f"candidate-market-snapshot-{artifact_id}",
                 "expired": False,
-                "workflow_run": {"id": artifact_id + 1_000},
+                "workflow_run": artifact_run(artifact_id + 1_000),
             }
             for artifact_id in range(1, 101)
         ]
@@ -99,9 +104,10 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                             {
                                 "id": 901,
                                 "name": "market-snapshot-2026-08-11-502ff8be2321",
+                                "digest": f"sha256:{'a' * 64}",
                                 "expired": False,
                                 "created_at": "2026-08-11T12:00:00Z",
-                                "workflow_run": {"id": 1_901},
+                                "workflow_run": artifact_run(1_901),
                             }
                         ],
                     },
@@ -138,7 +144,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                                 "id": 1,
                                 "name": "candidate-market-snapshot-1",
                                 "expired": False,
-                                "workflow_run": {"id": 1_001},
+                                "workflow_run": artifact_run(1_001),
                             }
                         ],
                     },
@@ -165,9 +171,10 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                             {
                                 "id": 500,
                                 "name": "market-snapshot-2026-08-09-old",
+                                "digest": f"sha256:{'a' * 64}",
                                 "expired": False,
                                 "created_at": "2026-08-09T12:00:00Z",
-                                "workflow_run": {"id": 1_500},
+                                "workflow_run": artifact_run(1_500),
                             }
                         ],
                     },
@@ -181,9 +188,10 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                             {
                                 "id": 501,
                                 "name": "market-snapshot-2026-08-10-new",
+                                "digest": f"sha256:{'b' * 64}",
                                 "expired": False,
                                 "created_at": "2026-08-10T12:00:00Z",
-                                "workflow_run": {"id": 1_501},
+                                "workflow_run": artifact_run(1_501),
                             }
                         ],
                     },
@@ -212,9 +220,10 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 700,
                     "name": "market-snapshot-2026-08-11-incomplete-run",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-11T12:00:00Z",
-                    "workflow_run": {"id": 1_700},
+                    "workflow_run": artifact_run(1_700),
                 }
             ],
         }
@@ -242,7 +251,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                                 "id": 800,
                                 "name": "candidate-market-snapshot-800",
                                 "expired": False,
-                                "workflow_run": {"id": 1_800},
+                                "workflow_run": artifact_run(1_800),
                             }
                         ],
                     },
@@ -256,9 +265,10 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                             {
                                 "id": 801,
                                 "name": "market-snapshot-2026-08-11-mutated-list",
+                                "digest": f"sha256:{'a' * 64}",
                                 "expired": False,
                                 "created_at": "2026-08-11T12:00:00Z",
-                                "workflow_run": {"id": 1_801},
+                                "workflow_run": artifact_run(1_801),
                             }
                         ],
                     },
@@ -284,13 +294,13 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                     "id": 810,
                     "name": "candidate-market-snapshot-810",
                     "expired": False,
-                    "workflow_run": {"id": 1_810},
+                    "workflow_run": artifact_run(1_810),
                 },
                 {
                     "id": 811,
                     "name": "candidate-market-snapshot-811",
                     "expired": False,
-                    "workflow_run": {"id": 1_811},
+                    "workflow_run": artifact_run(1_811),
                 },
             ],
         }
@@ -313,7 +323,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                     "id": 812,
                     "name": "candidate-market-snapshot-812",
                     "expired": False,
-                    "workflow_run": {"id": 1_812},
+                    "workflow_run": artifact_run(1_812),
                 }
             ],
         }
@@ -335,9 +345,10 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 820,
                     "name": "market-snapshot-2026-08-12-untrusted",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-12T12:00:00Z",
-                    "workflow_run": {"id": 1_820},
+                    "workflow_run": artifact_run(1_820),
                 }
             ],
         }
@@ -363,9 +374,10 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 822,
                     "name": "market-snapshot-2026-08-13-scheduled",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-13T12:00:00Z",
-                    "workflow_run": {"id": 1_822},
+                    "workflow_run": artifact_run(1_822),
                 }
             ],
         }
@@ -391,9 +403,10 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 823,
                     "name": "market-snapshot-2026-08-12-baseline",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-12T12:00:00Z",
-                    "workflow_run": {"id": 1_823},
+                    "workflow_run": artifact_run(1_823),
                 }
             ],
         }
@@ -419,9 +432,10 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 821,
                     "name": "market-snapshot-2026-08-12-incomplete-provenance",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-12T12:00:00Z",
-                    "workflow_run": {"id": 1_821},
+                    "workflow_run": artifact_run(1_821),
                 }
             ],
         }
@@ -484,20 +498,14 @@ class GitHubWorkflowContractTests(unittest.TestCase):
                 )
 
     def test_rollback_artifact_input_is_validated_before_action_consumes_it(self) -> None:
-        """若 download action 直接吃手動輸入，驗證 step 無法成為唯一輸入邊界。"""
+        """rollback 必須先驗 deployment record 的 REST provenance 與 ZIP digest。"""
         text = read_workflow("deploy-pages.yml")
-        validate_rollback = text.split("      - id: validate-rollback", 1)[1].split(
-            "\n      - name: Download selected rollback metadata", 1
-        )[0]
-        self.assertIn('output.write(f"rollback_artifact_id={artifact_id}\\n")', validate_rollback)
-        self.assertIn(
-            "artifact-ids: ${{ steps.validate-rollback.outputs.rollback_artifact_id }}",
-            text,
-        )
-        self.assertIn(
-            "ROLLBACK_ARTIFACT_ID: ${{ steps.validate-rollback.outputs.rollback_artifact_id || '' }}",
-            text,
-        )
+        resolve = text.split("  resolve-source:", 1)[1].split("\n  verify:", 1)[0]
+        self.assertIn("--deployment-record-id", resolve)
+        self.assertIn("gh api", resolve)
+        self.assertIn("--allow-kind deployment-record-v2", resolve)
+        self.assertIn("load_deployment_record", resolve)
+        self.assertNotIn("actions/download-artifact", resolve)
 
     def test_deploy_workflow_binds_one_verified_snapshot_to_one_pages_artifact(self) -> None:
         """若資料、source 或 artifact 可任意混搭，rollback 可能發布不一致站台。"""
@@ -513,30 +521,20 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("concurrency:", text)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("source SHA checkout mismatch", text)
-        self.assertIn("sourceCommit", text)
-        self.assertIn("SHA256SUMS", text)
         self.assertIn("snapshot.tar.gz", text)
-        self.assertIn("manifest.json", text)
-        self.assertIn("provenance.json", text)
+        self.assertIn("snapshot.tar.gz.sha256", text)
+        self.assertIn("validation-receipt.json", text)
         self.assertIn("market-snapshot-", text)
         self.assertIn("retention-days: 30", text)
         self.assertIn("actions/artifacts", text)
         self.assertIn("python .workflow-helper/tools/github_actions_artifacts.py", text)
-        self.assertIn("rollback_run_id", text)
         self.assertIn("artifact_run_id", text)
-        self.assertGreaterEqual(text.count("run-id:"), 3)
         self.assertIn("python tools/market_snapshot.py update", text)
         self.assertIn("--rebuild-if-same-cutoff", text)
         self.assertIn("bootstrap-market-history.yml", text)
-        self.assertIn("python tools/market_snapshot.py validate", text)
-        self.assertIn(
-            'cp "$VERIFIED_SNAPSHOT/manifest.json" public/data/manifest.json',
-            text,
-        )
-        self.assertIn(
-            'cp "$VERIFIED_SNAPSHOT/provenance.json" public/data/provenance.json',
-            text,
-        )
+        self.assertNotIn("python tools/market_snapshot.py validate", text)
+        self.assertIn('cp "$RUNNER_TEMP/verified-snapshot/manifest.json" public/data/manifest.json', text)
+        self.assertIn('cp "$RUNNER_TEMP/verified-snapshot/provenance.json" public/data/provenance.json', text)
         self.assertIn('expected = files(snapshot_root / "data")', text)
         self.assertIn(
             'expected[name] = (snapshot_root / name).read_bytes()',
@@ -546,25 +544,13 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("needs.build-pages.result == 'success'", text)
         self.assertEqual(1, text.count("actions/upload-pages-artifact@"))
         self.assertEqual(1, text.count("pages: write"))
-        self.assertEqual(1, text.count("id-token: write"))
+        self.assertEqual(2, text.count("id-token: write"))
         resolve_section = text.split("  resolve-source:", 1)[1].split("\n  verify:", 1)[0]
         self.assertIn("actions/setup-python@", resolve_section)
         self.assertIn('python-version: "3.13"', resolve_section)
-        published_section = text.split("  publish-successful-snapshot:", 1)[1]
-        self.assertIn("      - resolve-source", published_section)
-        self.assertIn("actions/checkout@", published_section)
-        self.assertIn("ref: ${{ needs.resolve-source.outputs.source_sha }}", published_section)
-        self.assertIn("git rev-parse HEAD", published_section)
-        self.assertIn("actions/setup-python@", published_section)
-        self.assertIn('python-version: "3.13"', published_section)
-        self.assertIn(
-            "SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}",
-            published_section,
-        )
-        self.assertNotIn(
-            "SOURCE_SHA: ${{ needs.source-snapshot.outputs.source_sha }}",
-            published_section,
-        )
+        self.assertNotIn("  publish-successful-snapshot:", text)
+        self.assertIn("id: upload-deployment-record", text)
+        self.assertIn("  verify-public:", text)
         self.assert_pinned_actions(
             text,
             "actions/checkout",
@@ -573,7 +559,7 @@ class GitHubWorkflowContractTests(unittest.TestCase):
             "actions/cache/restore",
             "actions/cache/save",
             "actions/upload-artifact",
-            "actions/download-artifact",
+            "actions/attest",
             "actions/configure-pages",
             "actions/upload-pages-artifact",
             "actions/deploy-pages",
@@ -590,59 +576,51 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("websiteSourceCommit", version_contract)
         self.assertIn("marketDataSourceCommit", version_contract)
         self.assertIn("deployment-version.json", text)
-        self.assertIn("重用已驗證市場快照", text)
+        self.assertIn("snapshot-reuse", text)
         self.assertIn("SKIP_IF_SAME_CUTOFF", text)
-        self.assertIn('workflow_path not in allowed_workflows', text)
-        self.assertIn('head_branch != "main"', text)
-        self.assertIn("repository_name != repository", text)
-        self.assertGreaterEqual(text.count("load_deployment_version"), 3)
+        helper = (ROOT / "tools" / "github_actions_artifacts.py").read_text(encoding="utf-8")
+        self.assertIn("workflow_path not in expected_workflow_paths", helper)
+        self.assertIn("head_branch != expected_branch", helper)
+        self.assertIn("repository_name != expected_repository", helper)
+        self.assertIn("load_deployment_record", text)
         self.assertIn("create_deployment_version", text)
 
         cache_restore = text.split("      - id: restore-history-cache", 1)[1].split(
             "\n      - name: Prepare market history cache directory", 1
         )[0]
-        self.assertIn("snapshot-plan.outputs.snapshot_strategy != 'reuse'", cache_restore)
+        self.assertIn("snapshot-plan.outputs.snapshot_strategy == 'snapshot-rebuild'", cache_restore)
 
         build_section = text.split("  build-pages:", 1)[1].split("\n  deploy:", 1)[0]
         self.assertIn(
-            "MARKET_DATA_SOURCE_SHA: ${{ needs.source-snapshot.outputs.market_data_source_sha }}",
+            "MARKET_SOURCE_SHA: ${{ needs.source-snapshot.outputs.market_data_source_sha }}",
             build_section,
         )
         self.assertNotIn("manifest.source_commit != source_sha", build_section)
 
-        publish_section = text.split("  publish-successful-snapshot:", 1)[1]
-        self.assertIn(
-            "MARKET_DATA_SOURCE_SHA: ${{ needs.source-snapshot.outputs.market_data_source_sha }}",
-            publish_section,
-        )
-        self.assertNotIn("manifest.source_commit != source_sha", publish_section)
+        self.assertNotIn("publish-successful-snapshot", text)
 
     def test_deploy_workflow_paginates_previous_snapshots_and_same_cutoff_skips_pages(self) -> None:
         """若漏掃 Link 後頁或 no-op 後繼續 bootstrap，會重複部署或遺失舊快照。"""
         text = read_workflow("deploy-pages.yml")
-        find_previous = text.split("      - id: find-previous", 1)[1].split(
-            "\n      - name: Download selected rollback snapshot", 1
+        selector = text.split("      - id: select-market-artifact", 1)[1].split(
+            "\n      - name: Require a previous market baseline", 1
         )[0]
-        self.assertIn("python .workflow-helper/tools/github_actions_artifacts.py", find_previous)
-        self.assertIn("--max-pages 10", find_previous)
-        self.assertNotIn("actions/artifacts?per_page=100", find_previous)
+        self.assertIn("python .workflow-helper/tools/github_actions_artifacts.py", selector)
+        self.assertIn("--max-pages 10", selector)
+        self.assertNotIn("actions/artifacts?per_page=100", selector)
 
         snapshot_plan = text.split("      - id: snapshot-plan", 1)[1].split(
             "\n      - id: restore-history-cache", 1
         )[0]
-        self.assertIn('if [[ "$SKIP_IF_SAME_CUTOFF" == "true" ]]', snapshot_plan)
-        self.assertIn('echo "snapshot_strategy=refresh"', snapshot_plan)
+        self.assertIn('"$SKIP_IF_SAME_CUTOFF" == "true"', snapshot_plan)
+        self.assertIn('echo "snapshot_strategy=snapshot-rebuild"', snapshot_plan)
 
         source_rebuild = text.index("--rebuild-if-same-cutoff")
         update_call = text.index("python tools/market_snapshot.py update")
-        same_cutoff_start = text.index('if [[ "$SNAPSHOT_STRATEGY" != "refresh" ]]', update_call)
+        same_cutoff_start = text.index('if [[ ! -f "$RUNNER_TEMP/rebuilt-snapshot/manifest.json" ]]', update_call)
         same_cutoff_exit = text.index("exit 0", same_cutoff_start)
         self.assertLess(source_rebuild, update_call)
         self.assertLess(update_call, same_cutoff_start)
-        self.assertIn(
-            'if [[ "$SNAPSHOT_STRATEGY" == "rebuild" ]]',
-            text[source_rebuild - 700:update_call],
-        )
         self.assertIn('echo "should_deploy=false"', text[same_cutoff_start:same_cutoff_exit])
         self.assertIn("if: ${{ needs.source-snapshot.outputs.should_deploy == 'true' }}", text)
         self.assertIn("needs.source-snapshot.outputs.should_deploy == 'true'", text)
@@ -650,15 +628,12 @@ class GitHubWorkflowContractTests(unittest.TestCase):
     def test_pagination_helper_is_available_for_a_historical_source_sha(self) -> None:
         """歷史 source SHA 未含新 helper 時，工作流程仍需能查詢舊市場快照。"""
         text = read_workflow("deploy-pages.yml")
-        helper_checkout = text.split("      - name: Checkout workflow helper", 1)[1].split(
-            "\n      - id: find-previous", 1
-        )[0]
-        find_previous = text.split("      - id: find-previous", 1)[1].split(
-            "\n      - name: Download selected rollback snapshot", 1
+        helper_checkout = text.split("      - name: Checkout trusted workflow helper", 1)[1].split(
+            "\n      - id: deployment-record", 1
         )[0]
         self.assertIn("ref: ${{ github.sha }}", helper_checkout)
         self.assertIn("path: .workflow-helper", helper_checkout)
-        self.assertIn("python .workflow-helper/tools/github_actions_artifacts.py", find_previous)
+        self.assertIn("python .workflow-helper/tools/github_actions_artifacts.py", text)
         self.assertIn("python .workflow-helper/tools/deployment_snapshot_mode.py", text)
 
     def test_market_scheduler_resolves_main_once_at_taipei_after_hours(self) -> None:
@@ -671,7 +646,8 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("source_sha", text)
         self.assertIn("uses: ./.github/workflows/deploy-pages.yml", text)
         self.assertIn("skip_if_same_cutoff: true", text)
-        self.assertRegex(text, r"git ls-remote[^\n]*refs/heads/main")
+        self.assertIn("WORKFLOW_SOURCE_SHA: ${{ github.sha }}", text)
+        self.assertNotIn("git ls-remote", text)
         self.assertIn("同一日期", text)
 
     def test_history_bootstrap_is_separate_and_pages_artifact_has_a_hard_size_gate(self) -> None:

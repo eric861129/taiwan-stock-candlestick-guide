@@ -27,11 +27,21 @@ jobs:
         name: Validate immutable source SHA
         env:
           REQUESTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          WORKFLOW_SOURCE_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "$WORKFLOW_REF" != "refs/heads/main" ]]; then
+            echo "十年基準只允許從正式 main 分支簽署。" >&2
+            exit 1
+          fi
           if ! [[ "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "source SHA 必須是完整的小寫 Git commit SHA。" >&2
+            exit 1
+          fi
+          if [[ "$REQUESTED_SOURCE_SHA" != "$WORKFLOW_SOURCE_SHA" ]]; then
+            echo "十年基準只能簽署本次 main workflow 的 source SHA。" >&2
             exit 1
           fi
           echo "source_sha=$REQUESTED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
@@ -50,8 +60,16 @@ jobs:
       - verify
     if: ${{ needs.verify.result == 'success' }}
     runs-on: ubuntu-latest
+    outputs:
+      snapshot_hash: ${{ steps.create-validation-receipt.outputs.snapshot_hash }}
+      cutoff_date: ${{ steps.create-validation-receipt.outputs.cutoff_date }}
+      market_artifact_id: ${{ steps.market-artifact-provenance.outputs.artifact_id }}
+      market_artifact_digest: ${{ steps.market-artifact-provenance.outputs.artifact_digest }}
+      attestation_id: ${{ steps.market-artifact-provenance.outputs.attestation_id }}
     permissions:
       contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout locked source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -68,6 +86,15 @@ jobs:
           actual_source_sha="$(git rev-parse HEAD)"
           if [[ "$actual_source_sha" != "$EXPECTED_SOURCE_SHA" ]]; then
             echo "source SHA checkout mismatch: expected $EXPECTED_SOURCE_SHA, got $actual_source_sha" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+            git fetch --no-tags --unshallow origin refs/heads/main:refs/remotes/origin/main
+          else
+            git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          fi
+          if ! git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/main; then
+            echo "source SHA 不在正式 main 歷史中，拒絕簽署。" >&2
             exit 1
           fi
 
@@ -94,6 +121,7 @@ jobs:
       - name: Build and validate the ten-year baseline
         env:
           SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+          MARKET_VALIDATOR_TIMING_OUTPUT: ${{ runner.temp }}/market-validator-timing.json
         shell: bash
         run: |
           set -euo pipefail
@@ -101,48 +129,135 @@ jobs:
             --output "$RUNNER_TEMP/bootstrap-snapshot" \
             --source-commit "$SOURCE_SHA" \
             --cache "$RUNNER_TEMP/market-snapshot-cache"
-          python tools/market_snapshot.py validate --snapshot "$RUNNER_TEMP/bootstrap-snapshot"
+          python - "$MARKET_VALIDATOR_TIMING_OUTPUT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
 
-      - id: snapshot-name
-        name: Name the verified bootstrap snapshot
+          timing = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if timing.get("fullValidatorCount") != 1:
+              raise SystemExit("十年基準候選完整 validator 次數不是 1。")
+          PY
+
+      - id: create-validation-receipt
+        name: Create validation receipt after the complete validator
         env:
           SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+          VALIDATOR_SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          python - "$RUNNER_TEMP/bootstrap-snapshot/manifest.json" "$SOURCE_SHA" <<'PY' >> "$GITHUB_OUTPUT"
+          python tools/market_snapshot_receipt.py create \
+            --archive "$RUNNER_TEMP/bootstrap-snapshot/snapshot.tar.gz" \
+            --output "$RUNNER_TEMP/bootstrap-snapshot/validation-receipt.json" \
+            --market-source-commit "$SOURCE_SHA" \
+            --validator-source-commit "$VALIDATOR_SOURCE_SHA" \
+            --repository-root "$GITHUB_WORKSPACE"
+          python - "$RUNNER_TEMP/bootstrap-snapshot/validation-receipt.json" <<'PY' >> "$GITHUB_OUTPUT"
           import json
           import re
           import sys
           from pathlib import Path
 
-          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          source_sha = sys.argv[2]
-          if manifest.get("sourceCommit") != source_sha:
-              raise SystemExit("十年基準 manifest 的 sourceCommit 與鎖定 source SHA 不一致。")
-          markets = manifest.get("markets")
-          if not isinstance(markets, dict):
-              raise SystemExit("十年基準 manifest 缺少 markets。")
-          cutoffs = {value.get("cutoffDate") for value in markets.values() if isinstance(value, dict)}
-          if len(cutoffs) != 1:
-              raise SystemExit("十年基準兩市場 cutoff 不一致。")
-          cutoff = cutoffs.pop()
-          if not isinstance(cutoff, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cutoff):
-              raise SystemExit("十年基準 cutoff 格式無效。")
-          print(f"snapshot_artifact_name=market-snapshot-{cutoff}-{source_sha[:12]}")
+          receipt = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          snapshot = receipt.get("snapshot")
+          if not isinstance(snapshot, dict):
+              raise SystemExit("validation receipt 缺少 snapshot。")
+          snapshot_hash = snapshot.get("snapshotHash")
+          cutoff_date = snapshot.get("cutoffDate")
+          if not isinstance(snapshot_hash, str) or re.fullmatch(r"[0-9a-f]{64}", snapshot_hash) is None:
+              raise SystemExit("validation receipt 缺少有效 snapshotHash。")
+          if not isinstance(cutoff_date, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", cutoff_date) is None:
+              raise SystemExit("validation receipt 缺少有效 cutoffDate。")
+          print(f"snapshot_hash={snapshot_hash}")
+          print(f"cutoff_date={cutoff_date}")
           PY
 
-      - name: Upload verified baseline snapshot for the Pages workflow
+      - id: snapshot-name
+        name: Name the verified bootstrap snapshot
+        env:
+          SNAPSHOT_HASH: ${{ steps.create-validation-receipt.outputs.snapshot_hash }}
+          CUTOFF_DATE: ${{ steps.create-validation-receipt.outputs.cutoff_date }}
+          MARKET_VALIDATOR_TIMING_OUTPUT: ${{ runner.temp }}/market-validator-timing.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$SNAPSHOT_HASH" "$CUTOFF_DATE" <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          import sys
+
+          snapshot_hash, cutoff_date = sys.argv[1:]
+          if re.fullmatch(r"[0-9a-f]{64}", snapshot_hash) is None:
+              raise SystemExit("validation receipt 的 snapshotHash 無效。")
+          if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cutoff_date) is None:
+              raise SystemExit("validation receipt 的 cutoffDate 無效。")
+          print(f"snapshot_artifact_name=market-snapshot-{snapshot_hash}")
+          PY
+
+      - id: attest-market-snapshot
+        name: Attest the validated market snapshot
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ runner.temp }}/bootstrap-snapshot/snapshot.tar.gz
+          predicate-type: https://eric861129.github.io/attestations/market-snapshot-validation/v1
+          predicate-path: ${{ runner.temp }}/bootstrap-snapshot/validation-receipt.json
+          create-storage-record: false
+
+      - id: upload-market-snapshot
+        name: Upload immutable verified baseline snapshot
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.snapshot-name.outputs.snapshot_artifact_name }}
           path: |
             ${{ runner.temp }}/bootstrap-snapshot/snapshot.tar.gz
-            ${{ runner.temp }}/bootstrap-snapshot/manifest.json
-            ${{ runner.temp }}/bootstrap-snapshot/provenance.json
-            ${{ runner.temp }}/bootstrap-snapshot/SHA256SUMS
+            ${{ runner.temp }}/bootstrap-snapshot/snapshot.tar.gz.sha256
+            ${{ runner.temp }}/bootstrap-snapshot/validation-receipt.json
           if-no-files-found: error
           retention-days: 30
+
+      - id: market-artifact-provenance
+        name: Record immutable market artifact provenance
+        env:
+          ARTIFACT_ID: ${{ steps.upload-market-snapshot.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload-market-snapshot.outputs.artifact-digest }}
+          ATTESTATION_ID: ${{ steps.attest-market-snapshot.outputs.attestation-id }}
+          ATTESTATION_URL: ${{ steps.attest-market-snapshot.outputs.attestation-url }}
+          SNAPSHOT_HASH: ${{ steps.create-validation-receipt.outputs.snapshot_hash }}
+          CUTOFF_DATE: ${{ steps.create-validation-receipt.outputs.cutoff_date }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "市場 Artifact 缺少有效 ID。" >&2
+            exit 1
+          fi
+          ARTIFACT_DIGEST="$(python tools/market_snapshot_attestation.py normalize-artifact-digest --value "$ARTIFACT_DIGEST")"
+          validator_seconds="$(python - "$MARKET_VALIDATOR_TIMING_OUTPUT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["fullValidatorSeconds"])
+          PY
+          )"
+          if ! [[ "$ATTESTATION_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "市場 Attestation 缺少有效 ID。" >&2
+            exit 1
+          fi
+          {
+            echo "artifact_id=$ARTIFACT_ID"
+            echo "artifact_digest=$ARTIFACT_DIGEST"
+            echo "attestation_id=$ATTESTATION_ID"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### 已簽署市場 Snapshot"
+            echo "- Snapshot hash：\`$SNAPSHOT_HASH\`"
+            echo "- 資料截止日：\`$CUTOFF_DATE\`"
+            echo "- Artifact ID：\`$ARTIFACT_ID\`"
+            echo "- Artifact digest：\`$ARTIFACT_DIGEST\`"
+            echo "- 候選完整 validator 次數：\`1\`"
+            echo "- 候選完整 validator：\`${validator_seconds}s\`"
+            echo "- Attestation：[\`$ATTESTATION_ID\`]($ATTESTATION_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save resumable ten-year market history cache
         if: ${{ always() }}

@@ -17,6 +17,34 @@ MARKET_WORKFLOWS = frozenset(
         ".github/workflows/update-market-data.yml",
     }
 )
+SAFE_REUSE_ROOT_FILES = frozenset(
+    {
+        "AGENTS.md",
+        "analyzer.md",
+        "CONTEXT.md",
+        "env.d.ts",
+        "index.md",
+        "learning-path.md",
+        "pattern-cards.md",
+        "README.md",
+        "eslint.config.mjs",
+        "package-lock.json",
+        "package.json",
+        "playwright.config.ts",
+        "tsconfig.json",
+        "vitest.config.ts",
+        "vite.config.ts",
+    }
+)
+SAFE_REUSE_PREFIXES = (
+    ".vitepress/",
+    "assets/",
+    "chapters/",
+    "docs/",
+    "pattern-cards/",
+    "src/",
+    "tests/",
+)
 
 
 class SnapshotModeError(RuntimeError):
@@ -32,6 +60,14 @@ class SnapshotModeDecision:
     website_source_sha: str
     changed_paths: tuple[str, ...]
     data_impact_paths: tuple[str, ...]
+
+    @property
+    def reason(self) -> str:
+        """供 Actions Summary 使用的穩定、無憑證分類原因。"""
+
+        if not self.data_impact_paths:
+            return "non-market-only"
+        return "market-contract:" + ",".join(self.data_impact_paths)
 
 
 def classify_snapshot_mode(
@@ -69,22 +105,30 @@ def classify_snapshot_mode(
     diff = _run_git(
         repository,
         "diff",
-        "--name-only",
+        "--name-status",
         "--no-renames",
         "-z",
         market_data_source_sha,
         website_source_sha,
     )
+    fields = tuple(field for field in diff.stdout.split("\0") if field)
+    if len(fields) % 2 != 0:
+        raise SnapshotModeError("Git diff name-status 格式無效，拒絕判定 snapshot 策略。")
+    changed_entries: list[tuple[str, str]] = []
+    for index in range(0, len(fields), 2):
+        status, path = fields[index], fields[index + 1]
+        if status not in {"A", "D", "M", "T", "U", "X", "B"}:
+            raise SnapshotModeError(f"Git diff 含有未知狀態 {status}，拒絕判定 snapshot 策略。")
+        if _is_safe_repository_path(path):
+            changed_entries.append((status, path))
     changed_paths = tuple(
-        sorted(
-            {
-                path
-                for path in diff.stdout.split("\0")
-                if path and _is_safe_repository_path(path)
-            }
-        )
+        sorted({path for _, path in changed_entries})
     )
-    data_impact_paths = tuple(path for path in changed_paths if _affects_market_data(path))
+    data_impact_paths = tuple(
+        path
+        for path in changed_paths
+        if _affects_market_data(path) or not _is_explicitly_safe_for_reuse(path)
+    )
     return SnapshotModeDecision(
         mode="rebuild" if data_impact_paths else "reuse",
         market_data_source_sha=market_data_source_sha,
@@ -105,6 +149,17 @@ def _affects_market_data(path: str) -> bool:
         )
         or normalized in MARKET_WORKFLOWS
     )
+
+
+def _is_explicitly_safe_for_reuse(path: str) -> bool:
+    """只有明列的網站、教材與測試路徑可沿用市場快照；未知路徑一律重建。"""
+
+    normalized = PurePosixPath(path).as_posix()
+    if normalized in SAFE_REUSE_ROOT_FILES or normalized.startswith(SAFE_REUSE_PREFIXES):
+        return True
+    if normalized.startswith("public/") and not normalized.startswith("public/data/"):
+        return True
+    return False
 
 
 def _is_safe_repository_path(path: str) -> bool:
@@ -167,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.exit(1, f"錯誤：{error}\n")
 
     print(f"snapshot_strategy={decision.mode}")
+    print(f"snapshot_reason={decision.reason}")
     print(f"market_data_source_sha={decision.market_data_source_sha}")
     print(f"website_source_sha={decision.website_source_sha}")
     print(f"changed_path_count={len(decision.changed_paths)}")
