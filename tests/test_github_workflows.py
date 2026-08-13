@@ -99,6 +99,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                             {
                                 "id": 901,
                                 "name": "market-snapshot-2026-08-11-502ff8be2321",
+                                "digest": f"sha256:{'a' * 64}",
                                 "expired": False,
                                 "created_at": "2026-08-11T12:00:00Z",
                                 "workflow_run": {"id": 1_901},
@@ -165,6 +166,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                             {
                                 "id": 500,
                                 "name": "market-snapshot-2026-08-09-old",
+                                "digest": f"sha256:{'a' * 64}",
                                 "expired": False,
                                 "created_at": "2026-08-09T12:00:00Z",
                                 "workflow_run": {"id": 1_500},
@@ -181,6 +183,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                             {
                                 "id": 501,
                                 "name": "market-snapshot-2026-08-10-new",
+                                "digest": f"sha256:{'b' * 64}",
                                 "expired": False,
                                 "created_at": "2026-08-10T12:00:00Z",
                                 "workflow_run": {"id": 1_501},
@@ -212,6 +215,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 700,
                     "name": "market-snapshot-2026-08-11-incomplete-run",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-11T12:00:00Z",
                     "workflow_run": {"id": 1_700},
@@ -256,6 +260,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                             {
                                 "id": 801,
                                 "name": "market-snapshot-2026-08-11-mutated-list",
+                                "digest": f"sha256:{'a' * 64}",
                                 "expired": False,
                                 "created_at": "2026-08-11T12:00:00Z",
                                 "workflow_run": {"id": 1_801},
@@ -335,6 +340,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 820,
                     "name": "market-snapshot-2026-08-12-untrusted",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-12T12:00:00Z",
                     "workflow_run": {"id": 1_820},
@@ -363,6 +369,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 822,
                     "name": "market-snapshot-2026-08-13-scheduled",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-13T12:00:00Z",
                     "workflow_run": {"id": 1_822},
@@ -391,6 +398,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 823,
                     "name": "market-snapshot-2026-08-12-baseline",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-12T12:00:00Z",
                     "workflow_run": {"id": 1_823},
@@ -419,6 +427,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                 {
                     "id": 821,
                     "name": "market-snapshot-2026-08-12-incomplete-provenance",
+                    "digest": f"sha256:{'a' * 64}",
                     "expired": False,
                     "created_at": "2026-08-12T12:00:00Z",
                     "workflow_run": {"id": 1_821},

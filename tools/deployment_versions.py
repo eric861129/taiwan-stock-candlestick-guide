@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from collections.abc import Mapping
@@ -12,18 +12,21 @@ import re
 
 FULL_GIT_SHA = re.compile(r"[0-9a-f]{40}")
 SNAPSHOT_HASH = re.compile(r"[0-9a-f]{64}")
+ARTIFACT_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 DEPLOYMENT_KEYS = frozenset(
     {
         "deploymentVersion",
         "websiteSourceCommit",
         "marketDataSourceCommit",
-        "snapshotStrategy",
         "snapshotHash",
         "cutoffDate",
+        "marketArtifactId",
+        "marketArtifactDigest",
+        "strategy",
     }
 )
-SNAPSHOT_STRATEGIES = frozenset({"reuse", "rebuild", "refresh", "rollback"})
+SNAPSHOT_STRATEGIES = frozenset({"snapshot-reuse", "snapshot-rebuild"})
 
 
 class DeploymentVersionError(ValueError):
@@ -37,22 +40,24 @@ class DeploymentVersion:
     deployment_version: int
     website_source_commit: str
     market_data_source_commit: str
-    snapshot_strategy: str
     snapshot_hash: str
     cutoff_date: str
+    market_artifact_id: int
+    market_artifact_digest: str
+    strategy: str
     legacy: bool = False
 
     def to_document(self) -> dict[str, object]:
         """輸出公開 deployment.json 的穩定 camelCase 契約。"""
-        document = asdict(self)
-        document.pop("legacy")
         return {
-            "deploymentVersion": document["deployment_version"],
-            "websiteSourceCommit": document["website_source_commit"],
-            "marketDataSourceCommit": document["market_data_source_commit"],
-            "snapshotStrategy": document["snapshot_strategy"],
-            "snapshotHash": document["snapshot_hash"],
-            "cutoffDate": document["cutoff_date"],
+            "deploymentVersion": self.deployment_version,
+            "websiteSourceCommit": self.website_source_commit,
+            "marketDataSourceCommit": self.market_data_source_commit,
+            "snapshotHash": self.snapshot_hash,
+            "cutoffDate": self.cutoff_date,
+            "marketArtifactId": self.market_artifact_id,
+            "marketArtifactDigest": self.market_artifact_digest,
+            "strategy": self.strategy,
         }
 
 
@@ -62,8 +67,8 @@ def validate_deployment_version(
 ) -> DeploymentVersion:
     """驗證 deployment metadata 與 snapshot manifest 的完整配對。
 
-    `deployment_document=None` 只用於讀取功能上線前的四檔舊 artifact；
-    其網站版本沿用市場資料 `sourceCommit`，後續重新發布就會升級為 v1。
+    `deployment_document=None` 只用於讀取功能上線前的舊 artifact；
+    它沒有 immutable Artifact 配對，不可作為 v2 rollback 的輸入。
     """
     market_data_source, snapshot_hash, cutoff = _manifest_identity(manifest_document)
     if deployment_document is None:
@@ -71,9 +76,11 @@ def validate_deployment_version(
             deployment_version=0,
             website_source_commit=market_data_source,
             market_data_source_commit=market_data_source,
-            snapshot_strategy="legacy",
             snapshot_hash=snapshot_hash,
             cutoff_date=cutoff,
+            market_artifact_id=0,
+            market_artifact_digest="",
+            strategy="legacy",
             legacy=True,
         )
     if not isinstance(deployment_document, Mapping):
@@ -82,31 +89,39 @@ def validate_deployment_version(
         raise DeploymentVersionError("deployment metadata 欄位集合無效。")
     if type(deployment_document.get("deploymentVersion")) is not int or deployment_document.get(
         "deploymentVersion"
-    ) != 1:
-        raise DeploymentVersionError("deploymentVersion 必須是 1。")
+    ) != 2:
+        raise DeploymentVersionError("deploymentVersion 必須是 2。")
 
     website_source = deployment_document.get("websiteSourceCommit")
     deployment_market_source = deployment_document.get("marketDataSourceCommit")
-    strategy = deployment_document.get("snapshotStrategy")
     deployment_hash = deployment_document.get("snapshotHash")
     deployment_cutoff = deployment_document.get("cutoffDate")
+    artifact_id = deployment_document.get("marketArtifactId")
+    artifact_digest = deployment_document.get("marketArtifactDigest")
+    strategy = deployment_document.get("strategy")
     if not isinstance(website_source, str) or FULL_GIT_SHA.fullmatch(website_source) is None:
         raise DeploymentVersionError("websiteSourceCommit 無效。")
     if deployment_market_source != market_data_source:
         raise DeploymentVersionError("marketDataSourceCommit 與 manifest 不一致。")
-    if not isinstance(strategy, str) or strategy not in SNAPSHOT_STRATEGIES:
-        raise DeploymentVersionError("snapshotStrategy 無效。")
     if deployment_hash != snapshot_hash:
         raise DeploymentVersionError("snapshotHash 與 manifest 不一致。")
     if deployment_cutoff != cutoff:
         raise DeploymentVersionError("cutoffDate 與 manifest 不一致。")
+    if type(artifact_id) is not int or artifact_id < 1:
+        raise DeploymentVersionError("marketArtifactId 無效。")
+    if not isinstance(artifact_digest, str) or ARTIFACT_DIGEST.fullmatch(artifact_digest) is None:
+        raise DeploymentVersionError("marketArtifactDigest 無效。")
+    if not isinstance(strategy, str) or strategy not in SNAPSHOT_STRATEGIES:
+        raise DeploymentVersionError("strategy 無效。")
     return DeploymentVersion(
-        deployment_version=1,
+        deployment_version=2,
         website_source_commit=website_source,
         market_data_source_commit=market_data_source,
-        snapshot_strategy=str(strategy),
         snapshot_hash=snapshot_hash,
         cutoff_date=cutoff,
+        market_artifact_id=artifact_id,
+        market_artifact_digest=artifact_digest,
+        strategy=str(strategy),
     )
 
 
@@ -115,19 +130,23 @@ def create_deployment_version(
     *,
     website_source_commit: str,
     market_data_source_commit: str,
-    snapshot_strategy: str,
+    market_artifact_id: int,
+    market_artifact_digest: str,
+    strategy: str,
 ) -> DeploymentVersion:
     """建立後立即用同一契約自我驗證，避免寫出不可 rollback 的 artifact。"""
     _, snapshot_hash, cutoff = _manifest_identity(manifest_document)
     return validate_deployment_version(
         manifest_document,
         {
-            "deploymentVersion": 1,
+            "deploymentVersion": 2,
             "websiteSourceCommit": website_source_commit,
             "marketDataSourceCommit": market_data_source_commit,
-            "snapshotStrategy": snapshot_strategy,
             "snapshotHash": snapshot_hash,
             "cutoffDate": cutoff,
+            "marketArtifactId": market_artifact_id,
+            "marketArtifactDigest": market_artifact_digest,
+            "strategy": strategy,
         },
     )
 
@@ -144,7 +163,7 @@ def load_deployment_version(
 
 def write_deployment_version(path: Path, version: DeploymentVersion) -> None:
     """以穩定 JSON 格式寫入候選目錄內的 deployment metadata。"""
-    if version.legacy or version.deployment_version != 1:
+    if version.legacy or version.deployment_version != 2:
         raise DeploymentVersionError("舊版 deployment metadata 不可重新寫入 artifact。")
     path.write_text(
         json.dumps(version.to_document(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))

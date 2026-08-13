@@ -36,12 +36,14 @@ def manifest() -> dict[str, object]:
 
 def deployment() -> dict[str, object]:
     return {
-        "deploymentVersion": 1,
+        "deploymentVersion": 2,
         "websiteSourceCommit": WEBSITE_SHA,
         "marketDataSourceCommit": MARKET_SHA,
-        "snapshotStrategy": "reuse",
         "snapshotHash": SNAPSHOT_HASH,
         "cutoffDate": "2026-08-12",
+        "marketArtifactId": 981_337,
+        "marketArtifactDigest": f"sha256:{'c' * 64}",
+        "strategy": "snapshot-reuse",
     }
 
 
@@ -51,7 +53,9 @@ class DeploymentVersionTests(unittest.TestCase):
 
         self.assertEqual(WEBSITE_SHA, version.website_source_commit)
         self.assertEqual(MARKET_SHA, version.market_data_source_commit)
-        self.assertEqual("reuse", version.snapshot_strategy)
+        self.assertEqual("snapshot-reuse", version.strategy)
+        self.assertEqual(981_337, version.market_artifact_id)
+        self.assertEqual(f"sha256:{'c' * 64}", version.market_artifact_digest)
 
     def test_legacy_artifact_uses_manifest_source_for_both_versions(self) -> None:
         version = validate_deployment_version(manifest(), None)
@@ -65,7 +69,9 @@ class DeploymentVersionTests(unittest.TestCase):
             "marketDataSourceCommit": "3" * 40,
             "snapshotHash": "b" * 64,
             "cutoffDate": "2026-08-11",
-            "snapshotStrategy": "untrusted",
+            "marketArtifactId": 0,
+            "marketArtifactDigest": "sha256:untrusted",
+            "strategy": "untrusted",
         }
         for field, value in mutations.items():
             with self.subTest(field=field):
@@ -111,8 +117,22 @@ class DeploymentVersionTests(unittest.TestCase):
                 manifest(),
                 website_source_commit=WEBSITE_SHA,
                 market_data_source_commit="4" * 40,
-                snapshot_strategy="rebuild",
+                market_artifact_id=981_337,
+                market_artifact_digest=f"sha256:{'c' * 64}",
+                strategy="snapshot-rebuild",
             )
+
+    def test_creator_binds_the_selected_immutable_artifact(self) -> None:
+        version = create_deployment_version(
+            manifest(),
+            website_source_commit=WEBSITE_SHA,
+            market_data_source_commit=MARKET_SHA,
+            market_artifact_id=981_337,
+            market_artifact_digest=f"sha256:{'c' * 64}",
+            strategy="snapshot-rebuild",
+        )
+
+        self.assertEqual(deployment() | {"strategy": "snapshot-rebuild"}, version.to_document())
 
 
 if __name__ == "__main__":
