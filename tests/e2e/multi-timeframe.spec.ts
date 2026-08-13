@@ -186,7 +186,7 @@ async function expectPrimaryTimeframe(
   label: string,
 ): Promise<void> {
   await expect(page.locator(`input[data-timeframe="${timeframe}"]`)).toBeChecked();
-  const primaryChart = page.locator('.stock-analyzer > .candlestick-chart').first();
+  const primaryChart = page.locator('[data-analyzer-workspace-grid] > .candlestick-chart').first();
   await expect(primaryChart.getByRole('heading')).toContainText(label);
 }
 
@@ -304,8 +304,9 @@ test.describe('多時間週期股票分析', () => {
     await expect(page.locator('input[data-timeframe="1d"]')).toBeEnabled();
     await expect(page.locator('input[data-timeframe="1w"]')).toBeEnabled();
     await expect(page.locator('input[data-timeframe="1m"]')).toBeEnabled();
-    await expect(resultPanel.getByRole('heading', { name: '最接近的完整價格結構（最多三個）' })).toBeVisible();
-    await expect(resultPanel.locator('[data-structure-candidate]')).toHaveCount(3);
+    const structureComparison = page.locator('.structure-comparison-panel');
+    await expect(structureComparison.getByRole('heading', { name: '最接近的完整價格結構' })).toBeVisible();
+    await expect(structureComparison.locator('[data-structure-comparison-candidate]')).toHaveCount(3);
     await expect(page.locator('[data-structure-overlay]')).toHaveCount(1);
 
     const positions = await Promise.all([resultPanel, practice].map((element) => element.boundingBox()));
@@ -322,7 +323,7 @@ test.describe('多時間週期股票分析', () => {
     await page.locator('input[data-timeframe="1m"]').check();
     await expectPrimaryTimeframe(page, '1m', '月 K');
     await expect(resultPanel).toContainText('本檔月 K 資料截止日');
-    await expect(resultPanel.locator('[data-structure-candidate]')).toHaveCount(3);
+    await expect(structureComparison.locator('[data-structure-comparison-candidate]')).toHaveCount(3);
     await expect(page.locator('[data-structure-overlay]')).toHaveCount(1);
   });
 

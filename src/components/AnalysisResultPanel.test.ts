@@ -155,6 +155,7 @@ describe('AnalysisResultPanel guided rendering', () => {
     expect(wrapper.text()).toContain('回測情境：回測後重新守住確認邊界。');
     expect(wrapper.text()).toContain('失效情境：完成 K 棒返回原整理區。');
     expect(wrapper.text()).toContain('接近但未成立的教學參考');
+    expect(wrapper.get('details[data-structure-evidence]').attributes('open')).toBeUndefined();
     expect(wrapper.get('details[data-short-window-observations]').attributes('open')).toBeUndefined();
     await wrapper.get('[data-structure-candidate]').trigger('click');
     expect(wrapper.emitted('select-structure-candidate')?.[0]).toEqual([

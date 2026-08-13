@@ -50,6 +50,41 @@ body {
   outline-offset: 3px;
 }
 
+@media (min-width: 960px) {
+  .VPSidebar,
+  .VPContent.has-sidebar,
+  .VPLocalNav.has-sidebar,
+  .VPFooter.has-sidebar {
+    transition:
+      opacity 180ms ease,
+      transform 180ms ease,
+      padding-left 180ms ease,
+      padding-right 180ms ease;
+  }
+
+  html.site-sidebar-collapsed .VPSidebar {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(-100%);
+  }
+
+  html.site-sidebar-collapsed .VPContent.has-sidebar,
+  html.site-sidebar-collapsed .VPLocalNav.has-sidebar,
+  html.site-sidebar-collapsed .VPFooter.has-sidebar {
+    padding-right: 0;
+    padding-left: 0;
+  }
+}
+
+@media (min-width: 1280px) {
+  .VPDoc:not(.has-aside) .container,
+  .VPDoc:not(.has-aside) .content,
+  .VPDoc:not(.has-aside) .content-container {
+    max-width: none;
+  }
+}
+
 .VPHome {
   background:
     radial-gradient(circle at 95% 4%, rgba(243, 202, 161, 0.35), transparent 28rem),
