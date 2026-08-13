@@ -105,6 +105,8 @@ git status --short --branch
 
 推送 `main` 時，`deploy-pages.yml` 會先鎖定網站程式 SHA 並重跑驗證，再驗證上一個成功市場快照。若兩個版本之間只有前端、教材或測試變更，流程會直接重用已驗證 snapshot，不還原十年行情 cache，也不呼叫交易所；`tools/market_*.py`、`data/` 或市場資料排程契約改變時，才會更新或重建市場資料。任何 Git 歷史、artifact 或 digest 無法完整驗證時都會 fail closed。
 
+版本分流功能第一次上線時，因部署契約本身已改變，仍會安全重建一次市場快照；完成這次遷移後，只改前端或教材的部署才會走快速重用路徑。
+
 部署 artifact 以 `deployment.json` 分開記錄 `websiteSourceCommit` 與 `marketDataSourceCommit`；公開站台也會輸出同內容的 `/deployment-version.json`。四個市場快照檔案 `manifest.json`、`provenance.json`、`SHA256SUMS`、`snapshot.tar.gz` 保持逐位元不變，網站版本不再覆寫市場資料的 `sourceCommit`。
 
 `update-market-data.yml` 在台北時間平日 17:30 與 20:30 執行。它只解析一次 `main` 的不可變 SHA，再交給相同部署流程；官方資料日期相同時會成功 no-op，不建立新的 Pages 部署。
