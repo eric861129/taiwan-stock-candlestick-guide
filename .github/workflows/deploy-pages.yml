@@ -921,7 +921,7 @@ jobs:
           smoke_started="$(date +%s)"
           base="${PAGE_URL%/}"
           curl --fail --location --retry 8 --retry-delay 5 --retry-all-errors "$base/" > /dev/null
-          curl --fail --location --retry 8 --retry-delay 5 --retry-all-errors "$base/analyzer/" > /dev/null
+          curl --fail --location --retry 8 --retry-delay 5 --retry-all-errors "$base/analyzer" > /dev/null
           curl --fail --location --retry 8 --retry-delay 5 --retry-all-errors "$base/deployment-version.json" > "$RUNNER_TEMP/public-deployment.json"
           curl --fail --location --retry 8 --retry-delay 5 --retry-all-errors "$base/data/manifest.json" > "$RUNNER_TEMP/public-manifest.json"
           stock_path="$(python - "$RUNNER_TEMP/public-deployment.json" "$RUNNER_TEMP/public-manifest.json" <<'PY'
