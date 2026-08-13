@@ -223,7 +223,7 @@ describe('StockAnalyzer', () => {
     expect(wrapper.text()).toContain('無明顯型態');
   });
 
-  it('runs the independent structure matcher with the same selected snapshot and applies only the selected overlay to the chart', async () => {
+  it('runs the independent structure matcher with the same selected snapshot and immediately applies the first ranked overlay', async () => {
     const wrapper = mount(StockAnalyzer);
     await flushPromises();
     await wrapper.get('input[name="stock-code"]').setValue('2330');
@@ -233,13 +233,37 @@ describe('StockAnalyzer', () => {
     expect(structureMocks.analyzeStructures).toHaveBeenCalledWith(expect.objectContaining({
       code: '2330', priceMode: 'raw', timeframe: '1d',
     }));
-    expect(wrapper.findComponent({ name: 'CandlestickChart' }).props('structureOverlay')).toBeNull();
-
-    await wrapper.get('[data-structure-candidate]').trigger('click');
-
     expect(wrapper.findComponent({ name: 'CandlestickChart' }).props('structureOverlay')).toMatchObject({
       candidateId: 'range:1d:raw:2026-08-11:2026-08-11',
     });
+    expect(wrapper.get('[data-structure-candidate]').attributes('aria-pressed')).toBe('true');
+
+    await wrapper.get('[data-select-structure-candidate]').trigger('click');
+    expect(wrapper.get('.stock-analyzer__status').text()).toContain('圖表疊線已同步更新');
+  });
+
+  it('shows the chart beside teaching comparisons and expands the same workspace without reloading data', async () => {
+    const wrapper = mount(StockAnalyzer);
+    await flushPromises();
+    await wrapper.get('input[name="stock-code"]').setValue('2330');
+    await wrapper.get('form[data-stock-search]').trigger('submit');
+    await flushPromises();
+
+    expect(wrapper.get('[data-analyzer-workspace-grid]').findComponent({ name: 'CandlestickChart' }).exists()).toBe(true);
+    expect(wrapper.get('[data-analyzer-workspace-grid]').findComponent({ name: 'StructureComparisonPanel' }).exists()).toBe(true);
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+
+    const loadCallsBeforeExpansion = clientMocks.loadStockSnapshot.mock.calls.length;
+    await wrapper.get('[data-analyzer-expand]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.get('[role="dialog"]').attributes('aria-modal')).toBe('true');
+    expect(wrapper.findAllComponents({ name: 'CandlestickChart' })).toHaveLength(1);
+    expect(clientMocks.loadStockSnapshot).toHaveBeenCalledTimes(loadCallsBeforeExpansion);
+
+    await wrapper.get('[data-dialog-close]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
   });
 
   it('lets readers switch day/week/month with native keyboard-operable radios and immediately reruns matching', async () => {

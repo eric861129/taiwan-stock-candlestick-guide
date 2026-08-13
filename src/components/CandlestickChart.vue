@@ -285,7 +285,7 @@ function handleCandleKeydown(event: KeyboardEvent, index: number): void {
       <svg
         class="candlestick-chart__svg"
         :viewBox="`0 0 ${chartWidth} ${chartHeight}`"
-        role="img"
+        role="group"
         :aria-labelledby="`${chartTitleId} ${chartDescriptionId}`"
       >
         <title :id="chartTitleId">{{ snapshot.name }}最近 {{ bars.length }} 根{{ priceModeLabel(snapshot.priceMode) }}{{ timeframeLabel(timeframe) }} 與成交量</title>

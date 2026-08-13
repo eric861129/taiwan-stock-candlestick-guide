@@ -289,73 +289,78 @@ function selectStructureCandidate(candidate: StructureCandidate): void {
         </ul>
       </section>
 
-      <section
+      <details
         v-if="structureResult"
-        class="analysis-result-panel__structures"
-        aria-labelledby="analysis-structure-title"
+        data-structure-evidence
       >
-        <h3 id="analysis-structure-title">
-          最接近的完整價格結構（最多三個）
-        </h3>
-        <p>完整價格結構和一至三根短窗 K 棒觀察分開排名；規則符合度只描述結構與規則的接近程度，不是機率、預測或買賣建議。</p>
-        <template v-if="structureResult.candidates.length > 0">
-          <article
-            v-for="candidate in structureResult.candidates"
-            :key="candidate.candidateId"
-            class="analysis-result-panel__structure-candidate"
-          >
-            <h4>{{ structureCardFor(candidate).nameZhTw }}：{{ structureStatusLabel(candidate) }}（規則符合度 {{ candidate.ruleFit }}）</h4>
-            <p>形成區間：{{ candidate.window.startDate }} 至 {{ candidate.window.endDate }}（{{ candidate.window.barCount }} 根）。{{ structureDirectionLabel(candidate) }}。</p>
-            <p>確認條件：{{ candidate.confirmationCondition }}</p>
-            <p>失效條件：{{ candidate.invalidationCondition }}</p>
-            <section
-              v-if="candidate.overlay.scenario?.conditions?.length"
-              class="analysis-result-panel__scenario-conditions"
-              aria-label="確認後的三種條件式情境"
-            >
-              <p>{{ candidate.overlay.scenario.label }}：</p>
-              <ul>
-                <li
-                  v-for="condition in candidate.overlay.scenario.conditions"
-                  :key="condition.kind"
-                >
-                  {{ condition.label }}：{{ condition.condition }}
-                </li>
-              </ul>
-            </section>
-            <button
-              type="button"
-              data-structure-candidate
-              :aria-pressed="selectedStructureCandidateId === candidate.candidateId"
-              @click="selectStructureCandidate(candidate)"
-            >
-              {{ selectedStructureCandidateId === candidate.candidateId ? '目前圖表疊線' : '套用到圖表' }}
-            </button>
-          </article>
-        </template>
-        <p v-else>
-          無明顯價格結構；本次不為了湊滿前三名而補入低於門檻的結果。
-        </p>
+        <summary>完整價格結構規則與次要教學參考</summary>
         <section
-          v-if="structureResult.nearMisses.length > 0"
-          aria-labelledby="analysis-structure-near-miss-title"
+          class="analysis-result-panel__structures"
+          aria-labelledby="analysis-structure-title"
         >
-          <h4 id="analysis-structure-near-miss-title">
-            接近但未成立的教學參考
-          </h4>
-          <ul>
-            <li
-              v-for="nearMiss in structureResult.nearMisses"
-              :key="`${nearMiss.structureId}-${nearMiss.status}`"
+          <h3 id="analysis-structure-title">
+            最接近的完整價格結構（最多三個）
+          </h3>
+          <p>完整價格結構和一至三根短窗 K 棒觀察分開排名；規則符合度只描述結構與規則的接近程度，不是機率、預測或買賣建議。</p>
+          <template v-if="structureResult.candidates.length > 0">
+            <article
+              v-for="candidate in structureResult.candidates"
+              :key="candidate.candidateId"
+              class="analysis-result-panel__structure-candidate"
             >
-              {{ nearMissLabel(nearMiss) }}：{{ getPatternCard(nearMiss.structureId).nameZhTw }}；缺少條件：{{ nearMiss.missingConditions.join('、') }}。
-              <template v-if="nearMiss.window && nearMiss.confirmationCondition && nearMiss.invalidationCondition">
-                參考區間 {{ nearMiss.window.startDate }} 至 {{ nearMiss.window.endDate }}；確認條件：{{ nearMiss.confirmationCondition }}；失效條件：{{ nearMiss.invalidationCondition }}
-              </template>
-            </li>
-          </ul>
+              <h4>{{ structureCardFor(candidate).nameZhTw }}：{{ structureStatusLabel(candidate) }}（規則符合度 {{ candidate.ruleFit }}）</h4>
+              <p>形成區間：{{ candidate.window.startDate }} 至 {{ candidate.window.endDate }}（{{ candidate.window.barCount }} 根）。{{ structureDirectionLabel(candidate) }}。</p>
+              <p>確認條件：{{ candidate.confirmationCondition }}</p>
+              <p>失效條件：{{ candidate.invalidationCondition }}</p>
+              <section
+                v-if="candidate.overlay.scenario?.conditions?.length"
+                class="analysis-result-panel__scenario-conditions"
+                aria-label="確認後的三種條件式情境"
+              >
+                <p>{{ candidate.overlay.scenario.label }}：</p>
+                <ul>
+                  <li
+                    v-for="condition in candidate.overlay.scenario.conditions"
+                    :key="condition.kind"
+                  >
+                    {{ condition.label }}：{{ condition.condition }}
+                  </li>
+                </ul>
+              </section>
+              <button
+                type="button"
+                data-structure-candidate
+                :aria-pressed="selectedStructureCandidateId === candidate.candidateId"
+                @click="selectStructureCandidate(candidate)"
+              >
+                {{ selectedStructureCandidateId === candidate.candidateId ? '目前圖表疊線' : '套用到圖表' }}
+              </button>
+            </article>
+          </template>
+          <p v-else>
+            無明顯價格結構；本次不為了湊滿前三名而補入低於門檻的結果。
+          </p>
+          <section
+            v-if="structureResult.nearMisses.length > 0"
+            aria-labelledby="analysis-structure-near-miss-title"
+          >
+            <h4 id="analysis-structure-near-miss-title">
+              接近但未成立的教學參考
+            </h4>
+            <ul>
+              <li
+                v-for="nearMiss in structureResult.nearMisses"
+                :key="`${nearMiss.structureId}-${nearMiss.status}`"
+              >
+                {{ nearMissLabel(nearMiss) }}：{{ getPatternCard(nearMiss.structureId).nameZhTw }}；缺少條件：{{ nearMiss.missingConditions.join('、') }}。
+                <template v-if="nearMiss.window && nearMiss.confirmationCondition && nearMiss.invalidationCondition">
+                  參考區間 {{ nearMiss.window.startDate }} 至 {{ nearMiss.window.endDate }}；確認條件：{{ nearMiss.confirmationCondition }}；失效條件：{{ nearMiss.invalidationCondition }}
+                </template>
+              </li>
+            </ul>
+          </section>
         </section>
-      </section>
+      </details>
 
       <section
         v-if="context.unavailableCardIds.length > 0"

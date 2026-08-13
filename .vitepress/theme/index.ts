@@ -5,6 +5,7 @@ import LearningHome from '../../src/components/LearningHome.vue';
 import LearningMap from '../../src/components/LearningMap.vue';
 import LearningProgressProvider from '../../src/components/LearningProgressProvider.vue';
 import PatternCatalog from '../../src/components/PatternCatalog.vue';
+import SidebarCollapseToggle from '../../src/components/SidebarCollapseToggle.vue';
 import StageQuiz from '../../src/components/StageQuiz.vue';
 import StockAnalyzer from '../../src/components/StockAnalyzer.vue';
 import './styles.css';
@@ -25,15 +26,18 @@ const theme: Theme = {
   Layout: () =>
     h(DefaultTheme.Layout, null, {
       'layout-top': () =>
-        h(
-          'a',
-          {
-            class: 'skip-link',
-            href: '#VPContent',
-            onClick: focusMainContent,
-          },
-          '跳至主要內容',
-        ),
+        [
+          h(
+            'a',
+            {
+              class: 'skip-link',
+              href: '#VPContent',
+              onClick: focusMainContent,
+            },
+            '跳至主要內容',
+          ),
+          h(SidebarCollapseToggle),
+        ],
     }),
   enhanceApp({ app }) {
     app.config.globalProperties.$siteName = '台股 K 線筆記';

@@ -21,6 +21,34 @@ function neutralBars(targetDate = '2026-08-10') {
   return [...prior, makeBar(targetDate, 95, 115, 95, 105)];
 }
 
+function priceStructureBars(): OhlcvBar[] {
+  const ranges = [
+    [108, 102], [109, 101], [112, 102], [108, 101], [109, 99],
+    [108, 102], [112, 102], [108, 101], [109, 99], [108, 102],
+    [112, 102], [108, 101], [109, 99], [108, 102], [109, 101],
+  ] as const;
+  const dates = weekdayDates('2026-07-20', ranges.length);
+  return ranges.map(([high, low], index) => {
+    const close = (high + low) / 2;
+    return makeBar(dates[index]!, close, high, low, close);
+  });
+}
+
+function multiCandidateBars(): OhlcvBar[] {
+  const closes = [
+    100, 100.4, 99.8, 100.2, 99.9, 100.3, 100.1, 99.7, 102, 100.5, 100.2,
+    100, 102, 104.5, 107, 110, 109.6, 109.2, 109.4, 109, 108.8, 109.1,
+  ];
+  const dates = weekdayDates('2026-07-20', closes.length);
+  return closes.map((close, index) => makeBar(
+    dates[index]!,
+    close - 0.2,
+    close + 0.6,
+    close - 0.6,
+    close,
+  ));
+}
+
 function weekdayDates(startDate: string, count: number): string[] {
   const dates: string[] = [];
   const cursor = new Date(`${startDate}T00:00:00.000Z`);
@@ -91,6 +119,78 @@ test.describe('股票型態比對', () => {
     const candidateCount = await page.locator('.analysis-result-panel__candidate').count();
     expect(candidateCount).toBeLessThanOrEqual(3);
     expect(liveMarketRequests).toEqual([]);
+  });
+
+  test('桌機直接比較主圖與結構示意卡，放大時沿用同一份分析狀態', async ({ page }) => {
+    const stock = makeBrowserStockFixture(priceStructureBars());
+    await routeBrowserMarketFixture(page, createBrowserMarketFixture(stock));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await goToRoute(page, 'analyzer');
+    await waitForAnalyzerReady(page);
+    await searchStock(page, '2330');
+
+    const workspace = page.locator('[data-analyzer-workspace-grid]');
+    await expect(workspace).toBeVisible();
+    await expect(workspace.locator('.candlestick-chart')).toBeVisible();
+    await expect(workspace.locator('.structure-comparison-panel')).toBeVisible();
+    await expect(workspace.locator('[data-structure-comparison-candidate]').first()).toHaveAttribute('data-selected', 'true');
+    await expect(workspace.locator('.pattern-glyph').first()).toBeVisible();
+    await expect(workspace.locator('[data-structure-overlay]')).toHaveCount(1);
+
+    await page.getByRole('button', { name: '放大分析區' }).click();
+    const dialog = page.getByRole('dialog', { name: /價格結構分析/ });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('.candlestick-chart')).toHaveCount(1);
+    await expect(page.locator('.candlestick-chart')).toHaveCount(1);
+    await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+
+    await expect(dialog.locator('[data-price-mode="adjusted"]')).toBeChecked();
+    await dialog.locator('[data-price-mode="raw"]').check();
+    await expect(dialog.locator('[data-price-mode="raw"]')).toBeChecked();
+    await dialog.locator('[data-timeframe="1w"]').check();
+    await expect(dialog.locator('[data-timeframe="1w"]')).toBeChecked();
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '放大分析區' })).toBeFocused();
+    await expect(page.locator('[data-timeframe="1w"]')).toBeChecked();
+    await expect(page.locator('[data-price-mode="raw"]')).toBeChecked();
+  });
+
+  test('手機先顯示主圖與已選候選，其餘候選維持可選的收合摘要', async ({ page }) => {
+    const stock = makeBrowserStockFixture(multiCandidateBars());
+    await routeBrowserMarketFixture(page, createBrowserMarketFixture(stock));
+    await page.setViewportSize({ width: 700, height: 844 });
+    await goToRoute(page, 'analyzer');
+    await waitForAnalyzerReady(page);
+    await searchStock(page, '2330');
+
+    const workspace = page.locator('[data-analyzer-workspace-grid]');
+    const chartBox = await workspace.locator('.candlestick-chart').boundingBox();
+    const panelBox = await workspace.locator('.structure-comparison-panel').boundingBox();
+    expect(chartBox).not.toBeNull();
+    expect(panelBox).not.toBeNull();
+    expect(chartBox!.y).toBeLessThan(panelBox!.y);
+
+    const candidates = workspace.locator('[data-structure-comparison-candidate]');
+    expect(await candidates.count()).toBeGreaterThanOrEqual(2);
+    await expect(candidates.first().locator('.structure-comparison-panel__candidate-content')).toBeVisible();
+    await expect(candidates.nth(1).locator('.structure-comparison-panel__candidate-content')).toBeHidden();
+    await expect(candidates.nth(1).locator('[data-select-structure-candidate]')).toBeVisible();
+
+    await candidates.nth(1).locator('[data-select-structure-candidate]').click();
+    await expect(candidates.nth(1)).toHaveAttribute('data-selected', 'true');
+    await expect(candidates.nth(1).locator('.structure-comparison-panel__candidate-content')).toBeVisible();
+    await expect(page.locator('.stock-analyzer__status')).toContainText('圖表疊線已同步更新');
+
+    await page.getByRole('button', { name: '放大分析區' }).click();
+    const dialog = page.getByRole('dialog', { name: /價格結構分析/ });
+    await candidates.first().locator('[data-select-structure-candidate]').click();
+    await expect(dialog.locator('.stock-analyzer__dialog-status')).toContainText('圖表疊線已同步更新');
+    const visibleFocusTargets = dialog.locator('a[href]:visible, button:not([disabled]):visible, input:not([disabled]):visible, summary:visible');
+    await visibleFocusTargets.last().focus();
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: '關閉放大分析區' })).toBeFocused();
   });
 
   test('正常但無候選時顯示無明顯型態，而非證據不足', async ({ page }) => {

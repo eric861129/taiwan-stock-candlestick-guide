@@ -3,7 +3,15 @@ import { resolve } from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { validateAccessibilityAllowlist } from '../../src/domain/site/a11y-allowlist';
-import { goToRoute } from './fixtures';
+import {
+  createBrowserMarketFixture,
+  goToRoute,
+  makeBar,
+  makeBrowserStockFixture,
+  routeBrowserMarketFixture,
+  searchStock,
+  waitForAnalyzerReady,
+} from './fixtures';
 
 const allowlistPath = resolve(process.cwd(), 'tests/a11y-allowlist.json');
 const allowlist = validateAccessibilityAllowlist(JSON.parse(readFileSync(allowlistPath, 'utf8')) as unknown);
@@ -41,6 +49,33 @@ test.describe('自動化可近用性 release gate', () => {
       await expect(page.locator('#VPContent')).toContainText(target.heading);
       await expectNoBlockingAxeFindings(page, target.route);
     }
+  });
+
+  test('Analyzer 搜尋結果、結構卡與放大 Dialog 不存在 serious 或 critical axe 問題', async ({ page }) => {
+    const geometry = [
+      [108, 102], [109, 101], [112, 102], [108, 101], [109, 99],
+      [108, 102], [112, 102], [108, 101], [109, 99], [108, 102],
+      [112, 102], [108, 101], [109, 99], [108, 102], [109, 101],
+    ] as const;
+    const dates = [
+      '2026-07-01', '2026-07-02', '2026-07-03', '2026-07-06', '2026-07-07',
+      '2026-07-08', '2026-07-09', '2026-07-10', '2026-07-13', '2026-07-14',
+      '2026-07-15', '2026-07-16', '2026-07-17', '2026-07-20', '2026-07-21',
+    ] as const;
+    const stock = makeBrowserStockFixture(geometry.map(([high, low], index) => {
+      const close = (high + low) / 2;
+      return makeBar(dates[index]!, close, high, low, close);
+    }));
+    await routeBrowserMarketFixture(page, createBrowserMarketFixture(stock));
+    await goToRoute(page, '/analyzer');
+    await waitForAnalyzerReady(page);
+    await searchStock(page, '2330');
+    await expect(page.locator('[data-analyzer-workspace-grid]')).toBeVisible();
+    await expectNoBlockingAxeFindings(page, '/analyzer');
+
+    await page.getByRole('button', { name: '放大分析區' }).click();
+    await expect(page.getByRole('dialog', { name: /價格結構分析/ })).toBeVisible();
+    await expectNoBlockingAxeFindings(page, '/analyzer');
   });
 
   test('跳至主要內容連結會以鍵盤啟用、定位並將焦點交給 main', async ({ page }) => {

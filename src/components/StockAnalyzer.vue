@@ -22,11 +22,13 @@ import { analyzePatterns } from '../domain/patterns/matcher';
 import { analyzeStructures } from '../domain/structures/analyzer';
 import type { StructureAnalysisResult, StructureId } from '../domain/structures/types';
 import AnalysisResultPanel from './AnalysisResultPanel.vue';
+import AnalyzerWorkspaceDialog from './AnalyzerWorkspaceDialog.vue';
 import CandlestickChart from './CandlestickChart.vue';
 import MultiTimeframeComparison from './MultiTimeframeComparison.vue';
 import MultiTimeframeExercise from './MultiTimeframeExercise.vue';
 import MultiTimeframeSummary from './MultiTimeframeSummary.vue';
 import StockCodeSearch from './StockCodeSearch.vue';
+import StructureComparisonPanel from './StructureComparisonPanel.vue';
 
 type LoadState = 'loading-manifest' | 'ready' | 'loading-stock' | 'error';
 
@@ -38,6 +40,7 @@ const selectedStructureCandidateId = ref<string | null>(null);
 const multiTimeframeResult = ref<MultiTimeframeAnalysisResult | null>(null);
 const selectedStructureIds = ref<Partial<Record<Timeframe, StructureId>>>({});
 const showMultiTimeframeComparison = ref(false);
+const isWorkspaceExpanded = ref(false);
 const multiTimeframeExerciseAnswers = ref<{
   monthlyDirection: 'up' | 'down' | 'neutral' | 'undetermined' | null;
   monthlyKeyArea: string;
@@ -192,7 +195,7 @@ function analyzeSelectedSnapshot(
 ): void {
   result.value = analyzePatterns(selected, matcherOptions);
   structureResult.value = analyzeStructures(selected);
-  selectedStructureCandidateId.value = null;
+  selectedStructureCandidateId.value = structureResult.value.candidates[0]?.candidateId ?? null;
 }
 
 /** 以同一 cutoff 與價格口徑建立月、週、日獨立結果，再把目前週期投影到詳細面板。 */
@@ -234,16 +237,14 @@ function selectSummaryCandidate(selection: { timeframe: Timeframe; candidateId: 
 
 function selectDetailedCandidate(candidateId: string): void {
   const candidate = structureResult.value?.candidates.find((item) => item.candidateId === candidateId);
-  if (!candidate) {
-    selectedStructureCandidateId.value = candidateId;
-    return;
-  }
+  if (!candidate) return;
   selectedStructureIds.value = { ...selectedStructureIds.value, [selectedTimeframe.value]: candidate.structureId };
   if (snapshot.value?.priceModes) {
     coordinateSelectedSnapshot(snapshot.value);
   } else {
     selectedStructureCandidateId.value = candidateId;
   }
+  statusMessage.value = `已選擇${getPatternCard(candidate.structureId).nameZhTw}；${timeframeLabel(selectedTimeframe.value)}圖表疊線已同步更新。`;
 }
 
 function resetMultiTimeframeExercise(): void {
@@ -298,6 +299,7 @@ async function selectStock(symbol: MarketDataSymbol): Promise<void> {
   }
 
   const requestId = beginRequest();
+  isWorkspaceExpanded.value = false;
   loadState.value = 'loading-stock';
   errorMessage.value = '';
   result.value = null;
@@ -424,6 +426,7 @@ function changeTimeframe(timeframe: Timeframe): void {
 
 function resetQuery(): void {
   beginRequest();
+  isWorkspaceExpanded.value = false;
   snapshot.value = null;
   selectedTimeframe.value = '1d';
   selectedPriceMode.value = 'raw';
@@ -470,7 +473,7 @@ onMounted(() => {
 
     <p
       class="stock-analyzer__status"
-      aria-live="polite"
+      :aria-live="isWorkspaceExpanded ? 'off' : 'polite'"
       aria-atomic="true"
     >
       {{ statusMessage }}
@@ -492,74 +495,107 @@ onMounted(() => {
     </button>
 
     <template v-if="snapshot">
-      <section
-        class="stock-analyzer__selection"
-        aria-label="已選擇的股票"
+      <button
+        type="button"
+        data-analyzer-expand
+        @click="isWorkspaceExpanded = true"
       >
-        <h3>已選擇：{{ snapshot.code }} {{ snapshot.name }}</h3>
-        <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，{{ priceModeLabel(selectedPriceMode) }}{{ timeframeLabel(selectedTimeframe) }}，股票{{ timeframeLabel(selectedTimeframe) }} 最後資料日 {{ stockDataLastDate ?? '無合法日 K' }}。</p>
-        <fieldset class="stock-analyzer__timeframes">
-          <legend>選擇價格口徑</legend>
-          <label
-            v-for="priceMode in priceModeOptions"
-            :key="priceMode"
-          >
-            <input
-              :data-price-mode="priceMode"
-              type="radio"
-              name="analysis-price-mode"
-              :value="priceMode"
-              :checked="selectedPriceMode === priceMode"
-              :disabled="!priceModeAvailable(priceMode)"
-              @change="changePriceMode(priceMode)"
-            >
-            {{ priceModeLabel(priceMode) }}
-          </label>
-        </fieldset>
+        放大分析區
+      </button>
+      <AnalyzerWorkspaceDialog
+        v-if="structureResult"
+        :open="isWorkspaceExpanded"
+        :title="`${snapshot.name}（${snapshot.code}）價格結構分析`"
+        description="左側為股票實際 K 線，右側為標準教學示意圖；規則符合度不是價格預測。"
+        @close="isWorkspaceExpanded = false"
+      >
         <p
-          v-if="adjustedUnavailableWarning"
-          class="stock-analyzer__mode-warning"
+          v-if="isWorkspaceExpanded"
+          class="stock-analyzer__dialog-status"
+          aria-live="polite"
+          aria-atomic="true"
         >
-          {{ adjustedUnavailableWarning }} 向後還原價格已停用，仍可查看官方原始價格。
+          {{ statusMessage }}
         </p>
-        <fieldset class="stock-analyzer__timeframes">
-          <legend>選擇 K 線週期</legend>
-          <label
-            v-for="timeframe in timeframeOptions"
-            :key="timeframe"
-          >
-            <input
-              :data-timeframe="timeframe"
-              type="radio"
-              name="analysis-timeframe"
-              :value="timeframe"
-              :checked="selectedTimeframe === timeframe"
-              @change="changeTimeframe(timeframe)"
+        <section
+          class="stock-analyzer__selection"
+          aria-label="已選擇的股票"
+        >
+          <h3>已選擇：{{ snapshot.code }} {{ snapshot.name }}</h3>
+          <p>{{ snapshot.market === 'TWSE' ? '上市' : '上櫃' }}普通股，{{ priceModeLabel(selectedPriceMode) }}{{ timeframeLabel(selectedTimeframe) }}，股票{{ timeframeLabel(selectedTimeframe) }} 最後資料日 {{ stockDataLastDate ?? '無合法日 K' }}。</p>
+          <fieldset class="stock-analyzer__timeframes">
+            <legend>選擇價格口徑</legend>
+            <label
+              v-for="priceMode in priceModeOptions"
+              :key="priceMode"
             >
-            {{ timeframeLabel(timeframe) }}
-          </label>
-        </fieldset>
-        <p v-if="latestNoQuoteEvidence">
-          官方{{ latestNoQuoteEvidence.reason === 'official-suspension' ? '停牌' : '未報價' }}證據 {{ latestNoQuoteEvidence.date }}；{{ latestNoQuoteDescription }}
-          <a
-            :href="latestNoQuoteEvidence.sourceUrl"
-            target="_blank"
-            rel="noreferrer"
-          >查看官方來源</a>
-        </p>
-        <p>市場快照截止日 {{ marketCutoffDate ?? '無法判定' }}；官方預期截止日 {{ marketExpectedCutoffDate ?? '無法判定' }}。</p>
-        <button
-          type="button"
-          @click="resetQuery"
+              <input
+                :data-price-mode="priceMode"
+                type="radio"
+                name="analysis-price-mode"
+                :value="priceMode"
+                :checked="selectedPriceMode === priceMode"
+                :disabled="!priceModeAvailable(priceMode)"
+                @change="changePriceMode(priceMode)"
+              >
+              {{ priceModeLabel(priceMode) }}
+            </label>
+          </fieldset>
+          <p
+            v-if="adjustedUnavailableWarning"
+            class="stock-analyzer__mode-warning"
+          >
+            {{ adjustedUnavailableWarning }} 向後還原價格已停用，仍可查看官方原始價格。
+          </p>
+          <fieldset class="stock-analyzer__timeframes">
+            <legend>選擇 K 線週期</legend>
+            <label
+              v-for="timeframe in timeframeOptions"
+              :key="timeframe"
+            >
+              <input
+                :data-timeframe="timeframe"
+                type="radio"
+                name="analysis-timeframe"
+                :value="timeframe"
+                :checked="selectedTimeframe === timeframe"
+                @change="changeTimeframe(timeframe)"
+              >
+              {{ timeframeLabel(timeframe) }}
+            </label>
+          </fieldset>
+          <p v-if="latestNoQuoteEvidence">
+            官方{{ latestNoQuoteEvidence.reason === 'official-suspension' ? '停牌' : '未報價' }}證據 {{ latestNoQuoteEvidence.date }}；{{ latestNoQuoteDescription }}
+            <a
+              :href="latestNoQuoteEvidence.sourceUrl"
+              target="_blank"
+              rel="noreferrer"
+            >查看官方來源</a>
+          </p>
+          <p>市場快照截止日 {{ marketCutoffDate ?? '無法判定' }}；官方預期截止日 {{ marketExpectedCutoffDate ?? '無法判定' }}。</p>
+          <button
+            type="button"
+            @click="resetQuery"
+          >
+            重新查詢
+          </button>
+        </section>
+        <div
+          class="stock-analyzer__workspace-grid"
+          data-analyzer-workspace-grid
         >
-          重新查詢
-        </button>
-      </section>
-      <CandlestickChart
-        v-if="snapshot.bars.length > 0"
-        :snapshot="snapshot"
-        :structure-overlay="selectedStructureCandidate?.overlay ?? null"
-      />
+          <CandlestickChart
+            v-if="snapshot.bars.length > 0"
+            :snapshot="snapshot"
+            :structure-overlay="selectedStructureCandidate?.overlay ?? null"
+          />
+          <StructureComparisonPanel
+            :structure-result="structureResult"
+            :selected-structure-candidate-id="selectedStructureCandidateId"
+            @select-structure-candidate="selectDetailedCandidate"
+          />
+        </div>
+      </AnalyzerWorkspaceDialog>
     </template>
 
     <AnalysisResultPanel
@@ -620,7 +656,7 @@ onMounted(() => {
 
 <style scoped>
 .stock-analyzer {
-  width: min(100% - 2rem, 76rem);
+  width: min(100% - 2rem, 100rem);
   margin: 2rem auto;
 }
 
@@ -655,7 +691,7 @@ onMounted(() => {
 }
 
 .stock-analyzer__comparison-control {
-  width: min(100% - 2rem, 76rem);
+  width: min(100% - 2rem, 100rem);
   margin: 2rem auto;
   padding: 1rem;
   border: 1px solid var(--vp-c-divider);
@@ -718,9 +754,38 @@ onMounted(() => {
   cursor: pointer;
 }
 
-@media (max-width: 600px) {
+.stock-analyzer__workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(17rem, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.stock-analyzer__workspace-grid > :last-child {
+  position: sticky;
+  top: calc(var(--vp-nav-height) + 1rem);
+  max-height: calc(100vh - var(--vp-nav-height) - 2rem);
+  overflow-y: auto;
+}
+
+.analyzer-workspace-dialog--open .stock-analyzer__workspace-grid > :last-child {
+  top: 0;
+  max-height: calc(100vh - 9rem);
+}
+
+@media (max-width: 767px) {
   .stock-analyzer {
-    width: min(100% - 1.25rem, 76rem);
+    width: min(100% - 1.25rem, 100rem);
+  }
+
+  .stock-analyzer__workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stock-analyzer__workspace-grid > :last-child {
+    position: static;
+    max-height: none;
+    overflow: visible;
   }
 }
 </style>

@@ -144,7 +144,7 @@ describe('CandlestickChart', () => {
     });
 
     expect(wrapper.find('canvas').exists()).toBe(false);
-    expect(wrapper.get('svg').attributes('role')).toBe('img');
+    expect(wrapper.get('svg').attributes('role')).toBe('group');
     expect(wrapper.find('title').text()).toContain('台積電');
     expect(wrapper.find('desc').text()).toContain('60');
     expect(wrapper.findAll('[data-candle-index]')).toHaveLength(60);

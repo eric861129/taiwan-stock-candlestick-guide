@@ -1,6 +1,8 @@
 ---
 title: 股票型態與多週期比對
 description: 以同一檔股票的月、週、日 K 分開核對結構、條件與失效方式。
+outline: false
+aside: false
 ---
 
 # 股票型態與多週期比對
