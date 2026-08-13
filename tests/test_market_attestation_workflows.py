@@ -36,6 +36,8 @@ class MarketSnapshotAttestationWorkflowTests(unittest.TestCase):
         self.assertLess(attestation_index, upload_index)
         build_section = text[build_index:receipt_index]
         self.assertIn("python tools/market_snapshot.py bootstrap", build_section)
+        self.assertIn("MARKET_VALIDATOR_TIMING_OUTPUT", build_section)
+        self.assertIn("fullValidatorCount", build_section)
         self.assertNotIn("python tools/market_snapshot.py validate", build_section)
         self.assertNotIn("python tools/market_snapshot.py validate", text)
 
@@ -72,6 +74,7 @@ class MarketSnapshotAttestationWorkflowTests(unittest.TestCase):
         self.assertIn("steps.upload-market-snapshot.outputs.artifact-digest", provenance_section)
         self.assertIn("python tools/market_snapshot_attestation.py normalize-artifact-digest", provenance_section)
         self.assertIn("artifact_digest=$ARTIFACT_DIGEST", provenance_section)
+        self.assertIn("fullValidatorSeconds", provenance_section)
 
     def test_bootstrap_signing_job_uses_the_required_minimum_permissions(self) -> None:
         """簽署 job 只取得讀取 source、OIDC 與 Attestation 的必要權限。"""

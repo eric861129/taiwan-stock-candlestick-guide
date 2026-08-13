@@ -437,6 +437,11 @@ class MarketSnapshotReceiptTests(unittest.TestCase):
                 "snapshot_hash": manifest["snapshotHash"],
                 "cutoff_date": "2026-08-13",
                 "market_source_sha": SOURCE_COMMIT,
+                "receipt_version": 1,
+                "validator_contract_digest": contract_digest(
+                    ROOT,
+                    market_snapshot_receipt.VALIDATOR_CONTRACT_FILES,
+                ),
             }
             self.assertEqual(0, create.returncode, create.stderr)
             self.assertEqual(canonical_json_bytes(expected).decode("utf-8"), create.stdout)

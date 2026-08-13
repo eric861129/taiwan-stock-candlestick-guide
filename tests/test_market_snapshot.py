@@ -155,6 +155,45 @@ def raw_timeframe(stock: dict[str, object], timeframe: str = "1d") -> dict[str, 
     return stock["priceModes"]["raw"]["timeframes"][timeframe]
 
 
+class ValidatorTimingTests(unittest.TestCase):
+    """候選完整 validator 的可觀測性不可在失敗前誤報成功。"""
+
+    def test_success_writes_one_canonical_validator_timing_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            timing = root / "validator-timing.json"
+            with patch.dict(
+                "os.environ",
+                {"MARKET_VALIDATOR_TIMING_OUTPUT": str(timing)},
+            ):
+                build_snapshot(None, fixture_build_input(), root / "snapshot")
+
+            raw = timing.read_bytes()
+            document = json.loads(raw.decode("utf-8"))
+            self.assertEqual(1, document["fullValidatorCount"])
+            self.assertGreaterEqual(document["fullValidatorSeconds"], 0)
+            self.assertEqual(market_snapshot._canonical_json_bytes(document), raw)
+
+    def test_failed_validator_does_not_write_a_success_timing_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            timing = root / "validator-timing.json"
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"MARKET_VALIDATOR_TIMING_OUTPUT": str(timing)},
+                ),
+                patch(
+                    "market_snapshot.validate_snapshot",
+                    side_effect=SnapshotValidationError("刻意失敗"),
+                ),
+                self.assertRaisesRegex(SnapshotValidationError, "刻意失敗"),
+            ):
+                build_snapshot(None, fixture_build_input(), root / "snapshot")
+
+            self.assertFalse(timing.exists())
+
+
 def raw_completed_bars(stock: dict[str, object], timeframe: str = "1d") -> list[dict[str, object]]:
     """取得 v4 原始價格指定週期的已完成 K 棒。"""
 
@@ -2043,6 +2082,24 @@ class SnapshotBuildTests(unittest.TestCase):
             self.assertFalse(updated)
             self.assertEqual(original.snapshot_hash, manifest.snapshot_hash)
 
+    def test_receipt_verified_manifest_mode_cannot_fall_back_to_old_snapshot_bars(self) -> None:
+        """快速路徑只可信任 manifest 身分，必須以完整歷史快取重建全部 K 線。"""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            original = build_snapshot(None, fixture_build_input(), root / "source")
+
+            with (
+                patch("market_snapshot.validate_snapshot", side_effect=AssertionError("不得驗舊快照")),
+                self.assertRaisesRegex(SnapshotValidationError, "require-history-cache"),
+            ):
+                update_snapshot(
+                    original,
+                    root / "next-output",
+                    "fixture",
+                    root / "cache",
+                )
+
     def test_update_reads_a_standalone_previous_archive_without_parent_sidecar_files(self) -> None:
         """若 --previous archive 仍依賴父目錄裸資料，artifact rollback 會讀到錯誤來源。"""
         base = fixture_build_input()
@@ -2140,6 +2197,53 @@ class SnapshotBuildTests(unittest.TestCase):
                 )
 
             self.assertFalse((root / "escaped.json").exists())
+
+    def test_legacy_archive_extraction_streams_without_getmembers(self) -> None:
+        """一次性 legacy migration 也不可先把全部 TarInfo 載入記憶體。"""
+
+        base = fixture_build_input()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source"
+            build_snapshot(None, base, source)
+
+            with (
+                patch.object(tarfile.TarFile, "getmembers", side_effect=AssertionError("不得全量列舉")),
+                patch("market_snapshot.fetch_trading_calendar", return_value=base.calendar),
+            ):
+                manifest, updated = update_snapshot(
+                    source / "snapshot.tar.gz",
+                    root / "next-output",
+                    "fixture",
+                    root / "cache",
+                    now=datetime(2026, 8, 11, 18, 0, tzinfo=base.calendar.timezone),
+                )
+
+            self.assertFalse(updated)
+            self.assertEqual("fixture", manifest.source_commit)
+
+    def test_legacy_archive_rejects_member_count_and_payload_size_before_validation(self) -> None:
+        """一次性舊 archive 工具即使未接部署，也必須鎖住 tar bomb 上限。"""
+
+        cases = (
+            ("MAX_SNAPSHOT_ARCHIVE_MEMBERS", 1, (b"a", b"b"), "檔案數量"),
+            ("MAX_SNAPSHOT_PAYLOAD_BYTES", 1, (b"ab",), "解壓後"),
+        )
+        for constant, limit, payloads, message in cases:
+            with self.subTest(constant=constant), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                archive = root / "snapshot.tar.gz"
+                with tarfile.open(archive, mode="w:gz") as destination:
+                    for index, payload in enumerate(payloads):
+                        member = tarfile.TarInfo(f"file-{index}.json")
+                        member.size = len(payload)
+                        destination.addfile(member, BytesIO(payload))
+
+                with (
+                    patch.object(market_snapshot, constant, limit),
+                    self.assertRaisesRegex(SnapshotValidationError, message),
+                ):
+                    update_snapshot(archive, root / "output", "fixture", root / "cache")
 
     def test_update_rejects_a_standalone_archive_with_a_bad_embedded_checksum(self) -> None:
         """若只展開 archive 而不驗證內嵌 SHA256SUMS，損毀 artifact 可能成為增量基準。"""

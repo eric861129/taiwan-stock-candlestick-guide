@@ -496,7 +496,9 @@ def _validate_deployment_metadata(path: Path, receipt: Mapping[str, Any]) -> Non
         "marketArtifactDigest",
         "strategy",
     }
-    if set(deployment) != required:
+    keys = set(deployment)
+    rollback_key = "rollbackSourceDeploymentRecordId"
+    if keys != required and keys != required | {rollback_key}:
         raise ReceiptValidationError("deployment metadata 欄位不符合固定契約。")
     if _require_exact_int(deployment.get("deploymentVersion"), "deploymentVersion") != 2:
         raise ReceiptValidationError("deployment metadata 使用未知版本。")
@@ -511,6 +513,13 @@ def _validate_deployment_metadata(path: Path, receipt: Mapping[str, Any]) -> Non
     _require_artifact_digest(deployment.get("marketArtifactDigest"), "marketArtifactDigest")
     if deployment.get("strategy") not in {"snapshot-reuse", "snapshot-rebuild"}:
         raise ReceiptValidationError("deployment metadata strategy 不受支援。")
+    rollback_source_id = deployment.get(rollback_key)
+    if rollback_source_id is not None and (
+        type(rollback_source_id) is not int
+        or rollback_source_id < 1
+        or deployment.get("strategy") != "snapshot-reuse"
+    ):
+        raise ReceiptValidationError("deployment metadata rollback 來源無效。")
     snapshot = receipt["snapshot"]
     if (
         deployment["marketDataSourceCommit"] != receipt["marketData"]["sourceCommit"]
@@ -745,6 +754,10 @@ def main(argv: list[str] | None = None) -> int:
                     "snapshot_hash": verified.snapshot_hash,
                     "cutoff_date": verified.cutoff_date,
                     "market_source_sha": verified.market_source_sha,
+                    "receipt_version": verified.receipt["receiptVersion"],
+                    "validator_contract_digest": verified.receipt["marketData"][
+                        "validatorContractDigest"
+                    ],
                 }
             ).decode("utf-8")
         )

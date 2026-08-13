@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 
@@ -14,7 +16,9 @@ sys.path.insert(0, str(ROOT / "tools"))
 from deployment_versions import (  # noqa: E402
     DeploymentVersionError,
     create_deployment_version,
+    load_deployment_record,
     validate_deployment_version,
+    write_deployment_version,
 )
 
 
@@ -133,6 +137,59 @@ class DeploymentVersionTests(unittest.TestCase):
         )
 
         self.assertEqual(deployment() | {"strategy": "snapshot-rebuild"}, version.to_document())
+
+    def test_rollback_record_preserves_the_source_deployment_record_id(self) -> None:
+        version = create_deployment_version(
+            manifest(),
+            website_source_commit=WEBSITE_SHA,
+            market_data_source_commit=MARKET_SHA,
+            market_artifact_id=981_337,
+            market_artifact_digest=f"sha256:{'c' * 64}",
+            strategy="snapshot-reuse",
+            rollback_source_deployment_record_id=77_001,
+        )
+
+        self.assertEqual(77_001, version.rollback_source_deployment_record_id)
+        self.assertEqual(77_001, version.to_document()["rollbackSourceDeploymentRecordId"])
+
+        invalid = deployment() | {
+            "strategy": "snapshot-rebuild",
+            "rollbackSourceDeploymentRecordId": 77_001,
+        }
+        with self.assertRaisesRegex(DeploymentVersionError, "rollbackSource"):
+            validate_deployment_version(manifest(), invalid)
+
+    def test_loads_canonical_deployment_record_before_snapshot_download(self) -> None:
+        version = create_deployment_version(
+            manifest(),
+            website_source_commit=WEBSITE_SHA,
+            market_data_source_commit=MARKET_SHA,
+            market_artifact_id=981_337,
+            market_artifact_digest=f"sha256:{'c' * 64}",
+            strategy="snapshot-reuse",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "deployment.json"
+            write_deployment_version(path, version)
+
+            loaded = load_deployment_record(path)
+
+        self.assertEqual(version, loaded)
+
+    def test_rejects_noncanonical_or_tampered_standalone_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "deployment.json"
+            path.write_text(json.dumps(deployment(), indent=2) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(DeploymentVersionError, "canonical"):
+                load_deployment_record(path)
+
+            tampered = deployment() | {"marketDataSourceCommit": "main"}
+            path.write_text(
+                json.dumps(tampered, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(DeploymentVersionError, "marketDataSourceCommit"):
+                load_deployment_record(path)
 
 
 if __name__ == "__main__":

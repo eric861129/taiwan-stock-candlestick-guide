@@ -44,8 +44,22 @@ class DeploymentSnapshotModeTests(unittest.TestCase):
         decision = classify_snapshot_mode(self.repository, self.market_data_sha, website_sha)
 
         self.assertEqual("reuse", decision.mode)
+        self.assertEqual("non-market-only", decision.reason)
         self.assertEqual((), decision.data_impact_paths)
         self.assertEqual(("docs/index.md", "src/app.ts"), decision.changed_paths)
+
+    def test_reuses_snapshot_for_the_real_markdown_learning_content(self) -> None:
+        self._write("chapters/01-basics.md", "# K 線基礎\n")
+        self._write("pattern-cards/double-top.md", "# 雙重頂\n")
+        self._write("index.md", "# 學習首頁\n")
+        self._write("assets/learning-map.svg", "<svg></svg>\n")
+        website_sha = self._commit("更新教材")
+
+        decision = classify_snapshot_mode(self.repository, self.market_data_sha, website_sha)
+
+        self.assertEqual("reuse", decision.mode)
+        self.assertEqual("non-market-only", decision.reason)
+        self.assertEqual((), decision.data_impact_paths)
 
     def test_rebuilds_when_market_program_changes(self) -> None:
         self._write("tools/market_sources.py", "OFFICIAL_SOURCE = 'TWSE'\n")
@@ -54,7 +68,26 @@ class DeploymentSnapshotModeTests(unittest.TestCase):
         decision = classify_snapshot_mode(self.repository, self.market_data_sha, website_sha)
 
         self.assertEqual("rebuild", decision.mode)
+        self.assertEqual("market-contract:tools/market_sources.py", decision.reason)
         self.assertEqual(("tools/market_sources.py",), decision.data_impact_paths)
+
+    def test_unknown_new_helper_fails_safe_to_rebuild(self) -> None:
+        self._write("tools/nonmarket_helper.py", "VALUE = 1\n")
+        website_sha = self._commit("新增未知工具")
+
+        decision = classify_snapshot_mode(self.repository, self.market_data_sha, website_sha)
+
+        self.assertEqual("rebuild", decision.mode)
+        self.assertEqual(("tools/nonmarket_helper.py",), decision.data_impact_paths)
+
+    def test_unknown_workflow_fails_safe_to_rebuild(self) -> None:
+        self._write(".github/workflows/new-pipeline.yml", "name: unknown\n")
+        website_sha = self._commit("新增未知 workflow")
+
+        decision = classify_snapshot_mode(self.repository, self.market_data_sha, website_sha)
+
+        self.assertEqual("rebuild", decision.mode)
+        self.assertEqual((".github/workflows/new-pipeline.yml",), decision.data_impact_paths)
 
     def test_market_deploy_or_schedule_workflow_change_rebuilds(self) -> None:
         self._write(".github/workflows/deploy-pages.yml", "name: faster pages\n")

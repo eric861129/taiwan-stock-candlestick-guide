@@ -27,6 +27,7 @@ jobs:
         name: Validate immutable source SHA
         env:
           REQUESTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          WORKFLOW_SOURCE_SHA: ${{ github.sha }}
           WORKFLOW_REF: ${{ github.ref }}
         shell: bash
         run: |
@@ -37,6 +38,10 @@ jobs:
           fi
           if ! [[ "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "source SHA 必須是完整的小寫 Git commit SHA。" >&2
+            exit 1
+          fi
+          if [[ "$REQUESTED_SOURCE_SHA" != "$WORKFLOW_SOURCE_SHA" ]]; then
+            echo "十年基準只能簽署本次 main workflow 的 source SHA。" >&2
             exit 1
           fi
           echo "source_sha=$REQUESTED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
@@ -116,6 +121,7 @@ jobs:
       - name: Build and validate the ten-year baseline
         env:
           SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+          MARKET_VALIDATOR_TIMING_OUTPUT: ${{ runner.temp }}/market-validator-timing.json
         shell: bash
         run: |
           set -euo pipefail
@@ -123,6 +129,15 @@ jobs:
             --output "$RUNNER_TEMP/bootstrap-snapshot" \
             --source-commit "$SOURCE_SHA" \
             --cache "$RUNNER_TEMP/market-snapshot-cache"
+          python - "$MARKET_VALIDATOR_TIMING_OUTPUT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          timing = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if timing.get("fullValidatorCount") != 1:
+              raise SystemExit("十年基準候選完整 validator 次數不是 1。")
+          PY
 
       - id: create-validation-receipt
         name: Create validation receipt after the complete validator
@@ -163,6 +178,7 @@ jobs:
         env:
           SNAPSHOT_HASH: ${{ steps.create-validation-receipt.outputs.snapshot_hash }}
           CUTOFF_DATE: ${{ steps.create-validation-receipt.outputs.cutoff_date }}
+          MARKET_VALIDATOR_TIMING_OUTPUT: ${{ runner.temp }}/market-validator-timing.json
         shell: bash
         run: |
           set -euo pipefail
@@ -216,6 +232,13 @@ jobs:
             exit 1
           fi
           ARTIFACT_DIGEST="$(python tools/market_snapshot_attestation.py normalize-artifact-digest --value "$ARTIFACT_DIGEST")"
+          validator_seconds="$(python - "$MARKET_VALIDATOR_TIMING_OUTPUT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["fullValidatorSeconds"])
+          PY
+          )"
           if ! [[ "$ATTESTATION_ID" =~ ^[1-9][0-9]*$ ]]; then
             echo "市場 Attestation 缺少有效 ID。" >&2
             exit 1
@@ -231,6 +254,8 @@ jobs:
             echo "- 資料截止日：\`$CUTOFF_DATE\`"
             echo "- Artifact ID：\`$ARTIFACT_ID\`"
             echo "- Artifact digest：\`$ARTIFACT_DIGEST\`"
+            echo "- 候選完整 validator 次數：\`1\`"
+            echo "- 候選完整 validator：\`${validator_seconds}s\`"
             echo "- Attestation：[\`$ATTESTATION_ID\`]($ATTESTATION_URL)"
           } >> "$GITHUB_STEP_SUMMARY"
 
