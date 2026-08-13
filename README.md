@@ -103,11 +103,13 @@ git status --short --branch
 
 `verify.yml` 會在 Pull Request 與 reusable workflow 呼叫時，以指定的完整 commit SHA 執行相同的 Python、詞彙、lint、型別、單元覆蓋率與 VitePress build 檢查；它不會取得正式市場行情。
 
-推送 `main` 時，`deploy-pages.yml` 會先鎖定 source SHA 並重跑驗證，再驗證上一個成功市場快照或建立基準快照。只有 `manifest.json`、`provenance.json`、`SHA256SUMS` 與 `snapshot.tar.gz` 都通過驗證後，資料才會被複製進單一 GitHub Pages artifact。任一前置步驟失敗時，不會呼叫 Pages deployment；每日市場資料也不會提交回 `main`。
+推送 `main` 時，`deploy-pages.yml` 會先鎖定網站程式 SHA 並重跑驗證，再驗證上一個成功市場快照。若兩個版本之間只有前端、教材或測試變更，流程會直接重用已驗證 snapshot，不還原十年行情 cache，也不呼叫交易所；`tools/market_*.py`、`data/` 或市場資料排程契約改變時，才會更新或重建市場資料。任何 Git 歷史、artifact 或 digest 無法完整驗證時都會 fail closed。
+
+部署 artifact 以 `deployment.json` 分開記錄 `websiteSourceCommit` 與 `marketDataSourceCommit`；公開站台也會輸出同內容的 `/deployment-version.json`。四個市場快照檔案 `manifest.json`、`provenance.json`、`SHA256SUMS`、`snapshot.tar.gz` 保持逐位元不變，網站版本不再覆寫市場資料的 `sourceCommit`。
 
 `update-market-data.yml` 在台北時間平日 17:30 與 20:30 執行。它只解析一次 `main` 的不可變 SHA，再交給相同部署流程；官方資料日期相同時會成功 no-op，不建立新的 Pages 部署。
 
-每次成功 Pages 部署後，workflow 會保留 30 天的 `market-snapshot-<cutoff>-<short-source-sha>` artifact。若需 rollback，從 Actions 的「原子化 GitHub Pages 部署」手動執行，填入成功 artifact 的數字 `rollback_artifact_id`。流程會由該 artifact 的 `sourceCommit` 鎖定相對應程式碼，重新驗證 digest 與完整快照後才重建部署；不要將舊資料手動配到新版程式或 Schema。
+每次成功 Pages 部署後，workflow 會保留 30 天的 `market-snapshot-<cutoff>-<short-market-data-sha>` artifact。若需 rollback，從 Actions 的「原子化 GitHub Pages 部署」手動執行，填入成功 artifact 的數字 `rollback_artifact_id`。流程會由 `deployment.json` 同時鎖定當時的網站程式與市場資料版本，再驗證 digest 與完整快照後重建部署；舊版四檔 artifact 沒有 deployment metadata 時，才相容沿用 manifest 的 `sourceCommit`。
 
 ## 貢獻方式
 

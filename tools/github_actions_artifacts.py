@@ -15,6 +15,14 @@ from urllib.request import Request, urlopen
 
 MAX_ARTIFACT_PAGES = 10
 MARKET_SNAPSHOT_PREFIX = "market-snapshot-"
+DEPLOY_WORKFLOW_PATHS = frozenset(
+    {
+        ".github/workflows/bootstrap-market-history.yml",
+        ".github/workflows/deploy-pages.yml",
+        ".github/workflows/update-market-data.yml",
+    }
+)
+DEPLOY_BRANCH = "main"
 
 
 class GitHubArtifactQueryError(RuntimeError):
@@ -40,6 +48,9 @@ def find_latest_successful_market_snapshot(
     first_page_url: str,
     *,
     max_pages: int = MAX_ARTIFACT_PAGES,
+    expected_repository: str | None = None,
+    expected_workflow_paths: frozenset[str] = DEPLOY_WORKFLOW_PATHS,
+    expected_branch: str = DEPLOY_BRANCH,
 ) -> SuccessfulMarketSnapshot | None:
     """沿 GitHub Link 分頁尋找最新可用成功市場快照，否則回傳 None。
 
@@ -51,6 +62,7 @@ def find_latest_successful_market_snapshot(
         raise ValueError("max_pages 必須至少為 1。")
 
     _validate_page_url(first_page_url, first_page_url)
+    repository = expected_repository or _repository_from_artifact_page_url(first_page_url)
     next_page_url: str | None = first_page_url
     seen_page_urls: set[str] = set()
     scanned_artifact_count = 0
@@ -73,7 +85,13 @@ def find_latest_successful_market_snapshot(
 
         scanned_artifact_count += len(artifacts)
         for artifact in artifacts:
-            candidate = _successful_snapshot_from_artifact(artifact, fetch_run)
+            candidate = _successful_snapshot_from_artifact(
+                artifact,
+                fetch_run,
+                expected_repository=repository,
+                expected_workflow_paths=expected_workflow_paths,
+                expected_branch=expected_branch,
+            )
             if candidate is not None and (
                 latest_snapshot is None
                 or (candidate.created_at, candidate.artifact_id)
@@ -118,7 +136,13 @@ def query_successful_market_snapshot(
         response, _ = _fetch_json(f"{base_url}/repos/{repository}/actions/runs/{run_id}", token)
         return response
 
-    return find_latest_successful_market_snapshot(fetch_page, fetch_run, first_page_url, max_pages=max_pages)
+    return find_latest_successful_market_snapshot(
+        fetch_page,
+        fetch_run,
+        first_page_url,
+        max_pages=max_pages,
+        expected_repository=repository,
+    )
 
 
 def _validate_artifact_page(response: object) -> tuple[int, list[Mapping[str, object]]]:
@@ -139,7 +163,12 @@ def _validate_artifact_page(response: object) -> tuple[int, list[Mapping[str, ob
 
 
 def _successful_snapshot_from_artifact(
-    artifact: Mapping[str, object], fetch_run: RunFetcher
+    artifact: Mapping[str, object],
+    fetch_run: RunFetcher,
+    *,
+    expected_repository: str,
+    expected_workflow_paths: frozenset[str],
+    expected_branch: str,
 ) -> SuccessfulMarketSnapshot | None:
     name = artifact.get("name")
     expired = artifact.get("expired")
@@ -162,6 +191,20 @@ def _successful_snapshot_from_artifact(
     if not isinstance(conclusion, str):
         raise GitHubArtifactQueryError("市場 snapshot workflow run 缺少 conclusion。")
     if conclusion != "success":
+        return None
+    workflow_path = run.get("path")
+    head_branch = run.get("head_branch")
+    head_repository = run.get("head_repository")
+    repository_name = (
+        head_repository.get("full_name") if isinstance(head_repository, Mapping) else None
+    )
+    if not all(isinstance(value, str) for value in (workflow_path, head_branch, repository_name)):
+        raise GitHubArtifactQueryError("市場 snapshot workflow run 缺少可信 provenance。")
+    if (
+        workflow_path not in expected_workflow_paths
+        or head_branch != expected_branch
+        or repository_name != expected_repository
+    ):
         return None
     return SuccessfulMarketSnapshot(
         artifact_id=artifact_id,
@@ -231,6 +274,17 @@ def _validate_page_url(first_page_url: str, candidate_url: str) -> None:
         or candidate.fragment
     ):
         raise GitHubArtifactQueryError("artifact pagination Link 離開預期 GitHub API endpoint。")
+
+
+def _repository_from_artifact_page_url(url: str) -> str:
+    parsed = urlsplit(url)
+    match = re.fullmatch(r"/repos/([^/]+/[^/]+)/actions/artifacts", parsed.path)
+    if match is None:
+        raise GitHubArtifactQueryError("artifact API URL 缺少可驗證的 repository。")
+    repository = match.group(1)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise GitHubArtifactQueryError("artifact API repository 格式無效。")
+    return repository
 
 
 def _fetch_json(url: str, token: str) -> tuple[object, dict[str, str]]:

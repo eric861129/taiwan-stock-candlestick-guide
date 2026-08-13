@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       rollback_artifact_id:
-        description: 成功 market-snapshot artifact 的 GitHub artifact ID；提供時以其 sourceCommit rollback。
+        description: 成功 market-snapshot artifact 的 GitHub artifact ID；網站與市場資料依 deployment metadata 分別 rollback。
         required: false
         default: ""
         type: string
@@ -63,6 +63,13 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Checkout trusted workflow helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-helper
+          fetch-depth: 1
+
       - id: validate-rollback
         name: Validate rollback artifact is a completed successful snapshot
         if: ${{ inputs.rollback_artifact_id != '' }}
@@ -109,9 +116,27 @@ jobs:
           run = fetch(f"/repos/{repository}/actions/runs/{workflow_run_id}")
           if run.get("conclusion") != "success":
               raise SystemExit("rollback artifact 所屬 workflow 尚未成功完成。")
+          workflow_path = run.get("path")
+          head_branch = run.get("head_branch")
+          head_repository = run.get("head_repository")
+          repository_name = (
+              head_repository.get("full_name") if isinstance(head_repository, dict) else None
+          )
+          allowed_workflows = {
+              ".github/workflows/deploy-pages.yml",
+              ".github/workflows/bootstrap-market-history.yml",
+              ".github/workflows/update-market-data.yml",
+          }
+          if (
+              workflow_path not in allowed_workflows
+              or head_branch != "main"
+              or repository_name != repository
+          ):
+              raise SystemExit("rollback artifact 不是由本 repository main 的可信市場 workflow 建立。")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"rollback_artifact_id={artifact_id}\n")
               output.write(f"rollback_run_id={workflow_run_id}\n")
+              output.write(f"rollback_workflow_path={workflow_path}\n")
           PY
 
       - name: Download selected rollback metadata
@@ -133,21 +158,34 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "$ROLLBACK_ARTIFACT_ID" ]]; then
+            mapfile -t artifact_files < <(find "$RUNNER_TEMP/rollback-source-artifact" -type f -print)
+            artifact_names="$(printf '%s\n' "${artifact_files[@]##*/}" | sort)"
+            if [[ "$artifact_names" != $'SHA256SUMS\nmanifest.json\nprovenance.json\nsnapshot.tar.gz' ]] && \
+               [[ "$artifact_names" != $'SHA256SUMS\ndeployment.json\nmanifest.json\nprovenance.json\nsnapshot.tar.gz' ]]; then
+              echo "rollback artifact 必須是可信的四檔舊快照或五檔版本分離快照。" >&2
+              exit 1
+            fi
             mapfile -t manifest_paths < <(find "$RUNNER_TEMP/rollback-source-artifact" -type f -name manifest.json -print)
             if [[ "${#manifest_paths[@]}" -ne 1 ]]; then
               echo "rollback artifact 必須且只能包含一份 manifest.json。" >&2
               exit 1
             fi
-            source_sha="$(python - "${manifest_paths[0]}" <<'PY'
-          import json
+            mapfile -t deployment_paths < <(find "$RUNNER_TEMP/rollback-source-artifact" -type f -name deployment.json -print)
+            if [[ "${#deployment_paths[@]}" -gt 1 ]]; then
+              echo "rollback artifact 不可包含多份 deployment.json。" >&2
+              exit 1
+            fi
+            source_sha="$(PYTHONPATH="$GITHUB_WORKSPACE/.workflow-helper/tools" python - \
+              "${manifest_paths[0]}" \
+              "${deployment_paths[0]:-}" <<'PY'
           import sys
           from pathlib import Path
 
-          document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          value = document.get("sourceCommit")
-          if not isinstance(value, str):
-              raise SystemExit("rollback manifest 缺少 sourceCommit。")
-          print(value)
+          from deployment_versions import load_deployment_version
+
+          deployment_path = Path(sys.argv[2]) if sys.argv[2] else None
+          version = load_deployment_version(Path(sys.argv[1]), deployment_path)
+          print(version.website_source_commit)
           PY
             )"
             mode=rollback
@@ -186,12 +224,14 @@ jobs:
       should_deploy: ${{ steps.make-snapshot.outputs.should_deploy }}
       candidate_artifact_name: ${{ steps.make-snapshot.outputs.candidate_artifact_name }}
       snapshot_artifact_name: ${{ steps.make-snapshot.outputs.snapshot_artifact_name }}
+      snapshot_strategy: ${{ steps.make-snapshot.outputs.snapshot_strategy }}
+      market_data_source_sha: ${{ steps.make-snapshot.outputs.market_data_source_sha }}
     steps:
       - name: Checkout locked source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ needs.resolve-source.outputs.source_sha }}
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Confirm immutable source checkout
         env:
@@ -210,23 +250,7 @@ jobs:
         with:
           python-version: "3.13"
 
-      - id: restore-history-cache
-        name: Restore resumable ten-year market history cache
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: ${{ runner.temp }}/market-snapshot-cache
-          key: market-history-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            market-history-v1-${{ github.repository_id }}-
-
-      - name: Prepare market history cache directory
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/market-snapshot-cache"
-
       - name: Checkout workflow helper
-        if: ${{ needs.resolve-source.outputs.mode == 'update' }}
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.sha }}
@@ -271,7 +295,6 @@ jobs:
         if: ${{ needs.resolve-source.outputs.mode == 'rollback' || steps.find-previous.outputs.artifact_id != '' }}
         env:
           DEPLOY_MODE: ${{ needs.resolve-source.outputs.mode }}
-          SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -281,8 +304,10 @@ jobs:
             artifact_root="$RUNNER_TEMP/previous-snapshot-artifact"
           fi
           mapfile -t artifact_files < <(find "$artifact_root" -type f -print)
-          if [[ "$(printf '%s\n' "${artifact_files[@]##*/}" | sort)" != $'SHA256SUMS\nmanifest.json\nprovenance.json\nsnapshot.tar.gz' ]]; then
-            echo "市場 snapshot artifact 必須恰含四個固定檔案。" >&2
+          artifact_names="$(printf '%s\n' "${artifact_files[@]##*/}" | sort)"
+          if [[ "$artifact_names" != $'SHA256SUMS\nmanifest.json\nprovenance.json\nsnapshot.tar.gz' ]] && \
+             [[ "$artifact_names" != $'SHA256SUMS\ndeployment.json\nmanifest.json\nprovenance.json\nsnapshot.tar.gz' ]]; then
+            echo "市場 snapshot artifact 必須包含四個快照檔案，可另含一份 deployment.json。" >&2
             exit 1
           fi
           for required in SHA256SUMS manifest.json provenance.json snapshot.tar.gz; do
@@ -293,18 +318,23 @@ jobs:
             fi
             declare "artifact_${required//./_}=${matches[0]}"
           done
-          PYTHONPATH="$GITHUB_WORKSPACE/tools" python - \
+          mapfile -t deployment_matches < <(find "$artifact_root" -type f -name deployment.json -print)
+          if [[ "${#deployment_matches[@]}" -gt 1 ]]; then
+            echo "市場 snapshot artifact 不可包含多份 deployment.json。" >&2
+            exit 1
+          fi
+          PYTHONPATH="$GITHUB_WORKSPACE/.workflow-helper/tools:$GITHUB_WORKSPACE/tools" python - \
             "$artifact_snapshot_tar_gz" \
             "$artifact_manifest_json" \
             "$artifact_provenance_json" \
             "$artifact_SHA256SUMS" \
             "$RUNNER_TEMP/previous-snapshot" \
-            "$DEPLOY_MODE" \
-            "$SOURCE_SHA" <<'PY'
+            "${deployment_matches[0]:-}" <<'PY'
           from pathlib import Path
           from shutil import copytree
           import sys
 
+          from deployment_versions import load_deployment_version
           from market_snapshot import _extract_previous_snapshot_archive, validate_snapshot
 
           archive = Path(sys.argv[1])
@@ -312,8 +342,7 @@ jobs:
           provenance_path = Path(sys.argv[3])
           sums_path = Path(sys.argv[4])
           destination = Path(sys.argv[5])
-          mode = sys.argv[6]
-          source_sha = sys.argv[7]
+          deployment_path = Path(sys.argv[6]) if sys.argv[6] else None
           if destination.exists():
               raise SystemExit("還原快照目錄已存在，拒絕混入舊檔案。")
 
@@ -327,19 +356,79 @@ jobs:
               if external_path.read_bytes() != (extracted / name).read_bytes():
                   raise SystemExit(f"市場 snapshot artifact 的 {name} 與 archive 內容不一致。")
           copytree(extracted, destination)
-          manifest = validate_snapshot(destination)
-          if mode == "rollback" and manifest.source_commit != source_sha:
-              raise SystemExit("rollback snapshot 的 sourceCommit 與鎖定 source SHA 不一致。")
+          validate_snapshot(destination)
+          load_deployment_version(manifest_path, deployment_path)
           PY
           echo "previous_snapshot=$RUNNER_TEMP/previous-snapshot" >> "$GITHUB_OUTPUT"
+
+      - id: snapshot-plan
+        name: 分離網站程式版本與市場資料版本
+        if: ${{ needs.resolve-source.outputs.mode == 'rollback' || steps.restore-previous.outputs.previous_snapshot != '' }}
+        env:
+          DEPLOY_MODE: ${{ needs.resolve-source.outputs.mode }}
+          PREVIOUS_SNAPSHOT: ${{ steps.restore-previous.outputs.previous_snapshot }}
+          SKIP_IF_SAME_CUTOFF: ${{ inputs.skip_if_same_cutoff || false }}
+          WEBSITE_SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          market_data_source_sha="$(python - "$PREVIOUS_SNAPSHOT/manifest.json" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          source_commit = manifest.get("sourceCommit")
+          if not isinstance(source_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+              raise SystemExit("前一成功快照缺少有效 market-data source SHA。")
+          print(source_commit)
+          PY
+          )"
+
+          if [[ "$DEPLOY_MODE" == "rollback" ]]; then
+            {
+              echo "snapshot_strategy=rollback"
+              echo "market_data_source_sha=$market_data_source_sha"
+            } >> "$GITHUB_OUTPUT"
+          elif [[ "$SKIP_IF_SAME_CUTOFF" == "true" ]]; then
+            # 平日排程必須查詢官方行情；相同 cutoff 仍由 update 安全 no-op。
+            {
+              echo "snapshot_strategy=refresh"
+              echo "market_data_source_sha=$market_data_source_sha"
+            } >> "$GITHUB_OUTPUT"
+          else
+            python .workflow-helper/tools/deployment_snapshot_mode.py \
+              --repository "$GITHUB_WORKSPACE" \
+              --market-data-source-sha "$market_data_source_sha" \
+              --website-source-sha "$WEBSITE_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: restore-history-cache
+        name: Restore resumable ten-year market history cache
+        if: ${{ needs.resolve-source.outputs.mode == 'update' && steps.snapshot-plan.outputs.snapshot_strategy != 'reuse' }}
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/market-snapshot-cache
+          key: market-history-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            market-history-v1-${{ github.repository_id }}-
+
+      - name: Prepare market history cache directory
+        if: ${{ needs.resolve-source.outputs.mode == 'update' && steps.snapshot-plan.outputs.snapshot_strategy != 'reuse' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/market-snapshot-cache"
 
       - id: make-snapshot
         name: 建立或重用已驗證的市場快照
         env:
           DEPLOY_MODE: ${{ needs.resolve-source.outputs.mode }}
+          MARKET_DATA_SOURCE_SHA: ${{ steps.snapshot-plan.outputs.market_data_source_sha }}
           SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
           PREVIOUS_SNAPSHOT: ${{ steps.restore-previous.outputs.previous_snapshot }}
-          SKIP_IF_SAME_CUTOFF: ${{ inputs.skip_if_same_cutoff || false }}
+          SNAPSHOT_STRATEGY: ${{ steps.snapshot-plan.outputs.snapshot_strategy }}
         shell: bash
         run: |
           set -euo pipefail
@@ -347,53 +436,48 @@ jobs:
           if [[ "$DEPLOY_MODE" == "rollback" ]]; then
             mkdir -p "$candidate"
             cp -a "$PREVIOUS_SNAPSHOT/." "$candidate/"
+            effective_market_data_source_sha="$MARKET_DATA_SOURCE_SHA"
           elif [[ -n "$PREVIOUS_SNAPSHOT" ]]; then
-            rebuild_same_cutoff=()
-            if [[ "$SKIP_IF_SAME_CUTOFF" != "true" ]]; then
-              previous_source_sha="$(python - "$PREVIOUS_SNAPSHOT/manifest.json" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          source_commit = manifest.get("sourceCommit")
-          if not isinstance(source_commit, str) or not source_commit:
-              raise SystemExit("前一成功快照缺少有效 sourceCommit。")
-          print(source_commit)
-          PY
-              )"
-              if [[ "$previous_source_sha" != "$SOURCE_SHA" ]]; then
+            if [[ "$SNAPSHOT_STRATEGY" == "reuse" ]]; then
+              echo "純前端／教材變更：重用已驗證市場快照，不呼叫行情 API。"
+              mkdir -p "$candidate"
+              cp -a "$PREVIOUS_SNAPSHOT/." "$candidate/"
+              effective_market_data_source_sha="$MARKET_DATA_SOURCE_SHA"
+            elif [[ "$SNAPSHOT_STRATEGY" == "rebuild" || "$SNAPSHOT_STRATEGY" == "refresh" ]]; then
+              rebuild_same_cutoff=()
+              if [[ "$SNAPSHOT_STRATEGY" == "rebuild" ]]; then
                 rebuild_same_cutoff=(--rebuild-if-same-cutoff)
               fi
-            fi
-            python tools/market_snapshot.py update \
-              --previous "$PREVIOUS_SNAPSHOT/snapshot.tar.gz" \
-              --output "$candidate" \
-              --source-commit "$SOURCE_SHA" \
-              --cache "$RUNNER_TEMP/market-snapshot-cache" \
-              --require-history-cache \
-              "${rebuild_same_cutoff[@]}"
-            if [[ ! -f "$candidate/manifest.json" ]]; then
-              if [[ -e "$candidate" ]]; then
-                echo "同一日期 no-op 不得留下未完成的新快照目錄。" >&2
-                exit 1
-              fi
-              if [[ "$SKIP_IF_SAME_CUTOFF" == "true" ]]; then
+              python tools/market_snapshot.py update \
+                --previous "$PREVIOUS_SNAPSHOT/snapshot.tar.gz" \
+                --output "$candidate" \
+                --source-commit "$SOURCE_SHA" \
+                --cache "$RUNNER_TEMP/market-snapshot-cache" \
+                --require-history-cache \
+                "${rebuild_same_cutoff[@]}"
+              if [[ ! -f "$candidate/manifest.json" ]]; then
+                if [[ -e "$candidate" ]]; then
+                  echo "同一日期 no-op 不得留下未完成的新快照目錄。" >&2
+                  exit 1
+                fi
+                if [[ "$SNAPSHOT_STRATEGY" != "refresh" ]]; then
+                  echo "資料程式已改變，但重建沒有產生候選 snapshot。" >&2
+                  exit 1
+                fi
                 echo "同一日期官方資料已存在，排程正常結束且不部署。"
                 {
                   echo "should_deploy=false"
                   echo "candidate_artifact_name="
                   echo "snapshot_artifact_name="
+                  echo "snapshot_strategy=refresh"
+                  echo "market_data_source_sha=$MARKET_DATA_SOURCE_SHA"
                 } >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-              echo "同一日期資料與 source SHA 都未變，正常結束且不部署。"
-              {
-                echo "should_deploy=false"
-                echo "candidate_artifact_name="
-                echo "snapshot_artifact_name="
-              } >> "$GITHUB_OUTPUT"
-              exit 0
+              effective_market_data_source_sha="$SOURCE_SHA"
+            else
+              echo "未知 snapshot 策略：$SNAPSHOT_STRATEGY" >&2
+              exit 1
             fi
           else
             echo "找不到可用市場快照；請先執行 bootstrap-market-history.yml 的手動十年基準 workflow。" >&2
@@ -401,31 +485,47 @@ jobs:
           fi
 
           python tools/market_snapshot.py validate --snapshot "$candidate"
-          python - "$candidate/manifest.json" "$SOURCE_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'PY' >> "$GITHUB_OUTPUT"
+          PYTHONPATH="$GITHUB_WORKSPACE/.workflow-helper/tools" python - \
+            "$candidate/manifest.json" \
+            "$candidate/deployment.json" \
+            "$SOURCE_SHA" \
+            "$effective_market_data_source_sha" \
+            "$SNAPSHOT_STRATEGY" \
+            "$GITHUB_RUN_ID" \
+            "$GITHUB_RUN_ATTEMPT" <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          import re
           import sys
           from pathlib import Path
 
+          from deployment_versions import create_deployment_version, write_deployment_version
+
           manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          source_sha = sys.argv[2]
-          if manifest.get("sourceCommit") != source_sha:
-              raise SystemExit("新快照 manifest 的 sourceCommit 與鎖定 source SHA 不一致。")
-          markets = manifest.get("markets")
-          if not isinstance(markets, dict):
-              raise SystemExit("新快照 manifest 缺少 markets。")
-          cutoffs = {value.get("cutoffDate") for value in markets.values() if isinstance(value, dict)}
-          if len(cutoffs) != 1:
-              raise SystemExit("兩市場 cutoff 不一致，拒絕建立混合部署。")
-          cutoff = cutoffs.pop()
-          if not isinstance(cutoff, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cutoff):
-              raise SystemExit("市場 cutoff 格式無效。")
-          artifact_name = f"market-snapshot-{cutoff}-{source_sha[:12]}"
-          candidate_name = f"candidate-{artifact_name}-{sys.argv[3]}-{sys.argv[4]}"
+          deployment_path = Path(sys.argv[2])
+          website_source_sha = sys.argv[3]
+          market_data_source_sha = sys.argv[4]
+          snapshot_strategy = sys.argv[5]
+          version = create_deployment_version(
+              manifest,
+              website_source_commit=website_source_sha,
+              market_data_source_commit=market_data_source_sha,
+              snapshot_strategy=snapshot_strategy,
+          )
+          write_deployment_version(deployment_path, version)
+          cutoff = version.cutoff_date
+          artifact_name = f"market-snapshot-{cutoff}-{market_data_source_sha[:12]}"
+          candidate_name = f"candidate-{artifact_name}-{sys.argv[6]}-{sys.argv[7]}"
           print("should_deploy=true")
           print(f"candidate_artifact_name={candidate_name}")
           print(f"snapshot_artifact_name={artifact_name}")
+          print(f"snapshot_strategy={snapshot_strategy}")
+          print(f"market_data_source_sha={market_data_source_sha}")
           PY
+          {
+            echo "### 部署版本"
+            echo "- 網站程式版本：\`$SOURCE_SHA\`"
+            echo "- 市場資料版本：\`$effective_market_data_source_sha\`"
+            echo "- Snapshot 策略：\`$SNAPSHOT_STRATEGY\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload verified candidate snapshot for this deployment
         if: ${{ steps.make-snapshot.outputs.should_deploy == 'true' }}
@@ -437,11 +537,12 @@ jobs:
             ${{ runner.temp }}/candidate-snapshot/manifest.json
             ${{ runner.temp }}/candidate-snapshot/provenance.json
             ${{ runner.temp }}/candidate-snapshot/SHA256SUMS
+            ${{ runner.temp }}/candidate-snapshot/deployment.json
           if-no-files-found: error
           retention-days: 1
 
       - name: Save resumable ten-year market history cache
-        if: ${{ always() }}
+        if: ${{ always() && steps.restore-history-cache.outcome == 'success' && needs.resolve-source.outputs.mode == 'update' && steps.snapshot-plan.outputs.snapshot_strategy != 'reuse' }}
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ${{ runner.temp }}/market-snapshot-cache
@@ -480,6 +581,13 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Checkout trusted workflow helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-helper
+          fetch-depth: 1
+
       - name: Setup Node 22
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -495,14 +603,15 @@ jobs:
       - id: restore-candidate
         name: Restore and validate candidate snapshot
         env:
+          MARKET_DATA_SOURCE_SHA: ${{ needs.source-snapshot.outputs.market_data_source_sha }}
           SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
           artifact_root="$RUNNER_TEMP/candidate-snapshot-artifact"
           mapfile -t artifact_files < <(find "$artifact_root" -type f -print)
-          if [[ "$(printf '%s\n' "${artifact_files[@]##*/}" | sort)" != $'SHA256SUMS\nmanifest.json\nprovenance.json\nsnapshot.tar.gz' ]]; then
-            echo "候選 snapshot artifact 必須恰含四個固定檔案。" >&2
+          if [[ "$(printf '%s\n' "${artifact_files[@]##*/}" | sort)" != $'SHA256SUMS\ndeployment.json\nmanifest.json\nprovenance.json\nsnapshot.tar.gz' ]]; then
+            echo "候選 snapshot artifact 必須恰含四個快照檔案與 deployment.json。" >&2
             exit 1
           fi
           for required in SHA256SUMS manifest.json provenance.json snapshot.tar.gz; do
@@ -513,25 +622,35 @@ jobs:
             fi
             declare "artifact_${required//./_}=${matches[0]}"
           done
-          PYTHONPATH="$GITHUB_WORKSPACE/tools" python - \
+          mapfile -t deployment_matches < <(find "$artifact_root" -type f -name deployment.json -print)
+          if [[ "${#deployment_matches[@]}" -ne 1 ]]; then
+            echo "候選 snapshot artifact 的 deployment.json 不可缺漏或重複。" >&2
+            exit 1
+          fi
+          PYTHONPATH="$GITHUB_WORKSPACE/.workflow-helper/tools:$GITHUB_WORKSPACE/tools" python - \
             "$artifact_snapshot_tar_gz" \
             "$artifact_manifest_json" \
             "$artifact_provenance_json" \
             "$artifact_SHA256SUMS" \
+            "${deployment_matches[0]}" \
             "$RUNNER_TEMP/verified-candidate-snapshot" \
-            "$SOURCE_SHA" <<'PY'
+            "$SOURCE_SHA" \
+            "$MARKET_DATA_SOURCE_SHA" <<'PY'
           from pathlib import Path
-          from shutil import copytree
+          from shutil import copy2, copytree
           import sys
 
+          from deployment_versions import load_deployment_version
           from market_snapshot import _extract_previous_snapshot_archive, validate_snapshot
 
           archive = Path(sys.argv[1])
           manifest_path = Path(sys.argv[2])
           provenance_path = Path(sys.argv[3])
           sums_path = Path(sys.argv[4])
-          destination = Path(sys.argv[5])
-          source_sha = sys.argv[6]
+          deployment_path = Path(sys.argv[5])
+          destination = Path(sys.argv[6])
+          website_source_sha = sys.argv[7]
+          market_data_source_sha = sys.argv[8]
           if destination.exists():
               raise SystemExit("候選快照還原目錄已存在，拒絕混入舊檔案。")
           extracted = _extract_previous_snapshot_archive(archive)
@@ -545,8 +664,16 @@ jobs:
                   raise SystemExit(f"候選 snapshot artifact 的 {name} 與 archive 內容不一致。")
           copytree(extracted, destination)
           manifest = validate_snapshot(destination)
-          if manifest.source_commit != source_sha:
-              raise SystemExit("候選快照的 sourceCommit 與鎖定 source SHA 不一致。")
+          deployment = load_deployment_version(manifest_path, deployment_path)
+          if manifest.source_commit != market_data_source_sha:
+              raise SystemExit("候選快照的 sourceCommit 與市場資料版本不一致。")
+          if deployment.website_source_commit != website_source_sha:
+              raise SystemExit("候選快照的網站程式版本不一致。")
+          if deployment.market_data_source_commit != market_data_source_sha:
+              raise SystemExit("候選快照的市場資料版本 metadata 不一致。")
+          if deployment.snapshot_hash != manifest.snapshot_hash:
+              raise SystemExit("候選快照的 deployment metadata 未綁定 snapshotHash。")
+          copy2(deployment_path, destination / "deployment.json")
           PY
           echo "snapshot=$RUNNER_TEMP/verified-candidate-snapshot" >> "$GITHUB_OUTPUT"
 
@@ -564,6 +691,7 @@ jobs:
           cp -a "$VERIFIED_SNAPSHOT/data/." public/data/
           cp "$VERIFIED_SNAPSHOT/manifest.json" public/data/manifest.json
           cp "$VERIFIED_SNAPSHOT/provenance.json" public/data/provenance.json
+          cp "$VERIFIED_SNAPSHOT/deployment.json" public/deployment-version.json
 
       - name: Configure GitHub Pages
         id: pages
@@ -604,6 +732,12 @@ jobs:
 
           if expected != files(rendered_data):
               raise SystemExit("Pages build 的市場資料不是已驗證 snapshot 的精確副本。")
+          deployment_version = Path(sys.argv[2]) / "deployment-version.json"
+          if (
+              not deployment_version.is_file()
+              or deployment_version.read_bytes() != (snapshot_root / "deployment.json").read_bytes()
+          ):
+              raise SystemExit("Pages build 缺少正確的網站／市場資料版本 metadata。")
           PY
 
       - name: Fail closed when the Pages artifact reaches 400 MiB
@@ -681,6 +815,13 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Checkout trusted workflow helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-helper
+          fetch-depth: 1
+
       - name: Download the deployed candidate snapshot
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -690,14 +831,15 @@ jobs:
       - id: restore-deployed
         name: Verify snapshot before retaining it for rollback
         env:
+          MARKET_DATA_SOURCE_SHA: ${{ needs.source-snapshot.outputs.market_data_source_sha }}
           SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
           artifact_root="$RUNNER_TEMP/deployed-candidate-artifact"
           mapfile -t artifact_files < <(find "$artifact_root" -type f -print)
-          if [[ "$(printf '%s\n' "${artifact_files[@]##*/}" | sort)" != $'SHA256SUMS\nmanifest.json\nprovenance.json\nsnapshot.tar.gz' ]]; then
-            echo "已部署候選 artifact 必須恰含四個固定檔案。" >&2
+          if [[ "$(printf '%s\n' "${artifact_files[@]##*/}" | sort)" != $'SHA256SUMS\ndeployment.json\nmanifest.json\nprovenance.json\nsnapshot.tar.gz' ]]; then
+            echo "已部署候選 artifact 必須恰含四個快照檔案與 deployment.json。" >&2
             exit 1
           fi
           for required in SHA256SUMS manifest.json provenance.json snapshot.tar.gz; do
@@ -708,25 +850,35 @@ jobs:
             fi
             declare "artifact_${required//./_}=${matches[0]}"
           done
-          PYTHONPATH="$GITHUB_WORKSPACE/tools" python - \
+          mapfile -t deployment_matches < <(find "$artifact_root" -type f -name deployment.json -print)
+          if [[ "${#deployment_matches[@]}" -ne 1 ]]; then
+            echo "已部署候選 artifact 的 deployment.json 不可缺漏或重複。" >&2
+            exit 1
+          fi
+          PYTHONPATH="$GITHUB_WORKSPACE/.workflow-helper/tools:$GITHUB_WORKSPACE/tools" python - \
             "$artifact_snapshot_tar_gz" \
             "$artifact_manifest_json" \
             "$artifact_provenance_json" \
             "$artifact_SHA256SUMS" \
+            "${deployment_matches[0]}" \
             "$RUNNER_TEMP/deployed-verified-snapshot" \
-            "$SOURCE_SHA" <<'PY'
+            "$SOURCE_SHA" \
+            "$MARKET_DATA_SOURCE_SHA" <<'PY'
           from pathlib import Path
-          from shutil import copytree
+          from shutil import copy2, copytree
           import sys
 
+          from deployment_versions import load_deployment_version
           from market_snapshot import _extract_previous_snapshot_archive, validate_snapshot
 
           archive = Path(sys.argv[1])
           manifest_path = Path(sys.argv[2])
           provenance_path = Path(sys.argv[3])
           sums_path = Path(sys.argv[4])
-          destination = Path(sys.argv[5])
-          source_sha = sys.argv[6]
+          deployment_path = Path(sys.argv[5])
+          destination = Path(sys.argv[6])
+          website_source_sha = sys.argv[7]
+          market_data_source_sha = sys.argv[8]
           if destination.exists():
               raise SystemExit("成功快照還原目錄已存在，拒絕混入舊檔案。")
           extracted = _extract_previous_snapshot_archive(archive)
@@ -740,8 +892,16 @@ jobs:
                   raise SystemExit(f"已部署 snapshot artifact 的 {name} 與 archive 內容不一致。")
           copytree(extracted, destination)
           manifest = validate_snapshot(destination)
-          if manifest.source_commit != source_sha:
-              raise SystemExit("已部署快照的 sourceCommit 與鎖定 source SHA 不一致。")
+          deployment = load_deployment_version(manifest_path, deployment_path)
+          if manifest.source_commit != market_data_source_sha:
+              raise SystemExit("已部署快照的 sourceCommit 與市場資料版本不一致。")
+          if deployment.website_source_commit != website_source_sha:
+              raise SystemExit("已部署快照的網站程式版本不一致。")
+          if deployment.market_data_source_commit != market_data_source_sha:
+              raise SystemExit("已部署快照的市場資料版本 metadata 不一致。")
+          if deployment.snapshot_hash != manifest.snapshot_hash:
+              raise SystemExit("已部署快照的 deployment metadata 未綁定 snapshotHash。")
+          copy2(deployment_path, destination / "deployment.json")
           PY
           echo "snapshot=$RUNNER_TEMP/deployed-verified-snapshot" >> "$GITHUB_OUTPUT"
 
@@ -754,5 +914,6 @@ jobs:
             ${{ steps.restore-deployed.outputs.snapshot }}/manifest.json
             ${{ steps.restore-deployed.outputs.snapshot }}/provenance.json
             ${{ steps.restore-deployed.outputs.snapshot }}/SHA256SUMS
+            ${{ steps.restore-deployed.outputs.snapshot }}/deployment.json
           if-no-files-found: error
           retention-days: 30

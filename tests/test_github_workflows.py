@@ -56,6 +56,16 @@ def shell_run_blocks(text: str) -> tuple[str, ...]:
     return tuple(blocks)
 
 
+def trusted_deploy_run(*, conclusion: str = "success") -> dict[str, object]:
+    """建立只可能由本 repo main Pages workflow 產生的 run fixture。"""
+    return {
+        "conclusion": conclusion,
+        "path": ".github/workflows/deploy-pages.yml",
+        "head_branch": "main",
+        "head_repository": {"full_name": "example/guide"},
+    }
+
+
 class GitHubArtifactPaginationTests(unittest.TestCase):
     """以可控 GitHub API 回應驗證快照查詢不會漏掉下一頁。"""
 
@@ -101,7 +111,9 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
 
         artifact = find_latest_successful_market_snapshot(
             fetch_page,
-            lambda run_id: {"conclusion": "success"} if run_id == 1_901 else {"conclusion": "failure"},
+            lambda run_id: trusted_deploy_run(
+                conclusion="success" if run_id == 1_901 else "failure"
+            ),
             first_page,
             max_pages=10,
         )
@@ -132,7 +144,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
                     },
                     {"Link": f'<{first_page}&page=2>; rel="next"'},
                 ),
-                lambda run_id: {"conclusion": "success"},
+                lambda run_id: trusted_deploy_run(),
                 first_page,
                 max_pages=1,
             )
@@ -181,7 +193,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
 
         artifact = find_latest_successful_market_snapshot(
             fetch_page,
-            lambda run_id: {"conclusion": "success"},
+            lambda run_id: trusted_deploy_run(),
             first_page,
             max_pages=10,
         )
@@ -257,7 +269,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
         with self.assertRaisesRegex(GitHubArtifactQueryError, "total_count"):
             find_latest_successful_market_snapshot(
                 fetch_page,
-                lambda run_id: {"conclusion": "success"},
+                lambda run_id: trusted_deploy_run(),
                 first_page,
                 max_pages=10,
             )
@@ -286,7 +298,7 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
         with self.assertRaisesRegex(GitHubArtifactQueryError, "完整清單"):
             find_latest_successful_market_snapshot(
                 lambda url: (response, {}),
-                lambda run_id: {"conclusion": "success"},
+                lambda run_id: trusted_deploy_run(),
                 first_page,
                 max_pages=10,
             )
@@ -307,6 +319,114 @@ class GitHubArtifactPaginationTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(GitHubArtifactQueryError, "完整清單"):
+            find_latest_successful_market_snapshot(
+                lambda url: (response, {}),
+                lambda run_id: trusted_deploy_run(),
+                first_page,
+                max_pages=10,
+            )
+
+    def test_ignores_same_prefix_artifact_from_another_successful_workflow(self) -> None:
+        """其他 workflow 即使成功，也不能用同名前綴污染自動部署基準。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        response = {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "id": 820,
+                    "name": "market-snapshot-2026-08-12-untrusted",
+                    "expired": False,
+                    "created_at": "2026-08-12T12:00:00Z",
+                    "workflow_run": {"id": 1_820},
+                }
+            ],
+        }
+
+        artifact = find_latest_successful_market_snapshot(
+            lambda url: (response, {}),
+            lambda run_id: {
+                **trusted_deploy_run(),
+                "path": ".github/workflows/verify.yml",
+            },
+            first_page,
+            max_pages=10,
+        )
+
+        self.assertIsNone(artifact)
+
+    def test_accepts_snapshot_published_by_the_scheduled_market_workflow(self) -> None:
+        """reusable Pages workflow 在排程 caller 內執行時，run path 會是市場排程。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        response = {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "id": 822,
+                    "name": "market-snapshot-2026-08-13-scheduled",
+                    "expired": False,
+                    "created_at": "2026-08-13T12:00:00Z",
+                    "workflow_run": {"id": 1_822},
+                }
+            ],
+        }
+
+        artifact = find_latest_successful_market_snapshot(
+            lambda url: (response, {}),
+            lambda run_id: {
+                **trusted_deploy_run(),
+                "path": ".github/workflows/update-market-data.yml",
+            },
+            first_page,
+            max_pages=10,
+        )
+
+        self.assertIsNotNone(artifact)
+
+    def test_accepts_verified_baseline_when_no_deploy_snapshot_exists(self) -> None:
+        """首次十年 bootstrap artifact 必須可成為後續 Pages 的市場資料版本。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        response = {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "id": 823,
+                    "name": "market-snapshot-2026-08-12-baseline",
+                    "expired": False,
+                    "created_at": "2026-08-12T12:00:00Z",
+                    "workflow_run": {"id": 1_823},
+                }
+            ],
+        }
+
+        artifact = find_latest_successful_market_snapshot(
+            lambda url: (response, {}),
+            lambda run_id: {
+                **trusted_deploy_run(),
+                "path": ".github/workflows/bootstrap-market-history.yml",
+            },
+            first_page,
+            max_pages=10,
+        )
+
+        self.assertIsNotNone(artifact)
+
+    def test_rejects_market_artifact_when_run_provenance_is_incomplete(self) -> None:
+        """命名正確的 artifact 若缺 repo、branch 或 workflow 證據，必須 fail closed。"""
+        first_page = "https://api.github.com/repos/example/guide/actions/artifacts?per_page=100"
+        response = {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "id": 821,
+                    "name": "market-snapshot-2026-08-12-incomplete-provenance",
+                    "expired": False,
+                    "created_at": "2026-08-12T12:00:00Z",
+                    "workflow_run": {"id": 1_821},
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(GitHubArtifactQueryError, "provenance"):
             find_latest_successful_market_snapshot(
                 lambda url: (response, {}),
                 lambda run_id: {"conclusion": "success"},
@@ -459,6 +579,44 @@ class GitHubWorkflowContractTests(unittest.TestCase):
             "actions/deploy-pages",
         )
 
+    def test_deploy_workflow_separates_website_and_market_data_versions(self) -> None:
+        """純前端部署必須重用快照，排程或資料程式變更才可更新市場資料。"""
+        text = read_workflow("deploy-pages.yml")
+        version_contract = (ROOT / "tools" / "deployment_versions.py").read_text(encoding="utf-8")
+
+        self.assertIn("python .workflow-helper/tools/deployment_snapshot_mode.py", text)
+        self.assertIn("snapshot_strategy", text)
+        self.assertIn("market_data_source_sha", text)
+        self.assertIn("websiteSourceCommit", version_contract)
+        self.assertIn("marketDataSourceCommit", version_contract)
+        self.assertIn("deployment-version.json", text)
+        self.assertIn("重用已驗證市場快照", text)
+        self.assertIn("SKIP_IF_SAME_CUTOFF", text)
+        self.assertIn('workflow_path not in allowed_workflows', text)
+        self.assertIn('head_branch != "main"', text)
+        self.assertIn("repository_name != repository", text)
+        self.assertGreaterEqual(text.count("load_deployment_version"), 3)
+        self.assertIn("create_deployment_version", text)
+
+        cache_restore = text.split("      - id: restore-history-cache", 1)[1].split(
+            "\n      - name: Prepare market history cache directory", 1
+        )[0]
+        self.assertIn("snapshot-plan.outputs.snapshot_strategy != 'reuse'", cache_restore)
+
+        build_section = text.split("  build-pages:", 1)[1].split("\n  deploy:", 1)[0]
+        self.assertIn(
+            "MARKET_DATA_SOURCE_SHA: ${{ needs.source-snapshot.outputs.market_data_source_sha }}",
+            build_section,
+        )
+        self.assertNotIn("manifest.source_commit != source_sha", build_section)
+
+        publish_section = text.split("  publish-successful-snapshot:", 1)[1]
+        self.assertIn(
+            "MARKET_DATA_SOURCE_SHA: ${{ needs.source-snapshot.outputs.market_data_source_sha }}",
+            publish_section,
+        )
+        self.assertNotIn("manifest.source_commit != source_sha", publish_section)
+
     def test_deploy_workflow_paginates_previous_snapshots_and_same_cutoff_skips_pages(self) -> None:
         """若漏掃 Link 後頁或 no-op 後繼續 bootstrap，會重複部署或遺失舊快照。"""
         text = read_workflow("deploy-pages.yml")
@@ -469,14 +627,20 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("--max-pages 10", find_previous)
         self.assertNotIn("actions/artifacts?per_page=100", find_previous)
 
+        snapshot_plan = text.split("      - id: snapshot-plan", 1)[1].split(
+            "\n      - id: restore-history-cache", 1
+        )[0]
+        self.assertIn('if [[ "$SKIP_IF_SAME_CUTOFF" == "true" ]]', snapshot_plan)
+        self.assertIn('echo "snapshot_strategy=refresh"', snapshot_plan)
+
         source_rebuild = text.index("--rebuild-if-same-cutoff")
         update_call = text.index("python tools/market_snapshot.py update")
-        same_cutoff_start = text.index('if [[ "$SKIP_IF_SAME_CUTOFF" == "true" ]]', update_call)
+        same_cutoff_start = text.index('if [[ "$SNAPSHOT_STRATEGY" != "refresh" ]]', update_call)
         same_cutoff_exit = text.index("exit 0", same_cutoff_start)
         self.assertLess(source_rebuild, update_call)
         self.assertLess(update_call, same_cutoff_start)
         self.assertIn(
-            'if [[ "$SKIP_IF_SAME_CUTOFF" != "true" ]]',
+            'if [[ "$SNAPSHOT_STRATEGY" == "rebuild" ]]',
             text[source_rebuild - 700:update_call],
         )
         self.assertIn('echo "should_deploy=false"', text[same_cutoff_start:same_cutoff_exit])
@@ -495,6 +659,7 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("ref: ${{ github.sha }}", helper_checkout)
         self.assertIn("path: .workflow-helper", helper_checkout)
         self.assertIn("python .workflow-helper/tools/github_actions_artifacts.py", find_previous)
+        self.assertIn("python .workflow-helper/tools/deployment_snapshot_mode.py", text)
 
     def test_market_scheduler_resolves_main_once_at_taipei_after_hours(self) -> None:
         """若排程重新解析分支或時區錯誤，資料可能配上另一版程式。"""
@@ -543,6 +708,9 @@ class GitHubWorkflowContractTests(unittest.TestCase):
         self.assertIn("python -m unittest discover -s tests", text)
         self.assertIn("GitHub Pages", text)
         self.assertIn("rollback_artifact_id", text)
+        self.assertIn("websiteSourceCommit", text)
+        self.assertIn("marketDataSourceCommit", text)
+        self.assertIn("deployment-version.json", text)
         self.assertIn("https://huangchiyu.com/taiwan-stock-candlestick-guide/", text)
         self.assertIn("原子化 GitHub Pages 部署", text)
 
